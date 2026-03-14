@@ -1,0 +1,664 @@
+import math
+from typing import List, Optional
+import json
+
+from PySide6.QtCore import QPointF, Qt
+from PySide6.QtWidgets import QMessageBox
+
+from ..core.element_access import get_room_elements
+from ..domain.models import ElementModel
+from .dialogs.window_dialog import WindowDialog
+
+class MainWindowElementEditMixin:
+    def _edit_element_dialog(self, e) -> bool:
+        """Öffnet einen Dialog zum Bearbeiten eines Elements."""
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Element bearbeiten")
+        lay = QVBoxLayout(dlg)
+        form = QFormLayout()
+        lay.addLayout(form)
+
+        def ro_line(val: object) -> QLineEdit:
+            w = QLineEdit(str(val) if val is not None else "")
+            w.setReadOnly(True)
+            return w
+
+        # Info-Felder
+        form.addRow("UID", ro_line(getattr(e, "uid", "")))
+        form.addRow("Raum-ID", ro_line(getattr(e, "room_id", "")))
+        form.addRow("Geschoss", ro_line(getattr(e, "floor", "")))
+
+        # Editierbare Felder
+        ed_type = QLineEdit((getattr(e, "element_type", "") or "").strip())
+        ed_type.setPlaceholderText("z.B. Außenwand, Fenster, Kellerdecke, Geschossdecke ...")
+        form.addRow("Typ", ed_type)
+
+        sp_u = QDoubleSpinBox()
+        sp_u.setRange(0.0, 20.0)
+        sp_u.setDecimals(3)
+        sp_u.setSingleStep(0.05)
+        sp_u.setValue(float(getattr(e, "u_w_m2k", 0.0) or 0.0))
+        form.addRow("U [W/m²K]", sp_u)
+
+        sp_f = QDoubleSpinBox()
+        sp_f.setRange(0.0, 5.0)
+        sp_f.setDecimals(3)
+        sp_f.setSingleStep(0.05)
+        sp_f.setValue(float(getattr(e, "factor", 1.0) or 1.0))
+        form.addRow("Faktor f [-]", sp_f)
+
+        sp_a = QDoubleSpinBox()
+        sp_a.setRange(0.0, 10000.0)
+        sp_a.setDecimals(3)
+        sp_a.setSingleStep(0.1)
+        sp_a.setValue(float(getattr(e, "area_m2", 0.0) or 0.0))
+        form.addRow("Fläche A [m²]", sp_a)
+
+        sp_h = QDoubleSpinBox()
+        sp_h.setRange(0.0, 20.0)
+        sp_h.setDecimals(3)
+        sp_h.setSingleStep(0.05)
+        sp_h.setValue(float(getattr(e, "height_m", 0.0) or 0.0))
+        form.addRow("Höhe [m]", sp_h)
+
+        sp_L = QDoubleSpinBox()
+        sp_L.setRange(0.0, 2000.0)
+        sp_L.setDecimals(3)
+        sp_L.setSingleStep(0.1)
+        sp_L.setValue(float(getattr(e, "length_m", 0.0) or 0.0))
+        form.addRow("Länge [m]", sp_L)
+
+        # Meta (JSON)
+        meta_raw = getattr(e, "meta", "") or ""
+        meta_dict, meta_fmt = self._meta_parse_any(meta_raw)
+
+        te_meta = QTextEdit()
+        te_meta.setMinimumHeight(110)
+        try:
+            te_meta.setPlainText(json.dumps(meta_dict, indent=2, ensure_ascii=False))
+        except Exception:
+            te_meta.setPlainText("{}")
+        lay.addWidget(QLabel("Meta (JSON):"))
+        lay.addWidget(te_meta)
+
+        # Buttons
+        bb = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        lay.addWidget(bb)
+
+        def _on_save():
+            new_type = ed_type.text().strip()
+            meta_txt = te_meta.toPlainText().strip()
+            new_meta_dict = {}
+            if meta_txt:
+                try:
+                    new_meta_dict = json.loads(meta_txt)
+                    if not isinstance(new_meta_dict, dict):
+                        raise ValueError("Meta muss ein JSON-Objekt sein ({}).")
+                except Exception as ex:
+                    QMessageBox.warning(dlg, "Meta JSON", f"Meta ist kein gültiges JSON:\n{ex}\n\nSpeichern abgebrochen.")
+                    return
+
+            # Meta zurück in ursprüngliches Format serialisieren (JSON bleibt JSON)
+            new_meta_str = self._meta_dump_any(new_meta_dict, meta_fmt)
+
+            # Zurückschreiben
+            e.element_type = new_type
+            e.u_w_m2k = float(sp_u.value())
+            e.factor = float(sp_f.value())
+            e.area_m2 = float(sp_a.value())
+            e.height_m = float(sp_h.value())
+            #print(f"[DEBUG][dialog] uid={e.uid} manual_length={sp_L.value()}")
+            e.length_m = float(sp_L.value())
+            e.meta = new_meta_str
+
+            # >>> Persistiere Overrides in meta (ov_*) damit Auto-Rebuild & CSV-Roundtrip die Werte behalten
+            self._meta_set_overrides(
+                e,
+                ov_u=f"{float(e.u_w_m2k):.6g}",
+                ov_f=f"{float(e.factor):.6g}",
+                ov_h=f"{float(e.height_m):.6g}",
+                ov_a=f"{float(e.area_m2):.6g}",
+                ov_type=str(e.element_type or ""),
+            )
+
+            dlg.accept()
+
+        bb.accepted.connect(_on_save)
+        bb.rejected.connect(dlg.reject)
+
+        return dlg.exec() == QDialog.Accepted
+
+    # ---------------- Element-Hervorhebung ----------------
+
+    def _dist_point_to_segment2(self, px, py, ax, ay, bx, by) -> float:
+        # squared distance
+        vx, vy = bx - ax, by - ay
+        wx, wy = px - ax, py - ay
+        vv = vx * vx + vy * vy
+        if vv <= 1e-12:
+            dx, dy = px - ax, py - ay
+            return dx * dx + dy * dy
+        t = (wx * vx + wy * vy) / vv
+        if t < 0.0:
+            cx, cy = ax, ay
+        elif t > 1.0:
+            cx, cy = bx, by
+        else:
+            cx, cy = ax + t * vx, ay + t * vy
+        dx, dy = px - cx, py - cy
+        return dx * dx + dy * dy
+
+    def _pick_nearest_wall_uid_for_window(self, win, walls: list) -> str | None:
+        cx = (float(win.x0_m) + float(win.x1_m)) * 0.5
+        cy = (float(win.y0_m) + float(win.y1_m)) * 0.5
+        best_uid = None
+        best_d2 = 1e99
+        for w in walls:
+            if not getattr(w, "has_geometry", lambda: False)():
+                continue
+            d2 = self._dist_point_to_segment2(
+                cx, cy,
+                float(w.x0_m), float(w.y0_m),
+                float(w.x1_m), float(w.y1_m),
+            )
+            if d2 < best_d2:
+                best_d2 = d2
+                best_uid = w.uid
+        return best_uid
+
+    #
+
+    def _reanchor_windows_for_room(self, room_id: str) -> None:
+        # Wände dieses Raums sammeln + indexieren
+        walls = [e for e in self.elements if getattr(e, "room_id", None) == room_id and self._is_wall_element(e)]
+        if not walls:
+            return
+        walls_by_uid = {w.uid: w for w in walls if getattr(w, "uid", None)}
+
+        for win in self.elements:
+            if getattr(win, "room_id", None) != room_id:
+                continue
+            if str(getattr(win, "element_type", "")) != "Fenster":
+                continue
+            if not win.has_geometry():
+                continue
+
+            parts = self._parse_meta(getattr(win, "meta", "") or "")
+
+            # Parent-Wand bestimmen
+            parent = parts.get("parent")
+            if not parent or parent not in walls_by_uid:
+                parent = self._pick_nearest_wall_uid_for_window(win, walls)
+                if not parent:
+                    continue
+                parts["parent"] = parent
+
+            wall = walls_by_uid.get(parent)
+            if wall is None or not wall.has_geometry():
+                continue
+
+            # Wand-Vektor / Länge
+            x0, y0 = float(wall.x0_m), float(wall.y0_m)
+            x1, y1 = float(wall.x1_m), float(wall.y1_m)
+            dx, dy = (x1 - x0), (y1 - y0)
+            L = (dx * dx + dy * dy) ** 0.5
+            if L <= 1e-9:
+                continue
+            ux, uy = dx / L, dy / L
+
+            # Fensterlänge konstant halten: w
+            try:
+                w_len = float(parts.get("w", "0") or 0.0)
+            except Exception:
+                w_len = 0.0
+            if w_len <= 1e-9:
+                wx0, wy0 = float(win.x0_m), float(win.y0_m)
+                wx1, wy1 = float(win.x1_m), float(win.y1_m)
+                w_len = ((wx1 - wx0) ** 2 + (wy1 - wy0) ** 2) ** 0.5
+                parts["w"] = f"{w_len:.4f}"
+
+            # Position entlang Wand: s (Fenster-Mitte ab Wandstart)
+            try:
+                s = float(parts.get("s", "0") or 0.0)
+            except Exception:
+                s = 0.0
+
+            if s <= 0.0:
+                # initial aus aktueller Fenstermitte projizieren
+                cx = (float(win.x0_m) + float(win.x1_m)) * 0.5
+                cy = (float(win.y0_m) + float(win.y1_m)) * 0.5
+                s = (cx - x0) * ux + (cy - y0) * uy
+
+            # Clamp: Fenster darf nicht über Wand hinaus (Touch ok)
+            half = 0.5 * w_len
+            if L <= w_len:
+                s = 0.5 * L  # Wand zu kurz -> zentrieren
+            else:
+                s = max(half, min(s, L - half))
+            parts["s"] = f"{s:.4f}"
+
+            # Neue Fenster-Endpunkte aus Wand + (s,w)
+            cx = x0 + ux * s
+            cy = y0 + uy * s
+            ax = cx - ux * half
+            ay = cy - uy * half
+            bx = cx + ux * half
+            by = cy + uy * half
+
+            win.x0_m, win.y0_m, win.x1_m, win.y1_m = ax, ay, bx, by
+
+
+            #win.meta = self._format_meta(parts)
+            #
+            AX_TOL = 1e-6
+
+            if abs(dy) <= AX_TOL and abs(dx) > AX_TOL:
+                # horizontale Wand
+                parts["orient"] = "H"
+                parts["c"] = f"{y0:.3f}"
+                a_min = min(x0, x1)
+                a_max = max(x0, x1)
+                parts["a0"] = f"{a_min:.3f}"
+                parts["a1"] = f"{a_max:.3f}"
+
+            elif abs(dx) <= AX_TOL and abs(dy) > AX_TOL:
+                # vertikale Wand
+                parts["orient"] = "V"
+                parts["c"] = f"{x0:.3f}"
+                a_min = min(y0, y1)
+                a_max = max(y0, y1)
+                parts["a0"] = f"{a_min:.3f}"
+                parts["a1"] = f"{a_max:.3f}"
+
+            win.meta = self._format_meta(parts)
+            #
+
+    #
+
+    def _apply_room_wh_to_autocontour(self, e: ElementModel) -> None:
+        """Setzt length_m für auto_contour Außenwände explizit aus Raum w/h (H->w, V->h)."""
+        try:
+            meta = str(getattr(e, "meta", "") or "")
+            if "auto_contour" not in meta:
+                return
+
+            rid = str(getattr(e, "room_id", "") or "")
+            r = self.rooms.get(rid)
+            if r is None:
+                return
+
+            # orient aus meta "line=H:..." oder "line=V:..."
+            orient = None
+            for part in meta.split("|"):
+                part = part.strip()
+                if part.startswith("line="):
+                    val = part.split("=", 1)[1].strip()
+                    orient = val.split(":", 1)[0].strip()  # "H" oder "V"
+                    break
+
+            if orient == "H":
+                #print(f"[DEBUG][main-ui-roomWH] uid={e.uid} set_length_from_room_w={r.w_m}")
+                L = float(r.w_m)
+            elif orient == "V":
+                #print(f"[DEBUG][main-ui-roomWH] uid={e.uid} set_length_from_room_w={r.h_m}")
+                L = float(r.h_m)
+            else:
+                return
+
+            if L <= 1e-9:
+                return
+
+            #print(f"[DEBUG][main-ui-roomWH] uid={e.uid} set_length_from_room_w={L}")
+            e.length_m = L
+
+            # Höhe sicherstellen (falls nicht gesetzt)
+            H = float(getattr(e, "height_m", 0.0) or 0.0)
+            if H <= 1e-9:
+                H = float(getattr(r, "height_m", 0.0) or 0.0)
+            if H > 1e-9:
+                e.height_m = H
+                e.area_m2 = float(L) * float(H)
+        except Exception:
+            pass
+
+    def _is_wall_element(self, e) -> bool:
+        et = str(getattr(e, "element_type", "") or "")
+        uid = str(getattr(e, "uid", "") or "")
+        if et in ("Aussenwand", "Außenwand", "Innenwand"):
+            return True
+        # auto walls
+        if et.startswith("auto_Aussenwand") or et.startswith("auto_Innenwand"):
+            return True
+        if uid.startswith("auto_Aussenwand") or uid.startswith("auto_Innenwand"):
+            return True
+        return False
+
+    def _room_elements(self, rid: str) -> List[ElementModel]:
+        """Zentrale Sicht: alle Elemente, die zu rid gehören (owner + shared via meta rooms=...)."""
+        return get_room_elements(self.elements, rid)
+
+    def _parse_meta(self, meta: str) -> dict:
+        meta = meta or ""
+        parts = {}
+        for kv in meta.split("|"):
+            if "=" in kv:
+                k, v = kv.split("=", 1)
+                parts[k] = v
+        return parts
+
+    def _format_meta(self, parts: dict) -> str:
+        # stabiler Output (optional: sort)
+        return "|".join(f"{k}={v}" for k, v in parts.items())
+
+    def _propose_element_move(self, e, new_x0_m: float, new_y0_m: float) -> Optional[tuple]:
+        """
+        Wird während des Ziehens eines Elements aufgerufen.
+        Gibt gesnappte Koordinaten zurück oder blockiert die Bewegung.
+        """
+        if e is None or not getattr(e, "has_geometry", lambda: False)():
+            return None
+
+        x0, y0, x1, y1 = float(e.x0_m), float(e.y0_m), float(e.x1_m), float(e.y1_m)
+        dx = x1 - x0
+        dy = y1 - y0
+        is_h = abs(dy) < 1e-9 and abs(dx) > 1e-9
+        is_v = abs(dx) < 1e-9 and abs(dy) > 1e-9
+        if not (is_h or is_v):
+            return (x0, y0)
+
+        SNAP_AXIS = 0.08
+        SNAP_END = 0.10
+
+        # Andere Wände sammeln
+        others = []
+        for o in self.elements:
+            if o is e:
+                continue
+            if not getattr(o, "has_geometry", lambda: False)():
+                continue
+            if str(getattr(o, "element_type", "") or "").lower().startswith("fenster"):
+                continue
+            uid = str(getattr(o, "uid", "") or "")
+            if uid.startswith("deck_"):
+                continue
+            ox0, oy0, ox1, oy1 = float(o.x0_m), float(o.y0_m), float(o.x1_m), float(o.y1_m)
+            odx = ox1 - ox0
+            ody = oy1 - oy0
+            oh = abs(ody) < 1e-9 and abs(odx) > 1e-9
+            ov = abs(odx) < 1e-9 and abs(ody) > 1e-9
+            if not (oh or ov):
+                continue
+            others.append((o, ox0, oy0, ox1, oy1, oh, ov))
+
+        sx = snap_m(new_x0_m)
+        sy = snap_m(new_y0_m)
+        nx0, ny0 = sx, sy
+        nx1, ny1 = sx + dx, sy + dy
+
+        # Achsen-Snapping
+        if is_h:
+            target_y = None
+            best = SNAP_AXIS
+            for o, ox0, oy0, ox1, oy1, oh, ov in others:
+                if not oh:
+                    continue
+                d = abs(oy0 - ny0)
+                if d < best:
+                    best = d
+                    target_y = oy0
+            if target_y is not None:
+                ny0 = target_y
+                ny1 = target_y
+        else:
+            target_x = None
+            best = SNAP_AXIS
+            for o, ox0, oy0, ox1, oy1, oh, ov in others:
+                if not ov:
+                    continue
+                d = abs(ox0 - nx0)
+                if d < best:
+                    best = d
+                    target_x = ox0
+            if target_x is not None:
+                nx0 = target_x
+                nx1 = target_x
+
+        # Endpunkt-Snapping
+        if is_h:
+            cands = []
+            for o, ox0, oy0, ox1, oy1, oh, ov in others:
+                if not oh:
+                    continue
+                cands.extend([ox0, ox1])
+            if cands:
+                best = min(cands, key=lambda c: abs(nx0 - c))
+                if abs(nx0 - best) < SNAP_END:
+                    nx0 = best
+                    nx1 = nx0 + dx
+                else:
+                    best = min(cands, key=lambda c: abs(nx1 - c))
+                    if abs(nx1 - best) < SNAP_END:
+                        nx1 = best
+                        nx0 = nx1 - dx
+        else:
+            cands = []
+            for o, ox0, oy0, ox1, oy1, oh, ov in others:
+                if not ov:
+                    continue
+                cands.extend([oy0, oy1])
+            if cands:
+                best = min(cands, key=lambda c: abs(ny0 - c))
+                if abs(ny0 - best) < SNAP_END:
+                    ny0 = best
+                    ny1 = ny0 + dy
+                else:
+                    best = min(cands, key=lambda c: abs(ny1 - c))
+                    if abs(ny1 - best) < SNAP_END:
+                        ny1 = best
+                        ny0 = ny1 - dy
+
+        # T-Stoß-Snapping
+        def _between(v, a, b):
+            lo, hi = (a, b) if a <= b else (b, a)
+            return lo + 1e-6 < v < hi - 1e-6
+
+        if is_h:
+            for ex, ey in [(nx0, ny0), (nx1, ny1)]:
+                for o, ox0, oy0, ox1, oy1, oh, ov in others:
+                    if not ov:
+                        continue
+                    x_const = ox0
+                    y_min = min(oy0, oy1)
+                    y_max = max(oy0, oy1)
+                    if abs(ex - x_const) < SNAP_END and (y_min - 1e-6) <= ey <= (y_max + 1e-6):
+                        if ex == nx0:
+                            nx0 = x_const
+                            nx1 = nx0 + dx
+                        else:
+                            nx1 = x_const
+                            nx0 = nx1 - dx
+                        break
+        else:
+            for ex, ey in [(nx0, ny0), (nx1, ny1)]:
+                for o, ox0, oy0, ox1, oy1, oh, ov in others:
+                    if not oh:
+                        continue
+                    y_const = oy0
+                    x_min = min(ox0, ox1)
+                    x_max = max(ox0, ox1)
+                    if abs(ey - y_const) < SNAP_END and (x_min - 1e-6) <= ex <= (x_max + 1e-6):
+                        if ey == ny0:
+                            ny0 = y_const
+                            ny1 = ny0 + dy
+                        else:
+                            ny1 = y_const
+                            ny0 = ny1 - dy
+                        break
+
+        # Kollisionsprüfung
+        if is_h:
+            hx0, hx1 = (nx0, nx1) if nx0 <= nx1 else (nx1, nx0)
+            hy = ny0
+        else:
+            vy0, vy1 = (ny0, ny1) if ny0 <= ny1 else (ny1, ny0)
+            vx = nx0
+
+        for o, ox0, oy0, ox1, oy1, oh, ov in others:
+            if is_h and oh and abs(oy0 - hy) < 1e-9:
+                ax0, ax1 = (ox0, ox1) if ox0 <= ox1 else (ox1, ox0)
+                overlap = min(hx1, ax1) - max(hx0, ax0)
+                if overlap > 1e-6:
+                    if not (abs(hx1 - ax0) < 1e-6 or abs(ax1 - hx0) < 1e-6):
+                        return (x0, y0)
+            if is_v and ov and abs(ox0 - vx) < 1e-9:
+                ay0, ay1 = (oy0, oy1) if oy0 <= oy1 else (oy1, oy0)
+                overlap = min(vy1, ay1) - max(vy0, ay0)
+                if overlap > 1e-6:
+                    if not (abs(vy1 - ay0) < 1e-6 or abs(ay1 - vy0) < 1e-6):
+                        return (x0, y0)
+
+            if is_h and ov:
+                x_const = ox0
+                y_const = hy
+                y_min = min(oy0, oy1)
+                y_max = max(oy0, oy1)
+                if _between(x_const, hx0, hx1) and _between(y_const, y_min, y_max):
+                    return (x0, y0)
+            if is_v and oh:
+                y_const = oy0
+                x_min = min(ox0, ox1)
+                x_max = max(ox0, ox1)
+                if _between(vx, x_min, x_max) and _between(y_const, vy0, vy1):
+                    return (x0, y0)
+
+        return (nx0, ny0)
+
+    # ---------------- Fenster einfügen ----------------
+
+    def _meta_get_overrides(self, meta: str | None) -> dict:
+        if not meta:
+            return {}
+        try:
+            d = self._parse_meta(meta)
+            raw = d.get("overrides", "")
+            if not raw:
+                return {}
+            if isinstance(raw, dict):
+                return raw
+            return json.loads(raw)
+        except Exception:
+            return {}
+
+    def _meta_set_overrides(self, meta: str | None, overrides: dict) -> str:
+        d = self._parse_meta(meta or "")
+        if overrides:
+            d["overrides"] = json.dumps(overrides, ensure_ascii=False, sort_keys=True)
+        else:
+            d.pop("overrides", None)
+        return self._format_meta(d)
+
+    def _snapshot_user_overrides_for_autowalls(self) -> dict:
+        """
+        Sichert benutzerdefinierte Overrides existierender Auto-Wände,
+        damit sie nach einem Rebuild wieder auf die neuen Auto-Wände
+        übertragen werden können.
+        """
+        snap: dict = {}
+
+        for e in getattr(self, "elements", []):
+            try:
+                if not self._is_auto_wall(e):
+                    continue
+                ov = self._meta_get_overrides(getattr(e, "meta", ""))
+                if not ov:
+                    continue
+
+                key = (
+                    getattr(e, "room_id", ""),
+                    getattr(e, "floor", ""),
+                    round(float(getattr(e, "x1", 0.0)), 6),
+                    round(float(getattr(e, "y1", 0.0)), 6),
+                    round(float(getattr(e, "x2", 0.0)), 6),
+                    round(float(getattr(e, "y2", 0.0)), 6),
+                    getattr(e, "type", ""),
+                )
+                snap[key] = ov
+            except Exception:
+                pass
+
+        return snap
+
+    def _meta_get_overrides(self, meta: str | None) -> dict:
+        if not meta:
+            return {}
+        try:
+            d = self._parse_meta(meta)
+            raw = d.get("overrides", "")
+            if not raw:
+                return {}
+            if isinstance(raw, dict):
+                return raw
+            return json.loads(raw)
+        except Exception:
+            return {}
+
+    def _meta_set_overrides(self, meta: str | None, overrides: dict) -> str:
+        d = self._parse_meta(meta or "")
+        if overrides:
+            d["overrides"] = json.dumps(overrides, ensure_ascii=False, sort_keys=True)
+        else:
+            d.pop("overrides", None)
+        return self._format_meta(d)
+
+    def _snapshot_user_overrides_for_autowalls(self) -> dict:
+        snap: dict = {}
+
+        for e in getattr(self, "elements", []):
+            try:
+                if not self._is_auto_wall(e):
+                    continue
+                ov = self._meta_get_overrides(getattr(e, "meta", ""))
+                if not ov:
+                    continue
+
+                key = (
+                    getattr(e, "room_id", ""),
+                    getattr(e, "floor", ""),
+                    round(float(getattr(e, "x1", 0.0)), 6),
+                    round(float(getattr(e, "y1", 0.0)), 6),
+                    round(float(getattr(e, "x2", 0.0)), 6),
+                    round(float(getattr(e, "y2", 0.0)), 6),
+                    getattr(e, "type", ""),
+                )
+                snap[key] = ov
+            except Exception:
+                pass
+
+        return snap
+
+    def _apply_user_overrides_to_autowalls(self, autos: list, snap: dict) -> None:
+        if not snap:
+            return
+
+        for e in autos:
+            try:
+                if not self._is_auto_wall(e):
+                    continue
+
+                key = (
+                    getattr(e, "room_id", ""),
+                    getattr(e, "floor", ""),
+                    round(float(getattr(e, "x1", 0.0)), 6),
+                    round(float(getattr(e, "y1", 0.0)), 6),
+                    round(float(getattr(e, "x2", 0.0)), 6),
+                    round(float(getattr(e, "y2", 0.0)), 6),
+                    getattr(e, "type", ""),
+                )
+
+                ov = snap.get(key)
+                if not ov:
+                    continue
+
+                e.meta = self._meta_set_overrides(getattr(e, "meta", ""), ov)
+            except Exception:
+                pass

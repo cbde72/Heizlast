@@ -1,0 +1,19 @@
+{
+  "t_out_c": -8.0,
+  "thickness_mode": "full",
+  "area_shrink_factor": 0.97,
+  "floor_area_mode": "outer",
+  "debug_overlay": false,
+  "labels": {
+    "outer_walls": true,
+    "inner_walls": true,
+    "windows": true
+  },
+  "floorplan_cfg": {
+    "heatmap_enabled": true,
+    "draw_elements": true,
+    "element_label": true,
+    "label_outer_walls": true,
+    "label_inner_walls": true
+  }
+}

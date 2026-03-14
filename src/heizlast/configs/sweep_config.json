@@ -1,0 +1,24 @@
+{
+  "base": {
+    "t_out_c": -10.0,
+    "t_keller_c": 10.0,
+    "t_oben_c": -10.0,
+    "floor_area_mode": "inner",
+    "thickness_mode": "full",
+    "area_shrink_factor": 1.0,
+    "vent": { "c_air": 0.34 },
+    "tb": {
+      "mode": "none",
+      "delta_u_w_m2k": 0.05,
+      "psi_default_w_mk": 0.05,
+      "percent_of_trans": 0.10,
+      "use_element_meta_psi": true,
+      "include_out": true,
+      "include_keller": true,
+      "include_oben": true
+    }
+  },
+  "sweeps": [
+    { "name": "WB_MODE", "kind": "tb.mode", "values": [ "delta_u"] }
+  ]
+}

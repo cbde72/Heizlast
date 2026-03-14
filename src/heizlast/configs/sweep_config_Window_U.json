@@ -1,0 +1,19 @@
+{
+  "base": {
+    "t_out_c": -10.0,
+    "t_keller_c": 14.0,
+    "t_oben_c": 12.0,
+    "floor_area_mode": "inner",
+    "thickness_mode": "full",
+    "area_shrink_factor": 1.0,
+    "vent": { "c_air": 0.34 }
+  },
+  "sweeps": [
+    {
+      "name": "U_Fenster",
+      "kind": "elements.u_by_type",
+      "element_type": "Fenster",
+      "values": [0.9, 1.1, 1.3, 1.6, 2.0, 2.8]
+    }
+  ]
+}

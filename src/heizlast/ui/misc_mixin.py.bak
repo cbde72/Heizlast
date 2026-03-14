@@ -1,0 +1,261 @@
+import json
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+from ..domain.models import RoomModel
+from PySide6.QtWidgets import QDialog
+from PySide6.QtWidgets import QMessageBox
+from .graphics import PX_PER_M
+from .graphics import snap_m
+from .graphics import RoomRectItem
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QColor,QPen,QBrush
+
+from PySide6.QtCore import QPointF
+
+from ..domain.models import ElementModel, RoomModel
+
+class MainWindowMiscMixin:
+    def _meta_parse_any(self, meta: str) -> tuple[dict, str]:
+        """Parst meta entweder als JSON-Objekt ('{...}') oder als Pipe-Format 'k=v|k2=v2'.
+        Returns (dict, fmt) with fmt in {'json','pipe'} and preserves arbitrary keys.
+        """
+        s = (meta or "").strip()
+        if s.startswith("{") and s.endswith("}"):
+            try:
+                d = json.loads(s)
+                if isinstance(d, dict):
+                    return {str(k): ("" if v is None else str(v)) for k, v in d.items()}, "json"
+            except Exception:
+                pass
+
+        d: dict = {}
+        for part in (meta or "").split("|"):
+            if "=" in part:
+                k, v = part.split("=", 1)
+                k = k.strip()
+                v = v.strip()
+                if k:
+                    d[k] = v
+        return d, "pipe"
+
+    def _meta_dump_any(self, d: dict, fmt: str) -> str:
+        """Serialisiert meta-dict zurück ins ursprüngliche Format (JSON oder Pipe)."""
+        if fmt == "json":
+            return json.dumps(d, ensure_ascii=False, sort_keys=True, indent=2)
+
+        parts = []
+        for k, v in d.items():
+            if v is None:
+                continue
+            ks = str(k).strip().replace("|", "/").replace("\n", " ").replace("\r", " ")
+            vs = str(v).strip().replace("|", "/").replace("\n", " ").replace("\r", " ")
+            if ks:
+                parts.append(f"{ks}={vs}")
+        return "|".join(parts)
+        #
+
+    def _is_auto_deck(self, e) -> bool:
+        et = (str(getattr(e, "element_type", "") or "")).lower()
+        uid = str(getattr(e, "uid", "") or "")
+        # Auto-Decken typischerweise auto_* und enthält decke/geschoss/keller
+        if not uid.startswith("auto_"):
+            return False
+        return ("decke" in et) or ("geschoss" in et) or ("keller" in et)
+
+    def _snapshot_auto_deck_overrides(self) -> dict:
+        """Merkt ov_* Overrides (aus meta) für Auto-Decken, damit ensure_auto_decks sie nicht 'wegsetzt'."""
+        snap = {}
+        for e in self.elements:
+            if not self._is_auto_deck(e):
+                continue
+            parts = self._parse_meta(getattr(e, "meta", "") or "")
+            ov = {k: v for k, v in parts.items() if k.startswith("ov_")}
+            if not ov:
+                continue
+            key = (str(getattr(e, "room_id", "") or ""), (str(getattr(e, "element_type", "") or "")).lower())
+            snap[key] = ov
+        return snap
+    #
+
+    def _restore_auto_deck_overrides(self, snap: dict) -> None:
+        """Schreibt ov_* wieder in meta und wendet sie direkt an (U/A/H/L/Typ etc.)."""
+        if not snap:
+            return
+        apply = getattr(self.metrics, "_apply_overrides_from_meta", None) if hasattr(self, "metrics") else None
+
+        for e in self.elements:
+            if not self._is_auto_deck(e):
+                continue
+            key = (str(getattr(e, "room_id", "") or ""), (str(getattr(e, "element_type", "") or "")).lower())
+            ov = snap.get(key)
+            if not ov:
+                continue
+            parts = self._parse_meta(getattr(e, "meta", "") or "")
+            parts.update(ov)
+            e.meta = self._format_meta(parts)
+
+            # sofort im Modell wirksam machen (damit GUI/Report stimmt)
+            if callable(apply):
+                try:
+                    apply(e)
+                except Exception:
+                    pass
+    #
+
+    def _meta_parse(self, meta: str) -> dict:
+        """Parst meta im Format 'k=v|k2=v2' zu dict."""
+        d = {}
+        for part in (meta or "").split("|"):
+            if "=" in part:
+                k, v = part.split("=", 1)
+                k = k.strip()
+                v = v.strip()
+                if k:
+                    d[k] = v
+        return d
+
+    def _on_show_3d_house(self) -> None:
+        if plt is None or FigureCanvas is None or Poly3DCollection is None:
+            QMessageBox.warning(self, "3D Ansicht", "matplotlib/QtAgg ist nicht verfügbar.")
+            return
+
+        poly_by_floor = self._collect_outer_polygons_by_floor()
+        if not poly_by_floor:
+            QMessageBox.warning(
+                self, "3D Ansicht",
+                "Keine EG-Außenkontur gefunden. Bitte erst 'Auto-Wände neu (All)' ausführen "
+                "und sicherstellen, dass Außenwände Geometrie + auto_contour-Meta haben."
+            )
+            return
+
+        heights = self._collect_floor_heights()
+        z_base = self._floor_z_offsets(heights)
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("3D Hausansicht (Skin + Linien)")
+        lay = QVBoxLayout(dlg)
+
+        fig = Figure(figsize=(10, 6))
+        canvas = FigureCanvas(fig)
+        lay.addWidget(canvas)
+
+        ax = fig.add_subplot(111, projection="3d")
+        self._plot_3d_skin_and_lines(ax, poly_by_floor, heights, z_base)
+
+        fig.tight_layout()
+        canvas.draw()
+
+        btn = QPushButton("Schließen")
+        btn.clicked.connect(dlg.accept)
+        lay.addWidget(btn)
+
+        dlg.resize(1100, 750)
+        dlg.exec()
+
+    def eventFilter(self, obj, event):
+        """Filtert Mausereignisse für das Zeichnen von Räumen und Einfügen von Fenstern."""
+        if event.type() not in (event.Type.MouseButtonPress, event.Type.MouseMove, event.Type.MouseButtonRelease):
+            return super().eventFilter(obj, event)
+
+        view = (self.view_KG if obj is self.view_KG.viewport() else (self.view_EG if obj is self.view_EG.viewport() else (self.view_DG if obj is self.view_DG.viewport() else None)))
+        if view is None:
+            return super().eventFilter(obj, event)
+
+        scene, floor = ((self.scene_KG, "KG") if view is self.view_KG else ((self.scene_EG, "EG") if view is self.view_EG else (self.scene_DG, "DG")))
+
+        if event.type() == event.Type.MouseButtonPress:
+            if event.button() == Qt.LeftButton and self._add_window_mode and not (event.modifiers() & Qt.ShiftModifier):
+                p = view.mapToScene(event.position().toPoint())
+                self._add_window_at(floor, p)
+                return True
+
+            if event.button() == Qt.LeftButton and (event.modifiers() & Qt.ShiftModifier):
+                p0 = view.mapToScene(event.position().toPoint())
+                self._start_pos_scene = (floor, p0)
+                from PySide6.QtWidgets import QGraphicsRectItem
+                self._preview_room = scene.addRect(0, 0, 1, 1, QPen(Qt.darkGray, 1, Qt.DashLine), QBrush(Qt.transparent))
+                self._preview_room.setZValue(100)
+                return True
+
+        if event.type() == event.Type.MouseMove:
+            if self._start_pos_scene and self._preview_room:
+                f0, p0 = self._start_pos_scene
+                if f0 != floor:
+                    return True
+                p1 = view.mapToScene(event.position().toPoint())
+                x0 = min(p0.x(), p1.x())
+                y0 = min(p0.y(), p1.y())
+                x1 = max(p0.x(), p1.x())
+                y1 = max(p0.y(), p1.y())
+                self._preview_room.setRect(x0, y0, max(1.0, x1 - x0), max(1.0, y1 - y0))
+                return True
+
+        if event.type() == event.Type.MouseButtonRelease:
+            if self._start_pos_scene and self._preview_room:
+                f0, p0 = self._start_pos_scene
+                p1 = view.mapToScene(event.position().toPoint())
+                self._safe_remove_from_scene(self._preview_room)
+                self._preview_room = None
+                self._start_pos_scene = None
+
+                x0 = min(p0.x(), p1.x()) / PX_PER_M
+                y0 = min(p0.y(), p1.y()) / PX_PER_M
+                w = abs(p1.x() - p0.x()) / PX_PER_M
+                h = abs(p1.y() - p0.y()) / PX_PER_M
+                if w < 0.2 or h < 0.2:
+                    return True
+
+                x0 = snap_m(x0)
+                y0 = snap_m(y0)
+                w = snap_m(w)
+                h = snap_m(h)
+                rid = self._new_room_id(floor)
+                r = RoomModel(id=rid, floor=floor, name=rid, x_m=x0, y_m=y0, w_m=w, h_m=h)
+                # Zentrale Normalisierung garantiert: w/h gesetzt und > 0
+                self._normalize_room_geometry(r)
+                self.rooms[rid] = r
+
+                it = RoomRectItem(r, heatmap_enabled_cb=lambda: self.heatmap_enabled,
+                                  on_geometry_changed=self._on_room_geometry_changed)
+                '''
+                scene.addItem(it)
+                self.room_items[rid] = it
+                it.setSelected(True)
+                self._selected_room_id = rid
+                self._populate_room_form()
+                #
+                # Erst Auto-Wände, dann Recompute/Redraw (damit 4 Wände sofort da sind)
+                if self.autowalls_enabled:
+                     self._rebuild_autowalls_all()
+                self._recompute_and_redraw()
+                #
+
+                return True
+                '''
+                scene.addItem(it)
+                self.room_items[rid] = it
+
+                # 1) sicherstellen, dass wirklich NUR dieser Raum selektiert ist
+                try:
+                    scene.clearSelection()
+                except Exception:
+                    pass
+                it.setSelected(True)
+
+                # 2) Selected-Room-State setzen + UI aktualisieren
+                self._selected_room_id = rid
+                self._populate_room_form()          # ruft am Ende _populate_room_elements_list()
+
+                # 3) Auto-Wände erzeugen und danach UI nochmal refreshen
+                if self.autowalls_enabled:
+                    self._rebuild_autowalls_all()
+
+                self._recompute_and_redraw()
+
+                # 4) garantiert: Liste nach dem Rebuild nochmal aktualisieren
+                self._populate_room_elements_list()
+
+                return True
+
+        return super().eventFilter(obj, event)
+    #

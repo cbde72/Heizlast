@@ -1,0 +1,5 @@
+versionen/
+.vscode/
+.spyproject/
+Projekte/
+__pycache__

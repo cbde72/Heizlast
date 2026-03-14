@@ -1,0 +1,551 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Heizlast Tool V5 V04 – ausführliche Engineering-Dokumentation</title>
+<style>
+:root {
+  --ink:#1f2937; --muted:#5b6472; --line:#d9e2ec; --accent:#0f4c81; --accent2:#0b6aa2;
+  --bg:#f4f7fb; --panel:#fff; --eqbg:#fbfcfe; --good:#175c36; --warn:#8a5b00;
+}
+* { box-sizing:border-box; }
+html { scroll-behavior:smooth; }
+body { margin:0; background:var(--bg); color:var(--ink); font-family:"Segoe UI","Inter","DejaVu Sans",Arial,sans-serif; line-height:1.55; }
+.page { width:min(1520px, calc(100vw - 24px)); margin:12px auto 28px; background:var(--panel); border:1px solid var(--line); box-shadow:0 10px 28px rgba(16,24,40,.08); }
+header { padding:34px 32px 22px; border-bottom:1px solid var(--line); background:linear-gradient(180deg,#fbfdff 0%,#f4f8fc 100%); }
+h1 { margin:0 0 10px; color:var(--accent); font-size:2rem; }
+.subtitle { color:var(--muted); max-width:1180px; }
+.meta { margin-top:16px; display:flex; flex-wrap:wrap; gap:10px 18px; color:var(--muted); font-size:.94rem; }
+main { display:grid; grid-template-columns:300px minmax(0,1fr); }
+nav { position:sticky; top:0; align-self:start; max-height:100vh; overflow:auto; padding:20px 18px 28px; border-right:1px solid var(--line); background:#fbfcfe; }
+nav h2 { margin:0 0 12px; color:var(--accent); font-size:1rem; }
+nav ol { margin:0; padding-left:18px; font-size:.94rem; }
+nav li { margin:6px 0; }
+nav a { color:var(--ink); text-decoration:none; }
+nav a:hover { color:var(--accent2); text-decoration:underline; }
+article { min-width:0; padding:28px 32px 40px; }
+h2 { margin:28px 0 14px; color:var(--accent); font-size:1.42rem; border-bottom:1px solid var(--line); padding-bottom:8px; }
+h3 { margin:22px 0 8px; color:#173b61; font-size:1.05rem; }
+p { margin:10px 0; }
+.lead { color:#334155; font-size:1.02rem; }
+.box,.eqbox,.warnbox,.goodbox { border:1px solid var(--line); border-radius:12px; padding:14px 16px; margin:14px 0; background:#fff; }
+.eqbox { background:var(--eqbg); }
+.warnbox { background:#fff9ef; border-color:#ecd8a2; }
+.goodbox { background:#f4fbf6; border-color:#b8dec4; }
+.eqtitle { font-size:.88rem; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); margin-bottom:8px; }
+math { display:block; font-size:1.05rem; padding:4px 0; overflow-x:auto; }
+.kpi { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:12px; margin:14px 0; }
+.card { border:1px solid var(--line); border-radius:12px; background:#fff; padding:12px 14px; min-width:0; }
+.card strong { display:block; margin-bottom:4px; }
+.small { color:var(--muted); font-size:.92rem; }
+.pill { display:inline-block; padding:2px 8px; border:1px solid var(--line); border-radius:999px; background:#f8fafc; font-size:.86rem; margin:2px 6px 2px 0; }
+code { background:#f3f6fa; padding:1px 5px; border-radius:5px; word-break:break-word; }
+pre { white-space:pre-wrap; overflow-wrap:anywhere; word-break:break-word; background:#f8fafc; border:1px solid var(--line); border-radius:12px; padding:14px; font-size:.9rem; }
+table { width:100%; border-collapse:collapse; table-layout:fixed; margin:12px 0 18px; font-size:.92rem; }
+th,td { border:1px solid var(--line); padding:8px 9px; vertical-align:top; overflow-wrap:anywhere; word-break:break-word; hyphens:auto; }
+th { background:#f7f9fc; text-align:left; }
+footer { border-top:1px solid var(--line); padding:18px 32px 24px; color:var(--muted); font-size:.92rem; }
+ul,ol { margin: 10px 0 16px 22px; }
+li { margin: 6px 0; }
+@media (max-width: 1120px) {
+  .kpi { grid-template-columns:repeat(2,minmax(0,1fr)); }
+}
+@media (max-width: 960px) {
+  main { grid-template-columns:1fr; }
+  nav { position:static; max-height:none; border-right:none; border-bottom:1px solid var(--line); }
+  article,header,footer { padding-left:20px; padding-right:20px; }
+  .kpi { grid-template-columns:1fr; }
+  table,thead,tbody,tr,th,td { display:block; width:100% !important; }
+  thead { display:none; }
+  tr { margin:0 0 12px; border:1px solid var(--line); border-radius:10px; overflow:hidden; }
+  td { border:none; border-top:1px solid var(--line); padding:8px 10px; }
+  td:first-child { border-top:none; background:#f7f9fc; font-weight:600; }
+}
+</style>
+</head>
+<body>
+<div class="page">
+<header>
+  <h1>Heizlast Tool V5 V04 – ausführliche Engineering-Dokumentation</h1>
+  <div class="subtitle">Ausführliche Projektdokumentation für <code>heizlast_tool_v5_V04.zip</code> im Aufbau der vorhandenen HTML-Referenz, aber erweitert um eine tiefere Architektur- und Rechenbeschreibung. Schwerpunkt ist der neue Komplettabschnitt zur Heizlastberechnung in <code>src/heizlast/core/heatload.py</code> inklusive aller Top-Level-Funktionen, Datenflüsse, Ergebnisstrukturen und Randbedingungsmodelle.</div>
+  <div class="meta">
+    <div><strong>Projektbasis:</strong> heizlast_tool_v5_V04.zip</div>
+    <div><strong>Aktiver Paketname:</strong> <code>heizlast</code></div>
+    <div><strong>Referenzstil:</strong> bestehende Heizlast-V5-Dokumentation</div>
+    <div><strong>Sprache:</strong> Deutsch</div>
+    <div><strong>Format:</strong> HTML + MathML</div>
+    <div><strong>Stand der Analyse:</strong> 2026-03-14</div>
+  </div>
+</header>
+<main>
+<nav>
+  <h2>Inhalt</h2>
+  <ol>
+    <li><a href="#sec1">Ziel, Scope und Projektcharakter</a></li>
+    <li><a href="#sec2">Top-Level-Architektur</a></li>
+    <li><a href="#sec3">Ausführungspfade: GUI, CLI, Bootstrap</a></li>
+    <li><a href="#sec4">Domänenmodell und zentrale Datenstrukturen</a></li>
+    <li><a href="#sec5">Konfigurationen und Randbedingungen</a></li>
+    <li><a href="#sec6">Komplette Heizlastberechnung in <code>core/heatload.py</code></a></li>
+    <li><a href="#sec7">Funktionsverzeichnis aller Top-Level-Funktionen in <code>heatload.py</code></a></li>
+    <li><a href="#sec8">Erdreich-, Wärmebrücken- und Hüllflächenmodell</a></li>
+    <li><a href="#sec9">GUI-, Presenter- und Graphics-Architektur</a></li>
+    <li><a href="#sec10">Reporting- und Exportpfad</a></li>
+    <li><a href="#sec11">Beobachtungen, Risiken und technische Schulden</a></li>
+    <li><a href="#sec12">Empfohlene nächste Schritte</a></li>
+    <li><a href="#sec13">Dateiübersicht der wichtigsten Module</a></li>
+    <li><a href="#sec14">Vollständiges Python-Dateiinventar</a></li>
+  </ol>
+</nav>
+<article>
+
+<section id="sec1">
+<h2>1. Ziel, Scope und Projektcharakter</h2>
+<p class="lead">Das Projekt ist ein kombiniertes Engineering- und GUI-Werkzeug für die raumweise Heizlastberechnung, Grundrisserstellung, Hüllflächenmodellierung und Berichtserzeugung. Im Vordergrund steht keine vollständig abstrahierte Bibliothek, sondern ein transparentes, nachvollziehbares Werkzeug, in dem Geometrie, Rechenkern und Visualisierung eng zusammenarbeiten.</p>
+<div class="kpi">
+  <div class="card"><strong>Kernaufgabe</strong><div class="small">Heizlast je Raum mit Transmission, Lüftung, Wärmebrücken, Erdreich und Geschossauswertung</div></div>
+  <div class="card"><strong>Bedienung</strong><div class="small">Qt-GUI mit Planansicht, Heatmap, Elementbearbeitung, Auto-Walls und Exportdialogen</div></div>
+  <div class="card"><strong>Automation</strong><div class="small">CLI-Runner für PDF, CSV, Detail-CSV und Grundriss-Exports</div></div>
+  <div class="card"><strong>Stil des Rechenkerns</strong><div class="small">DIN-nah, parametrierbar und mit Audit-Trail statt Black-Box</div></div>
+</div>
+<div class="box">
+<strong>Wesentliche Merkmale:</strong><br/>
+<span class="pill">Raummodell mit Polygon-Unterstützung</span>
+<span class="pill">Elementmodell mit Liniengeometrie</span>
+<span class="pill">Auto-Decken und Geschosslogik</span>
+<span class="pill">Fensteröffnungsabzug auf Wandsegmenten</span>
+<span class="pill">Erdreich- und Wärmebrückenmodelle</span>
+<span class="pill">Hüllflächenaudit</span>
+<span class="pill">PDF-Reporting und Floorplan-Export</span>
+</div>
+<div class="warnbox">
+<strong>Einordnung:</strong> Das Tool bildet die Heizlast nicht nur als Endsumme ab, sondern speichert pro Raum einen detaillierten Nachweis mit einzelnen Rechenzeilen. Damit ist das System ausdrücklich auf Nachvollziehbarkeit, Debugging und Berichtserzeugung ausgelegt.
+</div>
+</section>
+
+<section id="sec2">
+<h2>2. Top-Level-Architektur</h2>
+<table>
+<thead><tr><th>Ebene</th><th>Module</th><th>Rolle</th></tr></thead>
+<tbody>
+<tr><td>Entry Points</td><td><code>main.py</code>, <code>cli.py</code>, <code>scripts/run_gui.py</code>, <code>scripts/run_cli.py</code></td><td>Starten GUI oder CLI, richten Importpfade ein und rufen die eigentlichen Runner auf.</td></tr>
+<tr><td>Runtime-Bootstrap</td><td><code>runtime_bootstrap.py</code></td><td>Hilfsmodul für den Modulstart aus Entwicklungsumgebungen und direktem Dateiaufruf.</td></tr>
+<tr><td>Application</td><td><code>application/app_controller.py</code></td><td>Koordiniert Use Cases zwischen Domain-State, Rechenkern, Repository und UI.</td></tr>
+<tr><td>Domain</td><td><code>domain/models.py</code>, <code>domain/house_state.py</code>, <code>domain/services/house_domain_service.py</code></td><td>Raum-, Element- und Hauszustand inklusive domänenspezifischer Operationen.</td></tr>
+<tr><td>Core</td><td><code>core/heatload.py</code>, <code>core/ground_model.py</code>, <code>core/geometry.py</code>, <code>core/element_metrics.py</code>, <code>core/csv_io.py</code></td><td>Rechenkern, Geometrieaufbereitung, Elementmetriken und CSV-Ein-/Ausgabe.</td></tr>
+<tr><td>Infrastructure</td><td><code>infrastructure/cli_runner.py</code>, <code>project_repo.py</code>, <code>csv_project_repo.py</code>, <code>reporting.py</code></td><td>Persistenz, Export, PDF-Berichte, CSV-Erzeugung und Floorplan-Rendering.</td></tr>
+<tr><td>Presentation</td><td><code>presentation/plan_presenter.py</code>, <code>presentation/viewmodels.py</code></td><td>Transformation von Domain-Objekten in darstellungsorientierte ViewModels.</td></tr>
+<tr><td>UI</td><td><code>ui/main_window.py</code> plus Mixins und <code>ui/graphics.py</code></td><td>Oberfläche, Interaktion, Zeichenlogik, Overlays, Dialoge, Editoren.</td></tr>
+<tr><td>Konfiguration</td><td><code>configs/project_config.py</code>, <code>core/config.py</code>, JSON-Dateien in <code>configs/</code></td><td>Projektweite Rechenparameter, Defaultwerte und einfache Persistenz-DTOs.</td></tr>
+</tbody>
+</table>
+<div class="goodbox">
+<strong>Architektonische Stärke:</strong> Trotz des GUI-Fokus ist das Projekt nicht monolithisch. Rechenkern, Export und Präsentation sind bereits als eigenständige Bereiche erkennbar, was spätere Refactorings erleichtert.
+</div>
+</section>
+
+<section id="sec3">
+<h2>3. Ausführungspfade: GUI, CLI, Bootstrap</h2>
+<h3>3.1 GUI-Startpfad</h3>
+<pre>scripts/run_gui.py
+  → heizlast.main.main()
+  → runtime_bootstrap.bootstrap()
+  → QApplication
+  → MainWindow
+  → UI-Aufbau, Laden von Settings, Recompute/Redraw</pre>
+
+<h3>3.2 CLI-Startpfad</h3>
+<pre>scripts/run_cli.py
+  → heizlast.cli.main()
+  → infrastructure.cli_runner.main()
+  → Projektdateien laden
+  → ProjectCfg laden
+  → ensure_auto_decks(...)
+  → calc_heatloads(...)
+  → PDF / CSV / Detail-CSV / Floorplans exportieren</pre>
+
+<h3>3.3 Rolle von <code>main.py</code> und <code>cli.py</code></h3>
+<p>Die beiden Entry-Points sind bewusst schlank. <code>main.py</code> startet die GUI und erzeugt das Qt-Anwendungsobjekt, <code>cli.py</code> delegiert an den CLI-Runner. Beide Dateien sorgen zusätzlich dafür, dass der direkte Dateistart aus einer IDE funktioniert, ohne dass zwingend eine Paketinstallation vorliegen muss.</p>
+</section>
+
+<section id="sec4">
+<h2>4. Domänenmodell und zentrale Datenstrukturen</h2>
+<h3>4.1 <code>RoomModel</code></h3>
+<p><code>RoomModel</code> ist das zentrale Raumobjekt mit ID, Geschoss, Name, Lage, Breite, Höhe, Raumhöhe, Solltemperatur, Luftwechsel und optionalem Polygon. Beim Erzeugen werden Bounding-Box und Volumen automatisch aktualisiert.</p>
+<div class="eqbox">
+<div class="eqtitle">Raumfläche und Volumen</div>
+<math xmlns="http://www.w3.org/1998/Math/MathML">
+<mrow><msub><mi>A</mi><mtext>room</mtext></msub><mo>=</mo><mrow><mo>{</mo>
+<mtable><mtr><mtd><mrow><mi>A</mi><mo>(</mo><mi>Polygon</mi><mo>)</mo></mrow></mtd></mtr>
+<mtr><mtd><mrow><mi>w</mi><mo>⋅</mo><mi>h</mi></mrow></mtd></mtr></mtable>
+<mo>}</mo></mrow></mrow>
+</math>
+<math xmlns="http://www.w3.org/1998/Math/MathML">
+<mrow><msub><mi>V</mi><mtext>room</mtext></msub><mo>=</mo><msub><mi>A</mi><mtext>room</mtext></msub><mo>⋅</mo><mi>height</mi></mrow>
+</math>
+</div>
+
+<h3>4.2 <code>ElementModel</code></h3>
+<p><code>ElementModel</code> bildet Außenwände, Innenwände, Fenster, Decken und weitere Bauteile ab. Neben Fläche, U-Wert und Faktor unterstützt das Objekt Liniengeometrie, Länge, Höhe, Label-Positionen, stabile UIDs und ein freies <code>meta</code>-Feld für Zusatzeigenschaften wie <code>psi_w_mk</code> oder <code>t_adj_c</code>.</p>
+
+<h3>4.3 <code>HouseState</code></h3>
+<p><code>HouseState</code> bündelt <code>rooms</code>, <code>elements</code> und <code>project_cfg</code> als gemeinsamen Zustand für GUI, Application Layer und Repository. Diese Bündelung ist wichtig, weil die GUI nicht direkt auf CSV-Dateien oder Reportingstrukturen arbeitet, sondern auf den laufenden Projektdaten.</p>
+</section>
+
+<section id="sec5">
+<h2>5. Konfigurationen und Randbedingungen</h2>
+<p>Im Projekt gibt es zwei Konfigurationsachsen:</p>
+<ul>
+  <li><code>configs/project_config.py</code> enthält die persistierte Projektkonfiguration mit Temperatur-Randbedingungen, Geometriemodi, Auto-Deckenwerten, Wärmebrücken-DTO und Erdreich-DTO.</li>
+  <li><code>core/config.py</code> enthält eher laufzeitnahe Defaults, elementbezogene Basiswerte, Heatmap-Konstanten sowie eine kleinere Projektkonfiguration für Klimabezugsdaten.</li>
+</ul>
+<table>
+<thead><tr><th>Parametergruppe</th><th>Wichtige Felder</th><th>Bedeutung</th></tr></thead>
+<tbody>
+<tr><td>Außen-/Nebenbedingungen</td><td><code>t_out_c</code>, <code>t_keller_c</code>, <code>t_oben_c</code>, <code>t_out_source</code></td><td>Auslegungstemperatur außen, unbeheizter Keller, Dachraum/Speicher und Quellhinweis</td></tr>
+<tr><td>Geometrie</td><td><code>thickness_mode</code>, <code>area_shrink_factor</code>, <code>floor_area_mode</code></td><td>Steuert Innen-/Außenmaßbezug, Flächenschrumpfung und Wohnflächenlogik</td></tr>
+<tr><td>Lüftung</td><td><code>c_air</code>, <code>air_change_1ph</code> je Raum</td><td>Berechnung des Lüftungswärmeverlusts</td></tr>
+<tr><td>Auto-Decken</td><td><code>u_kellerdecke_w_m2k</code>, <code>u_eg_geschossdecke_w_m2k</code>, <code>u_dg_geschossdecke_w_m2k</code></td><td>Default-U-Werte für automatisch erzeugte Decken</td></tr>
+<tr><td>Wärmebrücken</td><td><code>tb.mode</code>, <code>delta_u_w_m2k</code>, <code>psi_default_w_mk</code>, <code>percent_of_trans</code></td><td>Vereinfachtes Zuschlagsmodell für Wärmebrücken</td></tr>
+<tr><td>Erdreich</td><td><code>ground.mode</code>, <code>ground_temp_c</code>, <code>f_slab</code>, <code>f_wall</code>, <code>psi_perimeter_w_mk</code></td><td>Behandlung von Bodenplatte und Kellerwand</td></tr>
+</tbody>
+</table>
+<div class="warnbox">
+<strong>Architekturhinweis:</strong> Die Projektkonfiguration ist in zwei Modulen verteilt. Für die Dokumentation ist das handhabbar, für Wartung und Serialisierung aber ein potenzieller Drift-Punkt.
+</div>
+</section>
+
+<section id="sec6">
+<h2>6. Komplette Heizlastberechnung in <code>core/heatload.py</code></h2>
+<p class="lead">Dieses Modul ist der technische Kern des Projekts. Es verbindet geometrische Ableitungen, Flächen-/Volumenbezug, Temperatur-Buckets, Öffnungsabzüge, Wärmebrücken, Erdreich, Lüftung und Geschossauswertung in einer einzigen, auditierbaren Rechenkette.</p>
+
+<h3>6.1 Kernidee der Raumbilanz</h3>
+<div class="eqbox">
+<div class="eqtitle">Gesamtansatz je Raum</div>
+<math xmlns="http://www.w3.org/1998/Math/MathML">
+<mrow><msub><mi>Φ</mi><mtext>sum</mtext></msub><mo>=</mo><msub><mi>Φ</mi><mtext>trans</mtext></msub><mo>+</mo><msub><mi>Φ</mi><mtext>vent</mtext></msub></mrow>
+</math>
+<math xmlns="http://www.w3.org/1998/Math/MathML">
+<mrow><msub><mi>Φ</mi><mtext>trans</mtext></msub><mo>=</mo><munderover><mo>∑</mo><mi>i</mi><mrow></mrow></munderover><msub><mi>U</mi><mi>i</mi></msub><mo>⋅</mo><msub><mi>A</mi><mtext>eff,i</mtext></msub><mo>⋅</mo><mi>Δ</mi><msub><mi>T</mi><mi>i</mi></msub><mo>⋅</mo><msub><mi>f</mi><mi>i</mi></msub><mo>+</mo><msub><mi>Φ</mi><mtext>WB</mtext></msub></mrow>
+</math>
+<math xmlns="http://www.w3.org/1998/Math/MathML">
+<mrow><msub><mi>Φ</mi><mtext>vent</mtext></msub><mo>=</mo><msub><mi>c</mi><mtext>air</mtext></msub><mo>⋅</mo><mi>n</mi><mo>⋅</mo><msub><mi>V</mi><mtext>in,eff</mtext></msub><mo>⋅</mo><mi>Δ</mi><msub><mi>T</mi><mtext>out</mtext></msub></mrow>
+</math>
+</div>
+
+<h3>6.2 Rechenkette von oben nach unten</h3>
+<ol>
+  <li><strong>Gruppierung pro Raum:</strong> Zuerst werden alle Elemente je Raum gesammelt. Zusätzlich wird pro Raum eine Fensterliste erzeugt.</li>
+  <li><strong>Innenmaße und Innenvolumen:</strong> Über <code>_inner_dims_for_room()</code> werden aus Außenmaßen und Wandtypen die Innenbreite, Innentiefe, Innenfläche und das Innenvolumen abgeleitet.</li>
+  <li><strong>Flächenmodus:</strong> <code>floor_area_mode</code> entscheidet, ob Transmissions- und Referenzflächen aus Innenmaßen oder Außenmaßen abgeleitet werden. <code>area_shrink_factor</code> skaliert diese Größen zusätzlich.</li>
+  <li><strong>Temperatur-Bucket je Element:</strong> Über <code>_deltaT_and_bucket()</code> oder das Erdreichmodell wird jedes Element einer Randbedingung zugeordnet.</li>
+  <li><strong>Elementweise Transmission:</strong> Für jedes Element wird <code>Q_e = U · A · ΔT · f</code> bzw. bei Außenwänden <code>Q_e = U · (A - A_open) · ΔT · f</code> berechnet.</li>
+  <li><strong>Wärmebrücken-Zuschläge:</strong> Im Anschluss werden je nach Modus ΔU-, ψ- oder Prozent-Zuschläge gebildet und separat als Audit-Zeilen abgelegt.</li>
+  <li><strong>Lüftung:</strong> Der Lüftungsverlust wird aus <code>c_air</code>, Luftwechsel, Innenvolumen und Außen-ΔT berechnet.</li>
+  <li><strong>Raumergebnis:</strong> Der Raum erhält Summenwerte, Referenzflächen, Hüllflächenkennzahlen, Wärmebrückenparameter und Erdreichparameter.</li>
+  <li><strong>Gebäudeebene:</strong> Nach allen Räumen werden Hüllflächen je Geschoss sowie Wohnfläche/Volumen je Geschoss zusammengestellt.</li>
+</ol>
+
+<h3>6.3 Auto-Decken als Vorstufe</h3>
+<p><code>ensure_auto_decks()</code> ergänzt fehlende Deckenelemente aus Rauminformationen. Für EG-Räume werden automatisch Kellerdecke und Geschossdecke erzeugt, für DG-Räume eine Speicher- bzw. Dachraumdecke. Die Funktion arbeitet mit stabilen UIDs, damit wiederholte Berechnungsläufe keine Duplikate erzeugen.</p>
+<div class="eqbox">
+<div class="eqtitle">Automatische Grundfläche einer Decke</div>
+<math xmlns="http://www.w3.org/1998/Math/MathML">
+<mrow><msub><mi>A</mi><mtext>deck</mtext></msub><mo>=</mo><mi>w</mi><mo>⋅</mo><mi>h</mi></mrow>
+</math>
+</div>
+
+<h3>6.4 Geometrische Hilfsfunktionen</h3>
+<p><code>_axis_aligned_line()</code> reduziert ein Element auf ein horizontales oder vertikales Segment. Diese Darstellung wird in mehreren Schritten wiederverwendet: für die Bestimmung anliegender Wandseiten, für Skalenfaktoren bei Innenmaßbezug und für Fensteröffnungsabzüge.</p>
+<p><code>_window_height_m()</code> und <code>_opening_area_on_wall_segment()</code> sind zentral für die wirksame Außenwandfläche. Die Öffnungsfunktion vereinigt Fensterintervalle entlang derselben Wand und integriert pro Teilintervall mit maximaler Fensterhöhe. Dadurch werden Überlappungen robuster behandelt als mit einer einfachen Summierung.</p>
+<div class="eqbox">
+<div class="eqtitle">Wirksame Außenwandfläche</div>
+<math xmlns="http://www.w3.org/1998/Math/MathML">
+<mrow><msub><mi>A</mi><mtext>eff</mtext></msub><mo>=</mo><msub><mi>A</mi><mtext>wall</mtext></msub><mo>−</mo><msub><mi>A</mi><mtext>openings</mtext></msub></mrow>
+</math>
+</div>
+
+<h3>6.5 Innenmaßmodell</h3>
+<p>Für die Innengeometrie werden an den vier Raumseiten die größten anliegenden Wanddicken gesammelt. Außenwände erhalten dabei Vorrang vor Innenwänden. Der Modus <code>full</code> zieht die volle Wanddicke je Seite ab, <code>half</code> nur die halbe. Aus der resultierenden Innenbreite und Innentiefe werden Innenfläche und Innenvolumen erzeugt.</p>
+<div class="eqbox">
+<div class="eqtitle">Innenmaßableitung</div>
+<math xmlns="http://www.w3.org/1998/Math/MathML">
+<mrow><msub><mi>w</mi><mtext>in</mtext></msub><mo>=</mo><msub><mi>w</mi><mtext>out</mtext></msub><mo>−</mo><mi>k</mi><mo>⋅</mo><mo>(</mo><msub><mi>t</mi><mtext>left</mtext></msub><mo>+</mo><msub><mi>t</mi><mtext>right</mtext></msub><mo>)</mo></mrow>
+</math>
+<math xmlns="http://www.w3.org/1998/Math/MathML">
+<mrow><msub><mi>h</mi><mtext>in</mtext></msub><mo>=</mo><msub><mi>h</mi><mtext>out</mtext></msub><mo>−</mo><mi>k</mi><mo>⋅</mo><mo>(</mo><msub><mi>t</mi><mtext>top</mtext></msub><mo>+</mo><msub><mi>t</mi><mtext>bottom</mtext></msub><mo>)</mo></mrow>
+</math>
+</div>
+
+<h3>6.6 Bucket-Logik für ΔT</h3>
+<p>Die Funktion <code>_deltaT_and_bucket()</code> ordnet jedem Element eine Temperaturdifferenz und einen Bucket zu. Folgende Fälle werden unterschieden:</p>
+<ul>
+  <li><strong>out:</strong> Außenluft</li>
+  <li><strong>keller:</strong> unbeheizter Keller bzw. Kellerdecke</li>
+  <li><strong>interzone:</strong> beheizter Nachbarraum, typischerweise EG↔DG über <code>t_adj_c</code></li>
+  <li><strong>dachraum:</strong> unbeheizter Dachraum oder Speicher</li>
+  <li><strong>ground:</strong> erdberührtes Element, ermittelt über das separate Erdreichmodell</li>
+</ul>
+<div class="eqbox">
+<div class="eqtitle">Grundformel der Temperaturdifferenz</div>
+<math xmlns="http://www.w3.org/1998/Math/MathML">
+<mrow><mi>Δ</mi><mi>T</mi><mo>=</mo><mo>max</mo><mo>(</mo><mn>0</mn><mo>,</mo><msub><mi>T</mi><mtext>in</mtext></msub><mo>−</mo><msub><mi>T</mi><mtext>adj</mtext></msub><mo>)</mo></mrow>
+</math>
+</div>
+
+<h3>6.7 Elementweise Transmission</h3>
+<p>Für jedes Element wird zuerst die relevante Fläche erzeugt. Außenwände erhalten bei Bedarf Fallback-U-Werte und Fallback-Flächen aus Geometrie und Raumhöhe. Decken greifen je nach Flächenmodus auf Innen- oder Außenraumfläche zu. Fenster können aus Geometrie oder vorhandener Fläche beschrieben sein. Anschließend wird die Transmission elementweise bilanziert.</p>
+<div class="eqbox">
+<div class="eqtitle">Transmission eines Elements</div>
+<math xmlns="http://www.w3.org/1998/Math/MathML">
+<mrow><msub><mi>Q</mi><mi>e</mi></msub><mo>=</mo><mi>U</mi><mo>⋅</mo><mi>A</mi><mo>⋅</mo><mi>Δ</mi><mi>T</mi><mo>⋅</mo><mi>f</mi></mrow>
+</math>
+</div>
+
+<h3>6.8 Wärmebrücken in <code>calc_heatloads()</code></h3>
+<p>Das Modul unterstützt drei vereinfachte Modelle und speichert deren Beiträge als eigene Audit-Zeilen:</p>
+<div class="eqbox">
+<div class="eqtitle">Wärmebrückenmodelle</div>
+<math xmlns="http://www.w3.org/1998/Math/MathML">
+<mrow><msub><mi>Φ</mi><mtext>WB,ΔU</mtext></msub><mo>=</mo><mi>Δ</mi><mi>U</mi><mo>⋅</mo><msub><mi>A</mi><mtext>env</mtext></msub><mo>⋅</mo><mi>Δ</mi><mi>T</mi></mrow>
+</math>
+<math xmlns="http://www.w3.org/1998/Math/MathML">
+<mrow><msub><mi>Φ</mi><mtext>WB,ψ</mtext></msub><mo>=</mo><munderover><mo>∑</mo><mi>j</mi><mrow></mrow></munderover><msub><mi>ψ</mi><mi>j</mi></msub><mo>⋅</mo><msub><mi>L</mi><mi>j</mi></msub><mo>⋅</mo><mi>Δ</mi><mi>T</mi></mrow>
+</math>
+<math xmlns="http://www.w3.org/1998/Math/MathML">
+<mrow><msub><mi>Φ</mi><mtext>WB,%</mtext></msub><mo>=</mo><mi>p</mi><mo>⋅</mo><msub><mi>Φ</mi><mtext>trans</mtext></msub></mrow>
+</math>
+</div>
+
+<h3>6.9 Erdreichbehandlung</h3>
+<p>Erdberührte Elemente werden über <code>core/ground_model.py</code> erfasst. Je nach Elementtyp wird <code>f_slab</code> oder <code>f_wall</code> verwendet. Optional kann auch eine feste Erdtemperatur vorgegeben werden. Im Modus <code>perimeter</code> wird zusätzlich ein Randverlust angesetzt.</p>
+<div class="eqbox">
+<div class="eqtitle">Effektive Erdtemperatur</div>
+<math xmlns="http://www.w3.org/1998/Math/MathML">
+<mrow><msub><mi>T</mi><mi>g</mi></msub><mo>=</mo><msub><mi>T</mi><mtext>out</mtext></msub><mo>+</mo><msub><mi>f</mi><mtext>ground</mtext></msub><mo>⋅</mo><mo>(</mo><msub><mi>T</mi><mtext>in</mtext></msub><mo>−</mo><msub><mi>T</mi><mtext>out</mtext></msub><mo>)</mo></mrow>
+</math>
+</div>
+
+<h3>6.10 Lüftung</h3>
+<p>Die Lüftung wird ausschließlich mit dem effektiven Innenvolumen des Raums berechnet. Damit bleibt die Lüftung konsistent zum Innenmaßmodell.</p>
+<div class="eqbox">
+<div class="eqtitle">Lüftungswärmeverlust</div>
+<math xmlns="http://www.w3.org/1998/Math/MathML">
+<mrow><msub><mi>Q</mi><mtext>vent</mtext></msub><mo>=</mo><msub><mi>c</mi><mtext>air</mtext></msub><mo>⋅</mo><mi>n</mi><mo>⋅</mo><msub><mi>V</mi><mtext>in,eff</mtext></msub><mo>⋅</mo><mi>Δ</mi><msub><mi>T</mi><mtext>out</mtext></msub></mrow>
+</math>
+</div>
+
+<h3>6.11 Audit-Trail und Rückgabestruktur</h3>
+<p>Ein wesentliches Merkmal von <code>calc_heatloads()</code> ist der pro Raum erzeugte Audit-Trail. Jede Transmissions-, Lüftungs- und Wärmebrückenzeile wird in <code>lines</code> abgelegt. Zusätzlich entstehen <code>type_sums</code>, Hüllflächenkennzahlen, geometrische Kennwerte und Randbedingungsparameter.</p>
+<pre>results[room_id] = {
+  "lines": [...],
+  "type_sums": {...},
+  "Q_trans_W": ...,
+  "Q_vent_W": ...,
+  "Q_sum_W": ...,
+  "Q_W_per_m2": ...,
+  "A_in_m2": ...,
+  "V_in_m3": ...,
+  "A_env_out_m2": ...,
+  "A_env_keller_m2": ...,
+  "A_env_ground_m2": ...,
+  "tb_mode": ...,
+  "ground_mode": ...,
+  ...
+}</pre>
+
+<h3>6.12 Gebäudeweite Zusatzstrukturen</h3>
+<p>Neben den raumweisen Ergebnissen ergänzt <code>calc_heatloads()</code> zwei globale Blöcke: <code>envelope</code> für die Hüllflächenzusammenfassung und <code>floor_area</code> für Wohnfläche und Volumen je Geschoss.</p>
+</section>
+
+<section id="sec7">
+<h2>7. Funktionsverzeichnis aller Top-Level-Funktionen in <code>heatload.py</code></h2>
+<table>
+<thead><tr><th>Funktion</th><th>Signatur</th><th>Rolle im Rechenkern</th></tr></thead>
+<tbody>
+
+    <tr>
+      <td><code>_meta_get_float</code><br><span class="small">Zeilen 114–127</span></td>
+      <td><code>def _meta_get_float(meta: Optional[str], key: str) -&gt; Optional[float]</code></td>
+      <td>Parst numerische Werte aus dem freien Meta-String eines Elements. Verwendet wird das Format key=value|key2=value2 und liefert None bei fehlendem oder ungültigem Wert.</td>
+    </tr>
+    
+    <tr>
+      <td><code>ensure_auto_decks</code><br><span class="small">Zeilen 134–306</span></td>
+      <td><code>def ensure_auto_decks(rooms: List[RoomModel], elements: List[ElementModel], *, u_kellerdecke_w_m2k: float = DEFAULT_U_KELLERDECKE_W_M2K, u_eg_geschossdecke_w_m2k: float = DEFAULT_U_EG_GESCHOSSDECKE_W_M2K, u_dg_geschossdecke_w_m2k: float = DEFAULT_U_DG_GESCHOSSDECKE_W_M2K, factor: float = 1.0, update_existing: bool = True) -&gt; None</code></td>
+      <td>Erzeugt bzw. aktualisiert automatische Deckenelemente für EG und DG. Die Funktion vergibt stabile UIDs wie deck_&lt;roomid&gt;_KG, deck_&lt;roomid&gt;_DG und deck_&lt;roomid&gt;_OBEN und schreibt relevante Meta-Infos wie adj_floor, t_adj_c und deck_kind.</td>
+    </tr>
+    
+    <tr>
+      <td><code>_axis_aligned_line</code><br><span class="small">Zeilen 311–322</span></td>
+      <td><code>def _axis_aligned_line(e: ElementModel) -&gt; Optional[Tuple[str, float, float, float]]</code></td>
+      <td>Reduziert ein geometrisches Element auf eine horizontal oder vertikal ausgerichtete Segmentdarstellung. Rückgabe ist (Orientierung, konstante Koordinate, Segmentanfang, Segmentende).</td>
+    </tr>
+    
+    <tr>
+      <td><code>_window_height_m</code><br><span class="small">Zeilen 325–334</span></td>
+      <td><code>def _window_height_m(w: ElementModel) -&gt; float</code></td>
+      <td>Ermittelt die Fensterhöhe. Vorrangig wird height_m genutzt, sonst Höhe = Fläche / Länge.</td>
+    </tr>
+    
+    <tr>
+      <td><code>_opening_area_on_wall_segment</code><br><span class="small">Zeilen 337–385</span></td>
+      <td><code>def _opening_area_on_wall_segment(wall: ElementModel, windows: List[ElementModel]) -&gt; float</code></td>
+      <td>Berechnet die wirksame Öffnungsfläche auf einem Wandsegment. Überlappende Fensterintervalle werden vereinigt; pro Teilintervall wird die maximale Fensterhöhe angesetzt.</td>
+    </tr>
+    
+    <tr>
+      <td><code>_inner_dims_for_room</code><br><span class="small">Zeilen 388–445</span></td>
+      <td><code>def _inner_dims_for_room(r: RoomModel, room_elements: List[ElementModel], *, thickness_mode: ThicknessMode = &#x27;full&#x27;) -&gt; RoomInnerGeometry</code></td>
+      <td>Leitet Innenbreite, Innentiefe, Innenfläche und Innenvolumen aus Raumabmessungen und anliegenden Wandtypen ab. thickness_mode steuert, ob volle oder halbe Wanddicken abgezogen werden.</td>
+    </tr>
+    
+    <tr>
+      <td><code>_norm_str</code><br><span class="small">Zeilen 452–454</span></td>
+      <td><code>def _norm_str(s: str) -&gt; str</code></td>
+      <td>Normiert Begriffe für robuste Typvergleiche, insbesondere Umlaute, ß und Kleinschreibung.</td>
+    </tr>
+    
+    <tr>
+      <td><code>_is_kellerdecke</code><br><span class="small">Zeilen 479–485</span></td>
+      <td><code>def _is_kellerdecke(et: str) -&gt; bool</code></td>
+      <td>Erkennt Kellerdecken und verwandte Benennungen wie KG-Decke oder Bodenplatte/Kellerkombination.</td>
+    </tr>
+    
+    <tr>
+      <td><code>_is_geschossdecke</code><br><span class="small">Zeilen 489–496</span></td>
+      <td><code>def _is_geschossdecke(et: str) -&gt; bool</code></td>
+      <td>Erkennt Decken zwischen beheizten Geschossen, insbesondere EG↔DG-Zwischendecken.</td>
+    </tr>
+    
+    <tr>
+      <td><code>_is_speicherdecke</code><br><span class="small">Zeilen 499–504</span></td>
+      <td><code>def _is_speicherdecke(et: str) -&gt; bool</code></td>
+      <td>Erkennt Decken zu unbeheiztem Dachraum oder Speicher.</td>
+    </tr>
+    
+    <tr>
+      <td><code>_deltaT_and_bucket</code><br><span class="small">Zeilen 543–590</span></td>
+      <td><code>def _deltaT_and_bucket(r: RoomModel, e: ElementModel, *, t_out_c: float, t_keller_c: float, t_oben_c: float) -&gt; Tuple[float, str]</code></td>
+      <td>Ordnet ein Element einer Randbedingung zu und liefert dazugehöriges ΔT sowie den Bucket out, keller, interzone oder dachraum.</td>
+    </tr>
+    
+    <tr>
+      <td><code>calc_heatloads</code><br><span class="small">Zeilen 597–1322</span></td>
+      <td><code>def calc_heatloads(rooms: List[RoomModel], elements: List[ElementModel], t_out_c: float, vent_cfg: VentilationCfg = VentilationCfg(), thickness_mode: ThicknessMode = &#x27;full&#x27;, area_shrink_factor: float = 1.0, t_keller_c: float = 12.0, t_oben_c: float = 12.0, floor_area_mode: FloorAreaMode = &#x27;inner&#x27;, tb_cfg: Optional[ThermalBridgeCfg] = None, ground_cfg: Optional[GroundModelCfg] = None) -&gt; Dict[str, dict]</code></td>
+      <td>Zentrale Rechenroutine. Gruppiert Elemente pro Raum, berechnet Transmission, Öffnungsabzüge, Wärmebrücken, Erdreichverluste, Lüftung, Hüllflächenstatistik, Audit-Trail und Ergebniskennzahlen.</td>
+    </tr>
+    
+    <tr>
+      <td><code>calc_floor_living_area_by_floor</code><br><span class="small">Zeilen 1329–1409</span></td>
+      <td><code>def calc_floor_living_area_by_floor(*, rooms: List[RoomModel], results_by_room: Dict[str, dict], thickness_mode: ThicknessMode = &#x27;full&#x27;, area_shrink_factor: float = 1.0) -&gt; Dict[str, object]</code></td>
+      <td>Aggregiert Wohnfläche und Volumen je Geschoss aus den pro Raum berechneten Innenmaßen. Nutzt Fallbacks, falls Einzelwerte fehlen.</td>
+    </tr>
+    
+    <tr>
+      <td><code>render_floor_living_area_plot_png</code><br><span class="small">Zeilen 1412–1479</span></td>
+      <td><code>def render_floor_living_area_plot_png(summary: Dict[str, object], png_path: str, *, title: str = &#x27;Wohnfläche &amp; Volumen je Geschoss&#x27;) -&gt; Optional[str]</code></td>
+      <td>Erzeugt aus der Geschosszusammenfassung eine PNG-Grafik für Reporting oder GUI-Export.</td>
+    </tr>
+    
+</tbody>
+</table>
+<div class="box">
+<strong>Interpretation:</strong> Das Modul enthält nicht nur eine Summenfunktion, sondern eine interne Rechen-DSL aus Meta-Parser, Geometriehilfen, Klassifikatoren, Bucketing und Aggregatoren. Das verbessert die Nachvollziehbarkeit, erhöht aber den Bedarf an gezielten Regressionstests.
+</div>
+</section>
+
+<section id="sec8">
+<h2>8. Erdreich-, Wärmebrücken- und Hüllflächenmodell</h2>
+<p><code>core/ground_model.py</code> kapselt die Erdreichbehandlung mit <code>GroundModelCfg</code>, <code>effective_ground_temp()</code> und <code>is_ground_element()</code>. Im Rechenkern werden daraus Bucket <code>ground</code>, effektive Erdtemperatur und ggf. perimeterbezogene Zusatzverluste abgeleitet.</p>
+<p>Das Hüllflächenaudit sammelt parallel wirksame Flächen und lineare Längen je Bucket und Geschoss. Dadurch kann das Reporting die Gebäudehülle auswerten, ohne erneut in die Physik einzugreifen.</p>
+<div class="goodbox">
+<strong>Positiver Befund:</strong> Interzonen werden bewusst von der eigentlichen Hüllflächensumme getrennt. Das verhindert, dass beheizt-beheizt-Grenzen fälschlich als Gebäudehülle erscheinen.
+</div>
+</section>
+
+<section id="sec9">
+<h2>9. GUI-, Presenter- und Graphics-Architektur</h2>
+<p>Die GUI basiert auf <code>MainWindow</code> und einer Reihe spezialisierter Mixins. Diese Mixins kapseln Aufbau, Selektion, Bearbeitung, Export, Overlays und Neuzeichnung. <code>ui/graphics.py</code> enthält die konkreten QGraphicsView-/QGraphicsItem-Klassen, während <code>presentation/plan_presenter.py</code> den Übergang vom Domain-Modell in grafische Repräsentationen organisiert.</p>
+<table>
+<thead><tr><th>Modul</th><th>Rolle</th></tr></thead>
+<tbody>
+<tr><td><code>ui/main_window.py</code></td><td>Zusammenführung aller Mixins in einem Hauptfenster</td></tr>
+<tr><td><code>ui/build_mixin.py</code></td><td>Toolbar, Panels, Aktionen, Docking und UI-Aufbau</td></tr>
+<tr><td><code>ui/selection_mixin.py</code></td><td>Synchronisierte Auswahl zwischen Liste und Grafik</td></tr>
+<tr><td><code>ui/element_edit_mixin.py</code></td><td>Dialoge und Änderungen an Elementen</td></tr>
+<tr><td><code>ui/window_insert_mixin.py</code></td><td>Fenstereinfügen und fensterspezifische Interaktion</td></tr>
+<tr><td><code>ui/redraw_mixin.py</code></td><td>Neuberechnung, Presenter-Aufruf und Redraw</td></tr>
+<tr><td><code>ui/graphics.py</code></td><td>PlanView, HandleItems, RoomRectItem, ElementLineItem, WindowLineItem</td></tr>
+<tr><td><code>presentation/plan_presenter.py</code></td><td>Bildet Domain-Elemente in darstellbare Items/Styles ab</td></tr>
+</tbody>
+</table>
+</section>
+
+<section id="sec10">
+<h2>10. Reporting- und Exportpfad</h2>
+<p><code>infrastructure/reporting.py</code> ist das größte Einzelmodul und bündelt PDF-Bericht, CSV-Export, Floorplan-Export und Hilfslogik für Tabellen und Bilder. Das Reporting verwendet den Audit-Trail aus <code>calc_heatloads()</code> und rechnet die Heizlast nicht noch einmal neu.</p>
+<div class="box">
+<strong>Exportkette:</strong><br/>
+<span class="pill">Audit-Trail aus calc_heatloads()</span>
+<span class="pill">HeatloadPDFReport</span>
+<span class="pill">Ergebnis-CSV</span>
+<span class="pill">Detail-CSV</span>
+<span class="pill">FloorplanExporter</span>
+</div>
+</section>
+
+<section id="sec11">
+<h2>11. Beobachtungen, Risiken und technische Schulden</h2>
+<table>
+<thead><tr><th>Thema</th><th>Beobachtung</th><th>Auswirkung</th></tr></thead>
+<tbody>
+<tr><td>Konfigurationssplit</td><td><code>configs/project_config.py</code> und <code>core/config.py</code> definieren unterschiedliche Projektkonfigurationsaspekte.</td><td>Gefahr von Drift, Doppelpflege und unklaren Zuständigkeiten.</td></tr>
+<tr><td>Größe von <code>heatload.py</code></td><td>Transmission, Hüllflächen, Wärmebrücken, Erdreich, Wohnfläche und Plotting liegen in einem Modul.</td><td>Sehr transparent, aber test- und wartungsintensiv.</td></tr>
+<tr><td>Großes Reporting-Modul</td><td><code>infrastructure/reporting.py</code> ist sehr umfangreich.</td><td>Künftig sinnvoll in Layout, Tabellen, Bilder und Exportpfade aufzuteilen.</td></tr>
+<tr><td>UI-Kopplung</td><td>Viele Mixins hängen eng an <code>MainWindow</code>.</td><td>Gut für Strukturierung, aber empfindlich für Regressionsfehler bei Zustandsänderungen.</td></tr>
+<tr><td>Legacy-/Kommentarbasis</td><td>Im Rechenkern sind ältere Varianten als Kommentarblöcke erhalten.</td><td>Hilfreich für Historie, aber langfristig besser in Changelog oder Tests aufheben.</td></tr>
+</tbody>
+</table>
+</section>
+
+<section id="sec12">
+<h2>12. Empfohlene nächste Schritte</h2>
+<div class="goodbox">
+<ol>
+<li><strong>calc_heatloads modularisieren:</strong> Bucketing, Flächenaufbereitung, Wärmebrücken, Hüllflächenaudit und Wohnflächenaggregation in getrennte Teilmodule verschieben.</li>
+<li><strong>Konfigurationsmodell konsolidieren:</strong> eine kanonische Projektkonfiguration und klare Runtime-Mappings definieren.</li>
+<li><strong>Regressionstests aufbauen:</strong> insbesondere für Öffnungsabzug, Interzone-Bucketing, Erdreichmodi, Auto-Decken und Wärmebrückenmodi.</li>
+<li><strong>Reporting aufspalten:</strong> PDF-Layout, CSV-Export und Floorplan-Export separieren.</li>
+<li><strong>Polygonräume systematisch integrieren:</strong> Polygonfläche und polygonale Wandzuordnung tiefer in Rechenkern und UI ziehen.</li>
+</ol>
+</div>
+</section>
+
+<section id="sec13">
+<h2>13. Dateiübersicht der wichtigsten Module</h2>
+<table>
+<thead><tr><th>Datei</th><th>Zeilen</th><th>Klassen</th><th>Top-Level-Funktionen</th></tr></thead>
+<tbody>
+<tr><td>main.py</td><td>44</td><td>–</td><td>_bootstrap_when_run_directly, main</td></tr><tr><td>cli.py</td><td>31</td><td>–</td><td>_bootstrap_when_run_directly, main</td></tr><tr><td>runtime_bootstrap.py</td><td>23</td><td>–</td><td>bootstrap</td></tr><tr><td>configs/project_config.py</td><td>138</td><td>ThermalBridgeCfgDTO, GroundModelCfgDTO, ProjectCfg</td><td>save_project_cfg, load_project_cfg</td></tr><tr><td>core/config.py</td><td>175</td><td>VentilationCfg, ProjectCfg</td><td>usage_defaults, resolve_t_out_c</td></tr><tr><td>core/ground_model.py</td><td>78</td><td>GroundModelCfg</td><td>effective_ground_temp, is_ground_element</td></tr><tr><td>core/heatload.py</td><td>1479</td><td>ThermalBridgeCfg, RoomInnerGeometry</td><td>_meta_get_float, ensure_auto_decks, _axis_aligned_line, _window_height_m, _opening_area_on_wall_segment, _inner_dims_for_room, _norm_str, _is_kellerdecke, _is_geschossdecke, _is_speicherdecke, _deltaT_and_bucket, calc_heatloads</td></tr><tr><td>domain/models.py</td><td>150</td><td>RoomModel, ElementModel</td><td>_parse_polygon_string, _polygon_area, _polygon_perimeter</td></tr><tr><td>infrastructure/cli_runner.py</td><td>179</td><td>–</td><td>_derive_elements_path, _project_cfg_path, run_export, main</td></tr><tr><td>infrastructure/reporting.py</td><td>2422</td><td>ReportPDFLayoutCfg, ReportContentCfg, ReportPDFCfg, OutlineTOCDocTemplate, HeatloadPDFReport, FloorplanExportCfg, FloorplanExporter</td><td>register_fonts, _safe_first_result, _meta_get_float, _meta_get_str, _meta_items, _wrap_table_data, export_heatload_report_pdf, write_heatload_results_csv, write_heatload_details_csv, export_floorplans, draw_windows_on_ax</td></tr><tr><td>ui/main_window.py</td><td>116</td><td>MainWindow</td><td>–</td></tr><tr><td>ui/build_mixin.py</td><td>900</td><td>MainWindowBuildMixin</td><td>–</td></tr><tr><td>ui/graphics.py</td><td>1545</td><td>PlanView, HandleItem, RoomResizeBandItem, RoomRectItem, PolygonVertexHandleItem, PolygonEdgeHandleItem, RoomPolygonItem, ElementLabelItem, ElementLineItem, RoomRectItem_delete, WindowLineItem</td><td>snap_m, heat_rgba, angle_upright_degrees, _point_eq, _simplify_orthogonal_polygon, _polygon_is_axis_aligned, _segments_intersect, _polygon_self_intersects, _is_valid_edit_polygon</td></tr><tr><td>presentation/plan_presenter.py</td><td>340</td><td>PlanPresenter</td><td>–</td></tr>
+</tbody>
+</table>
+</section>
+
+<section id="sec14">
+<h2>14. Vollständiges Python-Dateiinventar</h2>
+<table>
+<thead><tr><th>Datei</th><th>Zeilen</th><th>Klassen</th><th>Top-Level-Funktionen</th></tr></thead>
+<tbody>
+<tr><td>__init__.py</td><td>1</td><td>–</td><td>–</td></tr><tr><td>application/__init__.py</td><td>1</td><td>–</td><td>–</td></tr><tr><td>application/app_controller.py</td><td>118</td><td>AppController</td><td>–</td></tr><tr><td>cli.py</td><td>31</td><td>–</td><td>_bootstrap_when_run_directly, main</td></tr><tr><td>configs/__init__.py</td><td>1</td><td>–</td><td>–</td></tr><tr><td>configs/project_config.py</td><td>138</td><td>ThermalBridgeCfgDTO, GroundModelCfgDTO, ProjectCfg</td><td>save_project_cfg, load_project_cfg</td></tr><tr><td>core/__init__.py</td><td>23</td><td>–</td><td>–</td></tr><tr><td>core/config.py</td><td>175</td><td>VentilationCfg, ProjectCfg</td><td>usage_defaults, resolve_t_out_c</td></tr><tr><td>core/csv_io.py</td><td>217</td><td>–</td><td>_f, _opt, load_rooms, save_rooms, load_elements, save_elements</td></tr><tr><td>core/element_access.py</td><td>89</td><td>–</td><td>meta_rooms, element_belongs_to_room, get_room_elements, element_axis_length_from_geometry</td></tr><tr><td>core/element_metrics.py</td><td>288</td><td>ElementMetricsService</td><td>–</td></tr><tr><td>core/geometry.py</td><td>408</td><td>Edge</td><td>parse_polygon_m, serialize_polygon_m, deserialize_polygon_m, _point_eq, simplify_orthogonal_polygon, _polygon_is_axis_aligned, _segments_intersect, _polygon_self_intersects, validate_orthogonal_polygon, move_polygon_edge, polygon_bbox, translate_polygon</td></tr><tr><td>core/ground_model.py</td><td>78</td><td>GroundModelCfg</td><td>effective_ground_temp, is_ground_element</td></tr><tr><td>core/heatload.py</td><td>1479</td><td>ThermalBridgeCfg, RoomInnerGeometry</td><td>_meta_get_float, ensure_auto_decks, _axis_aligned_line, _window_height_m, _opening_area_on_wall_segment, _inner_dims_for_room, _norm_str, _is_kellerdecke, _is_geschossdecke, _is_speicherdecke, _deltaT_and_bucket, calc_heatloads</td></tr><tr><td>domain/__init__.py</td><td>1</td><td>–</td><td>–</td></tr><tr><td>domain/house_state.py</td><td>16</td><td>HouseState</td><td>–</td></tr><tr><td>domain/models.py</td><td>150</td><td>RoomModel, ElementModel</td><td>_parse_polygon_string, _polygon_area, _polygon_perimeter</td></tr><tr><td>domain/services/__init__.py</td><td>1</td><td>–</td><td>–</td></tr><tr><td>domain/services/house_domain_service.py</td><td>223</td><td>HouseDomainService</td><td>–</td></tr><tr><td>infrastructure/__init__.py</td><td>1</td><td>–</td><td>–</td></tr><tr><td>infrastructure/cli_runner.py</td><td>179</td><td>–</td><td>_derive_elements_path, _project_cfg_path, run_export, main</td></tr><tr><td>infrastructure/csv_project_repo.py</td><td>58</td><td>CSVProjectRepository</td><td>–</td></tr><tr><td>infrastructure/ports.py</td><td>46</td><td>ProjectRepository, SettingsStore, ReportExporter</td><td>–</td></tr><tr><td>infrastructure/project_repo.py</td><td>69</td><td>ProjectData, ProjectRepository</td><td>–</td></tr><tr><td>infrastructure/qt_settings_store.py</td><td>20</td><td>QtSettingsStore</td><td>–</td></tr><tr><td>infrastructure/reporting.py</td><td>2422</td><td>ReportPDFLayoutCfg, ReportContentCfg, ReportPDFCfg, OutlineTOCDocTemplate, HeatloadPDFReport, FloorplanExportCfg, FloorplanExporter</td><td>register_fonts, _safe_first_result, _meta_get_float, _meta_get_str, _meta_items, _wrap_table_data, export_heatload_report_pdf, write_heatload_results_csv, write_heatload_details_csv, export_floorplans, draw_windows_on_ax</td></tr><tr><td>main.py</td><td>44</td><td>–</td><td>_bootstrap_when_run_directly, main</td></tr><tr><td>paths.py</td><td>19</td><td>–</td><td>package_dir, src_dir, project_root, assets_dir, fonts_dir</td></tr><tr><td>presentation/__init__.py</td><td>1</td><td>–</td><td>–</td></tr><tr><td>presentation/element_list_presenter.py</td><td>40</td><td>ElementListPresenter</td><td>–</td></tr><tr><td>presentation/plan_presenter.py</td><td>340</td><td>PlanPresenter</td><td>–</td></tr><tr><td>presentation/viewmodels.py</td><td>74</td><td>ElementListRow</td><td>format_element_row, build_element_rows</td></tr><tr><td>runtime_bootstrap.py</td><td>23</td><td>–</td><td>bootstrap</td></tr><tr><td>ui/__init__.py</td><td>1</td><td>–</td><td>–</td></tr><tr><td>ui/_shared.py</td><td>3</td><td>–</td><td>–</td></tr><tr><td>ui/autowalls_mixin.py</td><td>92</td><td>MainWindowAutowallsMixin</td><td>–</td></tr><tr><td>ui/build_mixin.py</td><td>900</td><td>MainWindowBuildMixin</td><td>–</td></tr><tr><td>ui/dialogs/__init__.py</td><td>1</td><td>–</td><td>–</td></tr><tr><td>ui/dialogs/new_project_dialog.py</td><td>124</td><td>NewProjectDialog</td><td>–</td></tr><tr><td>ui/dialogs/project_settings_dialog.py</td><td>130</td><td>ProjectSettingsDialog</td><td>–</td></tr><tr><td>ui/dialogs/window_dialog.py</td><td>68</td><td>WindowDialog</td><td>–</td></tr><tr><td>ui/element_delete_mixin.py</td><td>119</td><td>MainWindowElementDeleteMixin</td><td>–</td></tr><tr><td>ui/element_edit_mixin.py</td><td>653</td><td>MainWindowElementEditMixin</td><td>–</td></tr><tr><td>ui/element_mixin.py</td><td>11</td><td>MainWindowElementMixin</td><td>–</td></tr><tr><td>ui/export_mixin.py</td><td>138</td><td>MainWindowExportMixin</td><td>–</td></tr><tr><td>ui/graphics.py</td><td>1545</td><td>PlanView, HandleItem, RoomResizeBandItem, RoomRectItem, PolygonVertexHandleItem, PolygonEdgeHandleItem, RoomPolygonItem, ElementLabelItem, ElementLineItem, RoomRectItem_delete, WindowLineItem</td><td>snap_m, heat_rgba, angle_upright_degrees, _point_eq, _simplify_orthogonal_polygon, _polygon_is_axis_aligned, _segments_intersect, _polygon_self_intersects, _is_valid_edit_polygon</td></tr><tr><td>ui/graphics_mixin.py</td><td>11</td><td>MainWindowGraphicsMixin</td><td>–</td></tr><tr><td>ui/load_save_mixin.py</td><td>367</td><td>MainWindowLoadSaveMixin</td><td>–</td></tr><tr><td>ui/main_window.py</td><td>116</td><td>MainWindow</td><td>–</td></tr><tr><td>ui/misc_mixin.py</td><td>670</td><td>MainWindowMiscMixin</td><td>–</td></tr><tr><td>ui/overlay_mixin.py</td><td>179</td><td>MainWindowOverlayMixin</td><td>–</td></tr><tr><td>ui/project_mixin.py</td><td>11</td><td>MainWindowProjectMixin</td><td>–</td></tr><tr><td>ui/redraw_mixin.py</td><td>278</td><td>MainWindowRedrawMixin</td><td>–</td></tr><tr><td>ui/selection_mixin.py</td><td>317</td><td>MainWindowSelectionMixin</td><td>–</td></tr><tr><td>ui/settings_mixin.py</td><td>364</td><td>MainWindowSettingsMixin</td><td>load_project_from_paths</td></tr><tr><td>ui/window_insert_mixin.py</td><td>272</td><td>MainWindowWindowInsertMixin</td><td>–</td></tr>
+</tbody>
+</table>
+</section>
+
+</article>
+</main>
+<footer>Ausführliche HTML-Dokumentation für das Paket <code>heizlast</code> aus <code>heizlast_tool_v5_V04.zip</code>. Schwerpunkt: Architektur, Datenmodell und vollständige Beschreibung der Heizlastberechnung in <code>core/heatload.py</code>.</footer>
+</div>
+</body>
+</html>
