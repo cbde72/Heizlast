@@ -12,7 +12,13 @@ from PySide6.QtWidgets import (
 
 from ..core.config import PX_PER_M, GRID_M, HANDLE_SZ_PX, ELEMENT_STYLES, HEATMAP_CAP_W_PER_M2
 from ..domain.models import RoomModel, ElementModel
-from ..core.geometry import polygon_bbox, translate_polygon
+from ..core.polygon_ops import (
+    polygon_bbox,
+    simplify_orthogonal_polygon,
+    snap_m as core_snap_m,
+    translate_polygon,
+    validate_orthogonal_polygon,
+)
 
 # Room interaction tuning
 RESIZE_MARGIN_PX = 10.0  # px: grab zone at room edges
@@ -25,7 +31,7 @@ ROOM_TOUCH_EPS = 0.0     # px: >0 would require a gap; 0 => touching is allowed
 # --------------------------------------------------------------------------------------
 
 def snap_m(x: float, step: float = 0.05) -> float:
-    return round(x / step) * step
+    return core_snap_m(x, step)
 
 
 def heat_rgba(wpm2: float, cap: float = HEATMAP_CAP_W_PER_M2):
@@ -52,114 +58,6 @@ def angle_upright_degrees(p0: QPointF, p1: QPointF) -> float:
     if ang < -90:
         ang += 180
     return ang
-
-def _point_eq(a: tuple[float, float], b: tuple[float, float], eps: float = 1e-9) -> bool:
-    return abs(a[0] - b[0]) <= eps and abs(a[1] - b[1]) <= eps
-
-
-def _simplify_orthogonal_polygon(points: list[tuple[float, float]], eps: float = 1e-9) -> list[tuple[float, float]]:
-    pts = list(points or [])
-    if len(pts) >= 2 and _point_eq(pts[0], pts[-1], eps):
-        pts = pts[:-1]
-    changed = True
-    while changed and len(pts) >= 3:
-        changed = False
-        out: list[tuple[float, float]] = []
-        n = len(pts)
-        for i in range(n):
-            p_prev = pts[(i - 1) % n]
-            p_cur = pts[i]
-            p_next = pts[(i + 1) % n]
-            if _point_eq(p_prev, p_cur, eps) or _point_eq(p_cur, p_next, eps):
-                changed = True
-                continue
-            collinear_v = abs(p_prev[0] - p_cur[0]) <= eps and abs(p_cur[0] - p_next[0]) <= eps
-            collinear_h = abs(p_prev[1] - p_cur[1]) <= eps and abs(p_cur[1] - p_next[1]) <= eps
-            if collinear_v or collinear_h:
-                changed = True
-                continue
-            out.append(p_cur)
-        pts = out
-    return pts
-
-
-def _polygon_is_axis_aligned(points: list[tuple[float, float]], eps: float = 1e-9) -> bool:
-    if len(points) < 3:
-        return False
-    n = len(points)
-    for i in range(n):
-        x0, y0 = points[i]
-        x1, y1 = points[(i + 1) % n]
-        if abs(x0 - x1) > eps and abs(y0 - y1) > eps:
-            return False
-    return True
-
-
-def _segments_intersect(a1, a2, b1, b2, eps: float = 1e-9) -> bool:
-    def orient(p, q, r):
-        val = (q[1] - p[1]) * (r[0] - q[0]) - (q[0] - p[0]) * (r[1] - q[1])
-        if abs(val) <= eps:
-            return 0
-        return 1 if val > 0 else 2
-
-    def on_seg(p, q, r):
-        return (min(p[0], r[0]) - eps <= q[0] <= max(p[0], r[0]) + eps and
-                min(p[1], r[1]) - eps <= q[1] <= max(p[1], r[1]) + eps)
-
-    o1 = orient(a1, a2, b1)
-    o2 = orient(a1, a2, b2)
-    o3 = orient(b1, b2, a1)
-    o4 = orient(b1, b2, a2)
-    if o1 != o2 and o3 != o4:
-        return True
-    if o1 == 0 and on_seg(a1, b1, a2):
-        return True
-    if o2 == 0 and on_seg(a1, b2, a2):
-        return True
-    if o3 == 0 and on_seg(b1, a1, b2):
-        return True
-    if o4 == 0 and on_seg(b1, a2, b2):
-        return True
-    return False
-
-
-def _polygon_self_intersects(points: list[tuple[float, float]], eps: float = 1e-9) -> bool:
-    n = len(points)
-    if n < 4:
-        return False
-    for i in range(n):
-        a1 = points[i]
-        a2 = points[(i + 1) % n]
-        for j in range(i + 1, n):
-            if j == i or (j + 1) % n == i or (i + 1) % n == j:
-                continue
-            if i == 0 and j == n - 1:
-                continue
-            b1 = points[j]
-            b2 = points[(j + 1) % n]
-            if _segments_intersect(a1, a2, b1, b2, eps):
-                return True
-    return False
-
-
-def _is_valid_edit_polygon(points: list[tuple[float, float]]) -> bool:
-    pts = _simplify_orthogonal_polygon(points)
-    if len(pts) < 4:
-        return False
-    if not _polygon_is_axis_aligned(pts):
-        return False
-    area = 0.0
-    for i in range(len(pts)):
-        x1, y1 = pts[i]
-        x2, y2 = pts[(i + 1) % len(pts)]
-        area += x1 * y2 - x2 * y1
-    if abs(area) <= 1e-6:
-        return False
-    if _polygon_self_intersects(pts):
-        return False
-    return True
-
-
 
 
 # --------------------------------------------------------------------------------------
@@ -244,526 +142,9 @@ class PlanView(QGraphicsView):
 # Room handles + room item (kept)
 # --------------------------------------------------------------------------------------
 
-class HandleItem(QGraphicsRectItem):
-    """Resize handle (child of RoomRectItem). Delegates resize to parent."""
-    def __init__(self, parent_room: "RoomRectItem", idx: int):
-        super().__init__(-HANDLE_SZ_PX / 2, -HANDLE_SZ_PX / 2, HANDLE_SZ_PX, HANDLE_SZ_PX, parent_room)
-        self.parent_room = parent_room
-        self.idx = idx
-        self.setBrush(QBrush(Qt.white))
-        self.setPen(QPen(Qt.black, 1))
-        self.setZValue(10)
-        self.setCacheMode(QGraphicsItem.NoCache)
-        self.setFlags(QGraphicsItem.ItemIsMovable | QGraphicsItem.ItemSendsGeometryChanges)
-        self.setAcceptHoverEvents(True)
-        self.setCursor(Qt.SizeAllCursor)
 
-    def itemChange(self, change, value):
-        if change == QGraphicsItem.ItemPositionChange:
-            if not getattr(self.parent_room, "_in_resize", False):
-                new_pos: QPointF = value
-                self.parent_room.resize_from_handle(self.idx, new_pos)
-            return self.pos()
-        return super().itemChange(change, value)
-
-
-
-class RoomResizeBandItem(QGraphicsPathItem):
-    # Invisible edge band to capture resize drags above all other items.
-    # This avoids accidentally dragging element items when the user intends to resize a room.
-    def __init__(self, room_item: "RoomRectItem", margin_px: float = RESIZE_MARGIN_PX):
-        super().__init__(room_item)  # child: moves with room
-        self.room_item = room_item
-        self.margin_px = float(margin_px)
-
-        self.setBrush(Qt.NoBrush)
-        self.setPen(Qt.NoPen)
-        self.setZValue(1_000_000)
-        self.setAcceptedMouseButtons(Qt.LeftButton)
-        self.setAcceptHoverEvents(True)
-
-        self._rebuild_path()
-
-    def _rebuild_path(self) -> None:
-        r = self.room_item.rect()
-        m = self.margin_px
-        outer = QPainterPath()
-        outer.addRect(r.adjusted(-m, -m, +m, +m))
-        inner = QPainterPath()
-        inner.addRect(r.adjusted(+m, +m, -m, -m))
-        self.setPath(outer.subtracted(inner))
-
-    def update_geometry(self) -> None:
-        self.prepareGeometryChange()
-        self._rebuild_path()
-
-    def hoverMoveEvent(self, event):
-        zone = self.room_item._hit_resize_zone(event.pos())
-        if zone in ("L", "R"):
-            self.setCursor(Qt.SizeHorCursor)
-        elif zone in ("T", "B"):
-            self.setCursor(Qt.SizeVerCursor)
-        elif zone in ("TL", "BR"):
-            self.setCursor(Qt.SizeFDiagCursor)
-        elif zone in ("TR", "BL"):
-            self.setCursor(Qt.SizeBDiagCursor)
-        else:
-            self.setCursor(Qt.ArrowCursor)
-        super().hoverMoveEvent(event)
-
-    def mousePressEvent(self, event):
-        self.room_item.mousePressEvent(event)
-
-    def mouseMoveEvent(self, event):
-        self.room_item.mouseMoveEvent(event)
-
-    def mouseReleaseEvent(self, event):
-        self.room_item.mouseReleaseEvent(event)
-
-
-class RoomRectItem(QGraphicsRectItem):
-    """Room item: movable + edge-resize + heatmap fill, with no-overlap and edge-snap."""
-
-    def __init__(
-        self,
-        model: RoomModel,
-        heatmap_enabled_cb: Callable[[], bool],
-        on_geometry_changed: Optional[Callable[[RoomModel], None]] = None,
-    ):
-        self.model = model
-        self.heatmap_enabled_cb = heatmap_enabled_cb or (lambda: False)
-        self.on_geometry_changed = on_geometry_changed
-
-        self._in_itemchange = False
-        self._in_resize = False
-        self._moving_interactively = False
-
-        self.get_other_rooms_cb: Optional[Callable[[], List["RoomRectItem"]]] = None
-
-        super().__init__(0, 0, model.w_m * PX_PER_M, model.h_m * PX_PER_M)
-
-        self.setPos(model.x_m * PX_PER_M, model.y_m * PX_PER_M)
-        self.setFlags(
-            QGraphicsItem.ItemIsSelectable
-            | QGraphicsItem.ItemIsMovable
-            | QGraphicsItem.ItemSendsGeometryChanges
-        )
-        self.setAcceptHoverEvents(True)
-
-        self._resize_band = RoomResizeBandItem(self, margin_px=RESIZE_MARGIN_PX)
-
-        self.pen_norm = QPen(Qt.black, 2)
-        self.pen_sel = QPen(Qt.darkBlue, 3)
-        self.setBrush(QBrush(Qt.transparent))
-        self.setZValue(1)
-
-        # Handles disabled (edge-drag resize instead). Keep attribute to avoid crashes.
-        self.handles: List[HandleItem] = []
-
-        self._heat_wpm2 = 0.0
-        self._heat_w = 0.0
-        self._area_in_m2 = 0.0
-
-    def set_debug_overlay(self, text: str) -> None:
-        self._debug_overlay_text = text
-        self.update()
-
-    def set_heat(self, w_total: float, w_per_m2: float):
-        self._heat_w = w_total
-        self._heat_wpm2 = w_per_m2
-        self.update()
-
-    def set_area(self, a_inner: float):
-        self._area_in_m2 = a_inner
-        self.update()
-
-    def _place_handles(self):
-        return
-
-    def _rect_scene(self) -> QRectF:
-        r = self.rect()
-        p = self.pos()
-        return QRectF(p.x(), p.y(), r.width(), r.height())
-
-    def _rect_scene_for(self, pos_xy: QPointF, rect_local: QRectF) -> QRectF:
-        return QRectF(pos_xy.x(), pos_xy.y(), rect_local.width(), rect_local.height())
-
-    def _other_room_rects_scene(self) -> List[QRectF]:
-        cb = getattr(self, "get_other_rooms_cb", None)
-        if not cb:
-            return []
-        out: List[QRectF] = []
-        try:
-            others = cb() or []
-        except Exception:
-            others = []
-        for it in others:
-            try:
-                out.append(it._rect_scene())
-            except Exception:
-                pass
-        return out
-
-    @staticmethod
-    def _ranges_overlap(a0: float, a1: float, b0: float, b1: float) -> bool:
-        return min(a1, b1) > max(a0, b0)  # strict => touch allowed
-
-    def _snap_pos_to_room_edges(self, cand: QRectF) -> QPointF:
-        snap = ROOM_SNAP_PX
-        best = snap + 1e-6
-        best_dx = 0.0
-        best_dy = 0.0
-
-        L, R, T, B = cand.left(), cand.right(), cand.top(), cand.bottom()
-
-        for o in self._other_room_rects_scene():
-            oL, oR, oT, oB = o.left(), o.right(), o.top(), o.bottom()
-
-            for a in (oL, oR):
-                d = abs(L - a)
-                if d < best:
-                    best = d
-                    best_dx = a - L
-                    best_dy = 0.0
-                d = abs(R - a)
-                if d < best:
-                    best = d
-                    best_dx = a - R
-                    best_dy = 0.0
-
-            for a in (oT, oB):
-                d = abs(T - a)
-                if d < best:
-                    best = d
-                    best_dx = 0.0
-                    best_dy = a - T
-                d = abs(B - a)
-                if d < best:
-                    best = d
-                    best_dx = 0.0
-                    best_dy = a - B
-
-        if best <= snap:
-            return QPointF(cand.x() + best_dx, cand.y() + best_dy)
-        return QPointF(cand.x(), cand.y())
-
-    def _clamp_move_no_overlap(self, p_target: QPointF) -> QPointF:
-        cur = QPointF(self.pos())
-        dx = p_target.x() - cur.x()
-        dy = p_target.y() - cur.y()
-
-        base = self._rect_scene()
-        w = base.width()
-        h = base.height()
-
-        dx_allowed = dx
-        if dx != 0.0:
-            cand_y0 = base.top()
-            cand_y1 = base.bottom()
-            for o in self._other_room_rects_scene():
-                if not self._ranges_overlap(cand_y0, cand_y1, o.top(), o.bottom()):
-                    continue
-                if dx > 0:
-                    max_dx = o.left() - base.right()
-                    if max_dx < dx_allowed:
-                        dx_allowed = max_dx
-                else:
-                    min_dx = o.right() - base.left()
-                    if min_dx > dx_allowed:
-                        dx_allowed = min_dx
-
-        base2 = QRectF(base.x() + dx_allowed, base.y(), w, h)
-
-        dy_allowed = dy
-        if dy != 0.0:
-            cand_x0 = base2.left()
-            cand_x1 = base2.right()
-            for o in self._other_room_rects_scene():
-                if not self._ranges_overlap(cand_x0, cand_x1, o.left(), o.right()):
-                    continue
-                if dy > 0:
-                    max_dy = o.top() - base2.bottom()
-                    if max_dy < dy_allowed:
-                        dy_allowed = max_dy
-                else:
-                    min_dy = o.bottom() - base2.top()
-                    if min_dy > dy_allowed:
-                        dy_allowed = min_dy
-
-        return QPointF(cur.x() + dx_allowed, cur.y() + dy_allowed)
-
-    def _clamp_resize_no_overlap(self, pos_scene: QPointF, rect_local: QRectF, zone: str) -> Tuple[QPointF, QRectF]:
-        cand = self._rect_scene_for(pos_scene, rect_local)
-        L, R, T, B = cand.left(), cand.right(), cand.top(), cand.bottom()
-        w, h = cand.width(), cand.height()
-
-        if "R" in zone:
-            limit = None
-            for o in self._other_room_rects_scene():
-                if not self._ranges_overlap(T, B, o.top(), o.bottom()):
-                    continue
-                if o.left() >= L:
-                    if limit is None or o.left() < limit:
-                        limit = o.left()
-            if limit is not None:
-                R = min(R, limit)
-                w = max(0.2 * PX_PER_M, R - L)
-
-        if "L" in zone:
-            limit = None
-            for o in self._other_room_rects_scene():
-                if not self._ranges_overlap(T, B, o.top(), o.bottom()):
-                    continue
-                if o.right() <= R:
-                    if limit is None or o.right() > limit:
-                        limit = o.right()
-            if limit is not None:
-                L = max(L, limit)
-                w = max(0.2 * PX_PER_M, R - L)
-
-        if "B" in zone:
-            limit = None
-            for o in self._other_room_rects_scene():
-                if not self._ranges_overlap(L, R, o.left(), o.right()):
-                    continue
-                if o.top() >= T:
-                    if limit is None or o.top() < limit:
-                        limit = o.top()
-            if limit is not None:
-                B = min(B, limit)
-                h = max(0.2 * PX_PER_M, B - T)
-
-        if "T" in zone:
-            limit = None
-            for o in self._other_room_rects_scene():
-                if not self._ranges_overlap(L, R, o.left(), o.right()):
-                    continue
-                if o.bottom() <= B:
-                    if limit is None or o.bottom() > limit:
-                        limit = o.bottom()
-            if limit is not None:
-                T = max(T, limit)
-                h = max(0.2 * PX_PER_M, B - T)
-
-        return QPointF(L, T), QRectF(0.0, 0.0, w, h)
-
-    def _sync_model_from_geometry(self):
-        self.model.x_m = snap_m(self.pos().x() / PX_PER_M)
-        self.model.y_m = snap_m(self.pos().y() / PX_PER_M)
-        self.model.w_m = snap_m(self.rect().width() / PX_PER_M)
-        self.model.h_m = snap_m(self.rect().height() / PX_PER_M)
-        try:
-            self.model.recompute_volume()
-        except Exception:
-            pass
-
-    def _apply_snapped_geometry(self, x_m: float, y_m: float, w_m: float, h_m: float):
-        self.prepareGeometryChange()
-        self.setPos(x_m * PX_PER_M, y_m * PX_PER_M)
-        self.setRect(QRectF(0, 0, w_m * PX_PER_M, h_m * PX_PER_M))
-        if hasattr(self, "_resize_band") and self._resize_band is not None:
-            self._resize_band.update_geometry()
-
-    def _hit_resize_zone(self, p_local: QPointF) -> Optional[str]:
-        r = self.rect()
-        x, y = p_local.x(), p_local.y()
-        m = RESIZE_MARGIN_PX
-
-        left = x <= r.left() + m
-        right = x >= r.right() - m
-        top = y <= r.top() + m
-        bottom = y >= r.bottom() - m
-
-        if top and left:
-            return "TL"
-        if top and right:
-            return "TR"
-        if bottom and left:
-            return "BL"
-        if bottom and right:
-            return "BR"
-        if left:
-            return "L"
-        if right:
-            return "R"
-        if top:
-            return "T"
-        if bottom:
-            return "B"
-        return None
-
-    def mousePressEvent(self, event):
-        if event.button() == Qt.LeftButton:
-            self._moving_interactively = True
-            zone = self._hit_resize_zone(event.pos())
-            if zone:
-                self._drag_resize_zone = zone
-                self._drag_start_scene = event.scenePos()
-                self._drag_start_pos = QPointF(self.pos())
-                self._drag_start_rect = QRectF(self.rect())
-
-                self._drag_old_movable = bool(self.flags() & QGraphicsItem.ItemIsMovable)
-                self.setFlag(QGraphicsItem.ItemIsMovable, False)
-
-                self._in_resize = True
-                event.accept()
-                return
-        super().mousePressEvent(event)
-
-    def mouseMoveEvent(self, event):
-        zone = getattr(self, "_drag_resize_zone", None)
-        if zone:
-            ds = event.scenePos() - self._drag_start_scene
-
-            start_pos = self._drag_start_pos
-            start_rect = self._drag_start_rect
-
-            x = start_pos.x()
-            y = start_pos.y()
-            w = start_rect.width()
-            h = start_rect.height()
-
-            dx = ds.x()
-            dy = ds.y()
-
-            min_w = 0.2 * PX_PER_M
-            min_h = 0.2 * PX_PER_M
-
-            if "L" in zone:
-                new_x = x + dx
-                new_w = w - dx
-                if new_w < min_w:
-                    new_x = x + (w - min_w)
-                    new_w = min_w
-                x, w = new_x, new_w
-
-            if "R" in zone:
-                new_w = w + dx
-                if new_w < min_w:
-                    new_w = min_w
-                w = new_w
-
-            if "T" in zone:
-                new_y = y + dy
-                new_h = h - dy
-                if new_h < min_h:
-                    new_y = y + (h - min_h)
-                    new_h = min_h
-                y, h = new_y, new_h
-
-            if "B" in zone:
-                new_h = h + dy
-                if new_h < min_h:
-                    new_h = min_h
-                h = new_h
-
-            cand_pos = QPointF(x, y)
-            cand_rect = QRectF(0.0, 0.0, w, h)
-            #p2, r2 = self._clamp_resize_no_overlap(cand_pos, cand_rect, zone)
-            #cand_scene = self._rect_scene_for(p2, r2)
-
-            p2, r2 = cand_pos, cand_rect
-            cand_scene = self._rect_scene_for(p2, r2)
-
-            p3 = self._snap_pos_to_room_edges(cand_scene)
-
-            x_m = snap_m(p3.x() / PX_PER_M)
-            y_m = snap_m(p3.y() / PX_PER_M)
-            w_m = snap_m(r2.width() / PX_PER_M)
-            h_m = snap_m(r2.height() / PX_PER_M)
-
-            self._apply_snapped_geometry(x_m, y_m, w_m, h_m)
-            self._sync_model_from_geometry()
-            if self.on_geometry_changed:
-                self.on_geometry_changed(self.model)
-
-            event.accept()
-            return
-
-        super().mouseMoveEvent(event)
-
-    def mouseReleaseEvent(self, event):
-        commit = False
-        if getattr(self, "_drag_resize_zone", None):
-            self._drag_resize_zone = None
-            self._in_resize = False
-            try:
-                self.setFlag(QGraphicsItem.ItemIsMovable, bool(getattr(self, "_drag_old_movable", True)))
-            except Exception:
-                pass
-            commit = True
-            event.accept()
-        else:
-            super().mouseReleaseEvent(event)
-            commit = True
-
-        self._moving_interactively = False
-        if commit:
-            try:
-                self._sync_model_from_geometry()
-                if self.on_geometry_changed:
-                    self.on_geometry_changed(self.model)
-            except Exception:
-                pass
-
-    def itemChange(self, change, value):
-        if getattr(self, "_in_itemchange", False):
-            return super().itemChange(change, value)
-
-        if change == QGraphicsItem.ItemPositionChange:
-            p: QPointF = value
-
-            x_m = snap_m(p.x() / PX_PER_M)
-            y_m = snap_m(p.y() / PX_PER_M)
-            p_snap = QPointF(x_m * PX_PER_M, y_m * PX_PER_M)
-
-            cand = self._rect_scene_for(p_snap, self.rect())
-            p_snap2 = self._snap_pos_to_room_edges(cand)
-            return p_snap2
-            #p_clamped = self._clamp_move_no_overlap(p_snap2)
-            #return p_clamped
-            #return QPointF(x_m * PX_PER_M, y_m * PX_PER_M)
-
-        if change == QGraphicsItem.ItemPositionHasChanged:
-            try:
-                self._in_itemchange = True
-                self._sync_model_from_geometry()
-                if self.on_geometry_changed and not (self._moving_interactively or self._in_resize):
-                    self.on_geometry_changed(self.model)
-            finally:
-                self._in_itemchange = False
-
-        return super().itemChange(change, value)
-
-    def paint(self, painter: QPainter, option, widget=None):
-        painter.setRenderHint(QPainter.Antialiasing, True)
-        painter.setPen(self.pen_sel if self.isSelected() else self.pen_norm)
-
-        txt = getattr(self, "_debug_overlay_text", "")
-        if txt:
-            painter.save()
-            font = painter.font()
-            font.setPointSize(max(7, font.pointSize() - 1))
-            painter.setFont(font)
-            r = self.boundingRect().adjusted(4, 4, -4, -4)
-            painter.drawText(r, Qt.AlignLeft | Qt.AlignTop, txt)
-            painter.restore()
-
-        if self.heatmap_enabled_cb():
-            rr, gg, bb, aa = heat_rgba(self._heat_wpm2)
-            painter.fillRect(self.rect(), QBrush(QColor.fromRgbF(rr, gg, bb, aa)))
-
-        painter.setBrush(Qt.NoBrush)
-        painter.drawRect(self.rect())
-
-        painter.save()
-        painter.setPen(Qt.black)
-        area_m2 = self._area_in_m2
-        txt = f"{self.model.name}\n{area_m2:.1f} m²\n{self._heat_w:.0f} W\n{self._heat_wpm2:.0f} W/m²"
-        painter.drawText(self.rect().adjusted(6, 6, -6, -6), Qt.AlignLeft | Qt.AlignTop, txt)
-        painter.restore()
-
-
+# Legacy RoomRectItem path removed in 7A block 1.
+# Rooms are rendered and edited exclusively via RoomPolygonItem.
 
 class PolygonVertexHandleItem(QGraphicsRectItem):
     """Corner handle for polygon-room editing."""
@@ -866,10 +247,10 @@ class RoomPolygonItem(QGraphicsPathItem):
         self._refresh_edit_handles()
 
     def _rebuild_path_from_model(self):
+        self.model.ensure_polygon()
         pts = self.model.polygon_points()
         if len(pts) < 3:
-            x, y, w, h = self.model.x_m, self.model.y_m, self.model.w_m, self.model.h_m
-            pts = [(x, y), (x + w, y), (x + w, y + h), (x, y + h)]
+            return
         min_x, min_y, max_x, max_y = polygon_bbox(pts)
         path = QPainterPath()
         first = True
@@ -887,9 +268,10 @@ class RoomPolygonItem(QGraphicsPathItem):
         self._refresh_edit_handles()
 
     def _refresh_edit_handles(self) -> None:
+        self.model.ensure_polygon()
         pts = self.model.polygon_points()
         if len(pts) < 3:
-            pts = [(self.model.x_m, self.model.y_m), (self.model.x_m + self.model.w_m, self.model.y_m), (self.model.x_m + self.model.w_m, self.model.y_m + self.model.h_m), (self.model.x_m, self.model.y_m + self.model.h_m)]
+            return
         min_x, min_y, _, _ = polygon_bbox(pts)
         while len(self.vertex_handles) < len(pts):
             self.vertex_handles.append(PolygonVertexHandleItem(self, len(self.vertex_handles)))
@@ -954,11 +336,11 @@ class RoomPolygonItem(QGraphicsPathItem):
         new_x_m = snap_m(scene_pt.x() / PX_PER_M)
         new_y_m = snap_m(scene_pt.y() / PX_PER_M)
         candidate = self._edited_points_for_vertex(idx, new_x_m, new_y_m)
-        if not _is_valid_edit_polygon(candidate):
+        if not validate_orthogonal_polygon(candidate):
             return
         if final:
-            candidate = _simplify_orthogonal_polygon(candidate)
-            if not _is_valid_edit_polygon(candidate):
+            candidate = simplify_orthogonal_polygon(candidate)
+            if not validate_orthogonal_polygon(candidate):
                 return
         self.model.set_polygon_points(candidate)
         self._rebuild_path_from_model()
@@ -986,11 +368,11 @@ class RoomPolygonItem(QGraphicsPathItem):
 
     def move_edge_from_scene(self, idx: int, scene_pt: QPointF, final: bool = False) -> None:
         candidate = self._edited_points_for_edge(idx, scene_pt)
-        if not _is_valid_edit_polygon(candidate):
+        if not validate_orthogonal_polygon(candidate):
             return
         if final:
-            candidate = _simplify_orthogonal_polygon(candidate)
-            if not _is_valid_edit_polygon(candidate):
+            candidate = simplify_orthogonal_polygon(candidate)
+            if not validate_orthogonal_polygon(candidate):
                 return
         self.model.set_polygon_points(candidate)
         self._rebuild_path_from_model()
@@ -1012,6 +394,7 @@ class RoomPolygonItem(QGraphicsPathItem):
         self.update()
 
     def _sync_model_from_geometry(self):
+        self.model.ensure_polygon()
         old_pts = self.model.polygon_points()
         if len(old_pts) >= 3:
             min_x, min_y, _, _ = polygon_bbox(old_pts)
@@ -1020,9 +403,6 @@ class RoomPolygonItem(QGraphicsPathItem):
             dx = new_x - min_x
             dy = new_y - min_y
             self.model.set_polygon_points(translate_polygon(old_pts, dx, dy))
-        else:
-            self.model.x_m = snap_m(self.pos().x() / PX_PER_M)
-            self.model.y_m = snap_m(self.pos().y() / PX_PER_M)
         try:
             self.model.recompute_volume()
         except Exception:
@@ -1030,11 +410,9 @@ class RoomPolygonItem(QGraphicsPathItem):
         self._refresh_edit_handles()
 
     def _apply_snapped_geometry(self, x_m: float, y_m: float, w_m: float, h_m: float):
-        if self.model.has_polygon():
-            self.model.translate_polygon_to(x_m, y_m)
-            self._rebuild_path_from_model()
-        else:
-            self.setPos(x_m * PX_PER_M, y_m * PX_PER_M)
+        self.model.ensure_polygon()
+        self.model.translate_polygon_to(x_m, y_m)
+        self._rebuild_path_from_model()
 
     def itemChange(self, change, value):
         if getattr(self, '_in_itemchange', False):
@@ -1357,36 +735,6 @@ class ElementLineItem(QGraphicsLineItem):
             except Exception:
                 pass
         super().mousePressEvent(event)
-
-
-# --------------------------------------------------------------------------------------
-# Legacy room class (kept as-is)
-# --------------------------------------------------------------------------------------
-
-class RoomRectItem_delete(QGraphicsRectItem):
-    def __init__(self, room_model: RoomModel, on_changed: Callable[[RoomModel], None]):
-        super().__init__(0, 0, room_model.w_m * PX_PER_M, room_model.h_m * PX_PER_M)
-        self.room_model = room_model
-        self.on_changed = on_changed
-        self.setPos(room_model.x_m * PX_PER_M, room_model.y_m * PX_PER_M)
-        self.setFlags(QGraphicsItem.ItemIsSelectable | QGraphicsItem.ItemIsMovable | QGraphicsItem.ItemSendsGeometryChanges)
-        self.setBrush(QBrush(Qt.transparent))
-        self.setPen(QPen(Qt.black, 2))
-        self.setZValue(1)
-
-    def itemChange(self, change, value):
-        if change == QGraphicsItem.ItemPositionHasChanged:
-            p = self.pos()
-            self.room_model.x_m = p.x() / PX_PER_M
-            self.room_model.y_m = p.y() / PX_PER_M
-            self.on_changed(self.room_model)
-        return super().itemChange(change, value)
-
-    def paint(self, painter: QPainter, option, widget=None):
-        painter.setPen(self.pen() if not self.isSelected() else QPen(Qt.red, 3))
-        painter.setBrush(Qt.NoBrush)
-        painter.drawRect(self.rect())
-        painter.drawText(self.rect().adjusted(6, 6, -6, -6), Qt.AlignLeft | Qt.AlignTop, self.room_model.name)
 
 
 # --------------------------------------------------------------------------------------

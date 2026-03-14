@@ -1,5 +1,5 @@
 import uuid
-from .graphics import RoomRectItem, RoomPolygonItem
+from .graphics import RoomPolygonItem
 from .graphics import WindowLineItem
 from .graphics import ElementLineItem
 from .graphics import PX_PER_M
@@ -18,7 +18,6 @@ from ..domain.models import RoomModel
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor,QPen
-from PySide6.QtWidgets import QGraphicsRectItem
 
 from ..core.config import VentilationCfg
 from ..core.heatload import calc_heatloads, ensure_auto_decks
@@ -181,6 +180,7 @@ class MainWindowRedrawMixin:
             if getattr(r, "floor", None) != "EG":
                 continue
             try:
+                r.ensure_polygon()
                 pts = getattr(r, "polygon_points", lambda: [])()
             except Exception:
                 pts = []
@@ -198,22 +198,6 @@ class MainWindowRedrawMixin:
                 path.closeSubpath()
                 it = sc.addPath(path, pen, Qt.NoBrush)
             else:
-                try:
-                    x = float(r.x_m) * PX_PER_M
-                    y = float(r.y_m) * PX_PER_M
-                    w = float(r.w_m) * PX_PER_M
-                    h = float(r.h_m) * PX_PER_M
-                except Exception:
-                    continue
-                it = QGraphicsRectItem(x, y, w, h)
-                it.setPen(pen)
-                it.setBrush(Qt.NoBrush)
-                it.setZValue(-10_000)
-                it.setAcceptedMouseButtons(Qt.NoButton)
-                it.setFlag(QGraphicsItem.ItemIsSelectable, False)
-                it.setFlag(QGraphicsItem.ItemIsMovable, False)
-                sc.addItem(it)
-                self.eg_shadow_items[r.id] = it
                 continue
             it.setZValue(-10_000)
             it.setAcceptedMouseButtons(Qt.NoButton)
@@ -238,15 +222,17 @@ class MainWindowRedrawMixin:
             sc = self.scene_KG if r.floor == "KG" else (self.scene_EG if r.floor == "EG" else self.scene_DG)
             if not self._is_valid_graphics_item(sc):
                 continue
-            it = (RoomPolygonItem(r, heatmap_enabled_cb=lambda: self.heatmap_enabled, on_geometry_changed=self._on_room_geometry_changed)
-                  if getattr(r, "has_polygon", lambda: False)() else
-                  RoomRectItem(r, heatmap_enabled_cb=lambda: self.heatmap_enabled, on_geometry_changed=self._on_room_geometry_changed))
+            try:
+                r.ensure_polygon()
+            except Exception:
+                pass
+            it = RoomPolygonItem(
+                r,
+                heatmap_enabled_cb=lambda: self.heatmap_enabled,
+                on_geometry_changed=self._on_room_geometry_changed,
+            )
             sc.addItem(it)
             self.room_items[r.id] = it
-        # Provide neighbor access for snap/overlap logic inside RoomRectItem
-        # (each room gets a callback returning all other room items)
-        for _it in self.room_items.values():
-            _it.get_other_rooms_cb = (lambda it=_it: [o for o in self.room_items.values() if o is not it])
 
         # EG-Grundriss im DG als Overlay
         self._rebuild_eg_shadow_in_dg()

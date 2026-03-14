@@ -1,6 +1,13 @@
 from __future__ import annotations
 from dataclasses import dataclass
-from PySide6.QtGui import QColor
+try:
+    from PySide6.QtGui import QColor
+except Exception:  # pragma: no cover - headless tests
+    class QColor:  # minimal fallback
+        def __init__(self, *args, **kwargs):
+            self.args = args
+            self.kwargs = kwargs
+
 
 CSV_DELIMITER = ";"
 CSV_ENCODING = "utf-8-sig"

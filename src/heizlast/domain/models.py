@@ -2,46 +2,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional
 
-
-def _parse_polygon_string(poly: Optional[str]) -> list[tuple[float, float]]:
-    if not poly:
-        return []
-    out: list[tuple[float, float]] = []
-    for part in str(poly).replace(';', '|').split('|'):
-        part = part.strip()
-        if not part or ',' not in part:
-            continue
-        xs, ys = part.split(',', 1)
-        try:
-            out.append((float(xs.strip().replace(',', '.')), float(ys.strip().replace(',', '.'))))
-        except Exception:
-            pass
-    return out
-
-
-def _polygon_area(points: list[tuple[float, float]]) -> float:
-    if len(points) < 3:
-        return 0.0
-    s = 0.0
-    n = len(points)
-    for i in range(n):
-        x1, y1 = points[i]
-        x2, y2 = points[(i + 1) % n]
-        s += x1 * y2 - x2 * y1
-    return abs(s) * 0.5
-
-
-def _polygon_perimeter(points: list[tuple[float, float]]) -> float:
-    import math
-    if len(points) < 2:
-        return 0.0
-    s = 0.0
-    n = len(points)
-    for i in range(n):
-        x1, y1 = points[i]
-        x2, y2 = points[(i + 1) % n]
-        s += math.hypot(x2 - x1, y2 - y1)
-    return s
+from ..core.polygon_ops import (
+    parse_polygon_m,
+    polygon_area,
+    polygon_bbox,
+    polygon_perimeter,
+    rect_to_polygon,
+    serialize_polygon_m,
+    translate_polygon,
+)
 
 
 @dataclass
@@ -61,60 +30,99 @@ class RoomModel:
     polygon_m: Optional[str] = None
 
     def __post_init__(self):
+        self.ensure_polygon()
         self.normalize_polygon_bbox()
         self.recompute_volume()
 
     def polygon_points(self) -> list[tuple[float, float]]:
-        return _parse_polygon_string(self.polygon_m)
+        return parse_polygon_m(self.polygon_m)
 
     def has_polygon(self) -> bool:
         return len(self.polygon_points()) >= 3
 
+    def ensure_polygon(self) -> None:
+        pts = self.polygon_points()
+        if len(pts) >= 3:
+            self.polygon_m = serialize_polygon_m(pts)
+            return
+        self.polygon_m = serialize_polygon_m(
+            rect_to_polygon(self.x_m, self.y_m, self.w_m, self.h_m)
+        )
+
     def set_polygon_points(self, pts: list[tuple[float, float]]) -> None:
-        if pts and pts[0] == pts[-1]:
-            pts = pts[:-1]
-        self.polygon_m = '|'.join(f"{float(x):.3f},{float(y):.3f}" for x, y in pts) if pts else None
+        self.polygon_m = serialize_polygon_m(pts) if pts else None
+        self.ensure_polygon()
         self.normalize_polygon_bbox()
         self.recompute_volume()
 
     def translate_polygon_to(self, x_m: float, y_m: float) -> None:
+        self.ensure_polygon()
         pts = self.polygon_points()
-        if not pts:
-            self.x_m = x_m
-            self.y_m = y_m
-            return
-        min_x = min(x for x, _ in pts)
-        min_y = min(y for _, y in pts)
+        min_x, min_y, _, _ = polygon_bbox(pts)
         dx = float(x_m) - float(min_x)
         dy = float(y_m) - float(min_y)
-        moved = [(x + dx, y + dy) for x, y in pts]
+        moved = translate_polygon(pts, dx, dy)
         self.set_polygon_points(moved)
 
+    def bbox_tuple(self) -> tuple[float, float, float, float]:
+        self.normalize_polygon_bbox()
+        return self.x_m, self.y_m, self.w_m, self.h_m
+
+    def move_by(self, dx_m: float, dy_m: float) -> None:
+        self.ensure_polygon()
+        pts = self.polygon_points()
+        moved = translate_polygon(pts, float(dx_m), float(dy_m))
+        self.set_polygon_points(moved)
+
+    def move_to(self, x_m: float, y_m: float) -> None:
+        self.translate_polygon_to(x_m, y_m)
+
     def normalize_polygon_bbox(self) -> None:
+        self.ensure_polygon()
         pts = self.polygon_points()
         if len(pts) < 3:
             return
-        xs = [x for x, _ in pts]
-        ys = [y for _, y in pts]
-        self.x_m = min(xs)
-        self.y_m = min(ys)
-        self.w_m = max(xs) - min(xs)
-        self.h_m = max(ys) - min(ys)
+        x0, y0, x1, y1 = polygon_bbox(pts)
+        self.x_m = x0
+        self.y_m = y0
+        self.w_m = x1 - x0
+        self.h_m = y1 - y0
+
+    def is_axis_aligned_rect_polygon(self, eps: float = 1e-9) -> bool:
+        pts = self.polygon_points()
+        if len(pts) != 4:
+            return False
+        x0, y0, x1, y1 = polygon_bbox(pts)
+        target = {
+            (round(x0, 9), round(y0, 9)),
+            (round(x1, 9), round(y0, 9)),
+            (round(x1, 9), round(y1, 9)),
+            (round(x0, 9), round(y1, 9)),
+        }
+        got = {(round(x, 9), round(y, 9)) for x, y in pts}
+        return got == target and abs(x1 - x0) > eps and abs(y1 - y0) > eps
+
+    def resize_rect_polygon_from_bbox(self, x_m: float, y_m: float, w_m: float, h_m: float) -> None:
+        self.polygon_m = serialize_polygon_m(rect_to_polygon(x_m, y_m, w_m, h_m))
+        self.ensure_polygon()
+        self.normalize_polygon_bbox()
+        self.recompute_volume()
 
     def area_m2(self) -> float:
         pts = self.polygon_points()
         if len(pts) >= 3:
-            return _polygon_area(pts)
+            return polygon_area(pts)
         return max(self.w_m, 0.0) * max(self.h_m, 0.0)
 
     def perimeter_m(self) -> float:
         pts = self.polygon_points()
         if len(pts) >= 3:
-            return _polygon_perimeter(pts)
+            return polygon_perimeter(pts)
         return 2.0 * (max(self.w_m, 0.0) + max(self.h_m, 0.0))
 
     def recompute_volume(self) -> None:
         self.volume_m3 = self.area_m2() * max(self.height_m, 0.0)
+
 
 @dataclass
 class ElementModel:

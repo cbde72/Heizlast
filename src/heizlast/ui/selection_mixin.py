@@ -1,7 +1,7 @@
 from typing import List, Optional
 from ..domain.models import RoomModel
-from .graphics import snap_m
-from .graphics import RoomRectItem, RoomPolygonItem
+from ..core.polygon_ops import snap_m
+from .graphics import RoomPolygonItem
 from .graphics import WindowLineItem
 from PySide6.QtWidgets import QMessageBox
 from ..core import get_room_elements
@@ -57,6 +57,7 @@ class MainWindowSelectionMixin:
             w.blockSignals(True)
 
         try:
+            r.ensure_polygon()
             self.ed_id.setText(r.id)
             self.ed_name.setText(r.name)
             self.cb_floor.setCurrentText(r.floor)
@@ -67,6 +68,12 @@ class MainWindowSelectionMixin:
             self.sp_height.setValue(r.height_m)
             self.sp_tin.setValue(r.t_inside_c)
             self.sp_n.setValue(r.air_change_1ph)
+            rect_mode = bool(getattr(r, "is_axis_aligned_rect_polygon", lambda: False)())
+            self.sp_w.setEnabled(rect_mode)
+            self.sp_h.setEnabled(rect_mode)
+            tip = "" if rect_mode else "Bei Polygonräumen wird die Größe über Geometrie-Handles geändert."
+            self.sp_w.setToolTip(tip)
+            self.sp_h.setToolTip(tip)
         finally:
             for w in widgets:
                 w.blockSignals(False)
@@ -74,43 +81,45 @@ class MainWindowSelectionMixin:
         self._populate_room_elements_list()
 
     def _apply_room_form(self):
-        """Übernimmt die Formulardaten in das Raummodell."""
+        """Übernimmt die Formulardaten in das Raummodell (Pfad 2: polygon-first)."""
         rid = self._selected_room_id
         if not rid or rid not in self.rooms:
             return
 
         r = self.rooms[rid]
+        r.ensure_polygon()
         old_floor = r.floor
         r.name = self.ed_name.text().strip() or r.id
         r.floor = self.cb_floor.currentText()
-        r.x_m = snap_m(self.sp_x.value())
-        r.y_m = snap_m(self.sp_y.value())
-        if not getattr(r, "has_polygon", lambda: False)():
-            r.w_m = snap_m(self.sp_w.value())
-            r.h_m = snap_m(self.sp_h.value())
+
+        new_x = snap_m(self.sp_x.value())
+        new_y = snap_m(self.sp_y.value())
+        new_w = max(0.20, snap_m(self.sp_w.value()))
+        new_h = max(0.20, snap_m(self.sp_h.value()))
+
+        if getattr(r, "is_axis_aligned_rect_polygon", lambda: False)():
+            r.resize_rect_polygon_from_bbox(new_x, new_y, new_w, new_h)
+        else:
+            r.move_to(new_x, new_y)
+
         r.height_m = snap_m(self.sp_height.value(), 0.01)
         r.t_inside_c = self.sp_tin.value()
         r.air_change_1ph = self.sp_n.value()
-        #r.recompute_volume()
-        # Zentrale Normalisierung (Single Source of Truth)
         self._normalize_room_geometry(r)
 
-
-        # Grafik-Item aktualisieren
         it = self.room_items.get(r.id)
         if it and self._is_valid_graphics_item(it):
             if old_floor != r.floor:
-                # In andere Szene verschieben
                 old_scene = self.scene_EG if old_floor == "EG" else self.scene_DG
                 new_scene = self.scene_EG if r.floor == "EG" else self.scene_DG
                 if self._is_valid_graphics_item(old_scene):
                     old_scene.removeItem(it)
                 if self._is_valid_graphics_item(new_scene):
                     new_scene.addItem(it)
-            it._apply_snapped_geometry(r.x_m, r.y_m, r.w_m, r.h_m)
+            if hasattr(it, "_apply_snapped_geometry"):
+                it._apply_snapped_geometry(r.x_m, r.y_m, r.w_m, r.h_m)
             it.update()
 
-        # Wichtig: erst Auto-Wände neu, dann Recompute/List (sonst sind Liste/Labels kurz inkonsistent)
         if self.autowalls_enabled:
              self._rebuild_autowalls_all()
         self._recompute_and_redraw()
@@ -205,7 +214,7 @@ class MainWindowSelectionMixin:
         """Gibt die IDs aller ausgewählten Räume zurück."""
         rids: List[str] = []
         for it in self._selected_graphics_items():
-            if isinstance(it, (RoomRectItem, RoomPolygonItem)):
+            if isinstance(it, RoomPolygonItem):
                 rids.append(it.model.id)
             elif hasattr(it, "model") and isinstance(getattr(it, "model"), RoomModel):
                 rids.append(it.model.id)

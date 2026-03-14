@@ -1,12 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable, Dict, List, Optional, Tuple
-from ..domain.models import ElementModel
-from ..domain.models import RoomModel
+from typing import Callable, Dict, List, Tuple
 
-from ..models import RoomModel, ElementModel
+from ...core.polygon_ops import snap_m
 from ..house_state import HouseState
+from ..models import ElementModel, RoomModel
 
 
 BuildAutoWallsFn = Callable[[List[RoomModel]], List[ElementModel]]
@@ -19,29 +18,35 @@ class HouseDomainService:
     """
 
     def normalize_room_geometry(self, r: RoomModel) -> None:
-        """Single Source of Truth for room geometry (x/y/w/h/height)."""
+        """Single Source of Truth for room geometry (x/y/w/h/height).
+        Pfad 2: polygon-first, BBox nur noch kompatibler View/Editor-Zustand.
+        """
         if r is None:
             return
 
         MIN_SIZE = 0.20
-        # snap_m is a domain-ish helper but lives in graphics.py today; import locally to avoid cycles.
-        from ...ui.graphics import snap_m  # type: ignore
 
         try:
+            r.ensure_polygon()
+            r.normalize_polygon_bbox()
+
             r.x_m = snap_m(float(r.x_m or 0.0))
             r.y_m = snap_m(float(r.y_m or 0.0))
-
             r.w_m = max(MIN_SIZE, snap_m(abs(float(r.w_m or MIN_SIZE))))
             r.h_m = max(MIN_SIZE, snap_m(abs(float(r.h_m or MIN_SIZE))))
 
             if float(getattr(r, "height_m", 0.0) or 0.0) <= 1e-6:
                 r.height_m = 2.50
 
+            if getattr(r, "is_axis_aligned_rect_polygon", lambda: False)():
+                r.resize_rect_polygon_from_bbox(r.x_m, r.y_m, r.w_m, r.h_m)
+            else:
+                r.normalize_polygon_bbox()
+
             r.recompute_volume()
         except Exception:
             pass
 
-    # ---------------- meta overrides ----------------
     def meta_parse(self, meta: str) -> Dict[str, str]:
         d: Dict[str, str] = {}
         for part in (meta or "").split("|"):
@@ -150,7 +155,6 @@ class HouseDomainService:
                 ov_type=str(ov_type) if ov_type is not None else None,
             )
 
-    # ---------------- auto walls rebuild ----------------
     def rebuild_autowalls_all(
         self,
         state: HouseState,
@@ -172,20 +176,15 @@ class HouseDomainService:
             )
 
         snap = self.snapshot_user_overrides_for_autowalls(state.elements)
-
-        # remove old autos
         state.elements = [e for e in state.elements if not _is_auto_wall(e)]
 
-        # build new autos
         autos: List[ElementModel] = []
         for floor in floors:
             rooms = [r for r in state.rooms.values() if r.floor == floor]
             autos.extend(build_auto_walls(rooms))
 
-        # apply overrides
         self.apply_user_overrides_to_autowalls(autos, snap)
 
-        # clean + de-dup
         seen = set()
         clean: List[ElementModel] = []
         for e in autos:

@@ -2,7 +2,8 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt, QSize
 from PySide6.QtGui import QAction, QActionGroup, QKeySequence, QShortcut, QIcon
-from .graphics import PlanView, PX_PER_M, RoomRectItem, ElementLineItem, WindowLineItem, snap_m
+from .graphics import PlanView, PX_PER_M, ElementLineItem, WindowLineItem
+from ..core.polygon_ops import snap_m
 
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -231,6 +232,20 @@ class MainWindowBuildMixin:
         self.act_delete_windows.setShortcutContext(Qt.ApplicationShortcut)
         self.addAction(self.act_delete_windows)
         menu.addAction(self.act_delete_windows)
+
+        self.act_undo_room_op = QAction(self._std_icon(QStyle.SP_ArrowBack), "Raum-Operation rückgängig", self)
+        self.act_undo_room_op.setShortcut(QKeySequence.Undo)
+        self.act_undo_room_op.triggered.connect(self._undo_last_room_operation)
+        self.act_undo_room_op.setShortcutContext(Qt.ApplicationShortcut)
+        self.addAction(self.act_undo_room_op)
+        menu.addAction(self.act_undo_room_op)
+
+        self.act_redo_room_op = QAction(self._std_icon(QStyle.SP_ArrowForward), "Raum-Operation wiederholen", self)
+        self.act_redo_room_op.setShortcut(QKeySequence.Redo)
+        self.act_redo_room_op.triggered.connect(self._redo_last_room_operation)
+        self.act_redo_room_op.setShortcutContext(Qt.ApplicationShortcut)
+        self.addAction(self.act_redo_room_op)
+        menu.addAction(self.act_redo_room_op)
 
         self._room_tool_group = QActionGroup(self)
         self._room_tool_group.setExclusive(True)

@@ -19,7 +19,7 @@ from PySide6.QtWidgets import QGraphicsScene, QGraphicsRectItem, QGraphicsItem
 
 from ..domain.models import RoomModel, ElementModel
 from ..core.element_metrics import ElementMetricsService
-from ..ui.graphics import RoomRectItem, ElementLineItem, WindowLineItem, PX_PER_M
+from ..ui.graphics import RoomPolygonItem, ElementLineItem, WindowLineItem, PX_PER_M
 
 
 @dataclass
@@ -34,7 +34,7 @@ class PlanPresenter:
 
     scene_EG: QGraphicsScene
     scene_DG: QGraphicsScene
-    room_items: Dict[str, RoomRectItem]
+    room_items: Dict[str, RoomPolygonItem]
     element_items: Dict[str, Any]
     metrics: ElementMetricsService
 
@@ -108,7 +108,7 @@ class PlanPresenter:
                 # remove stale item if any
                 if it is not None:
                     self._safe_remove(it)
-                it = RoomRectItem(r, heatmap_enabled_cb=heatmap_enabled_cb, on_geometry_changed=on_geometry_changed)
+                it = RoomPolygonItem(r, heatmap_enabled_cb=heatmap_enabled_cb, on_geometry_changed=on_geometry_changed)
                 sc.addItem(it)
                 self.room_items[r.id] = it
             else:
@@ -117,10 +117,16 @@ class PlanPresenter:
                     it.model = r
                     it.heatmap_enabled_cb = heatmap_enabled_cb
                     it.on_geometry_changed = on_geometry_changed
-                    it.setPos(float(r.x_m) * PX_PER_M, float(r.y_m) * PX_PER_M)
-                    it.setRect(QRectF(0, 0, float(r.w_m) * PX_PER_M, float(r.h_m) * PX_PER_M))
                     try:
-                        it._place_handles()
+                        r.ensure_polygon()
+                    except Exception:
+                        pass
+                    try:
+                        it._rebuild_path_from_model()
+                    except Exception:
+                        pass
+                    try:
+                        it._refresh_edit_handles()
                     except Exception:
                         pass
                     it.update()

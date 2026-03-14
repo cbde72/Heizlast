@@ -1,7 +1,6 @@
 import uuid
 import math
 from typing import List, Optional, Tuple
-from ..domain.models import RoomModel
 from .graphics import WindowLineItem
 from ..core.config import DEFAULT_FACTOR, DEFAULT_U
 from .graphics import PX_PER_M
@@ -11,6 +10,8 @@ from PySide6.QtCore import QPointF, Qt
 from PySide6.QtWidgets import QMessageBox
 
 from ..domain.models import ElementModel
+from ..core.anchors import update_edge_anchor_meta
+from ..core.geometry import nearest_edge_span_for_point
 from .dialogs.window_dialog import WindowDialog
 
 class MainWindowWindowInsertMixin:
@@ -62,105 +63,20 @@ class MainWindowWindowInsertMixin:
         else:
             self.statusBar().clearMessage()
 
-    def _dist_point_to_axis_segment(self, x: float, y: float, orient: str, c: float, a0: float, a1: float) -> float:
-        """Berechnet den Abstand eines Punktes zu einem achsenparallelen Segment."""
-        a_min = min(a0, a1)
-        a_max = max(a0, a1)
-        if orient == "H":
-            if a_min <= x <= a_max:
-                return abs(y - c)
-            xx = a_min if x < a_min else a_max
-            return ((x - xx) ** 2 + (y - c) ** 2) ** 0.5
-        else:
-            if a_min <= y <= a_max:
-                return abs(x - c)
-            yy = a_min if y < a_min else a_max
-            return ((x - c) ** 2 + (y - yy) ** 2) ** 0.5
-
-    def _nearest_wall(self, floor: str, x_m: float, y_m: float) -> Optional[Tuple[ElementModel, str, float, float, float]]:
-        """Findet die nächste achsenparallele Wand zum angeklickten Punkt."""
-        walls: List[ElementModel] = []
-
-        for e in self.elements:
-            if not e.has_geometry():
-                continue
-
-            et = (e.element_type or "").strip().lower()
-            # nur Wände (Fenster explizit raus)
-            if "fenster" in et:
-                continue
-            if not any(t in et for t in ["wand", "wall", "außen", "aussen", "innen"]):
-                continue
-
-            efloor = e.floor
-            if efloor is None:
-                r = self.rooms.get(e.room_id)
-                efloor = r.floor if r else None
-            if efloor != floor:
-                continue
-
-            walls.append(e)
-
-        if not walls:
-            return None
-
-        AX_TOL = 1e-3  # 1 mm
-        best = None
-        best_d = 1e9
-
-        for w in walls:
-            x0, y0, x1, y1 = w.x0_m, w.y0_m, w.x1_m, w.y1_m
-            if None in (x0, y0, x1, y1):
-                continue
-
-            x0 = float(x0); y0 = float(y0); x1 = float(x1); y1 = float(y1)
-            dx = x1 - x0
-            dy = y1 - y0
-            if abs(dx) <= 1e-6 and abs(dy) <= 1e-6:
-                continue
-            # Strikt: nur achsenparallel zulassen
-            if abs(dy) <= AX_TOL and abs(dx) > AX_TOL:
-                orient = "H"
-                c = y0
-                a0 = x0
-                a1 = x1
-            elif abs(dx) <= AX_TOL and abs(dy) > AX_TOL:
-                orient = "V"
-                c = x0
-                a0 = y0
-                a1 = y1
-            else:
-                continue  # nicht achsenparallel -> ignorieren
-
-            d = self._dist_point_to_axis_segment(x_m, y_m, orient, c, a0, a1)
-
-            # Außenwände leicht bevorzugen
-            et_w = (w.element_type or "").strip().lower()
-            if "außen" in et_w or "aussen" in et_w:
-                d *= 0.8
-
-            if d < best_d:
-                best_d = d
-                best = (w, orient, float(c), float(a0), float(a1))
-
-        # Toleranz für Klick daneben
-        if best is None or best_d > 0.8:
-            return None
-        return best
-    #
 
     def _add_window_at(self, floor: str, scene_pos) -> None:
         # NICHT snappen für die Suche (sonst springt der Punkt weg)
         x_m_raw = float(scene_pos.x() / PX_PER_M)
         y_m_raw = float(scene_pos.y() / PX_PER_M)
 
-        wall = self._nearest_wall(floor, x_m_raw, y_m_raw)
+        rooms = [r for r in self.rooms.values() if getattr(r, 'floor', None) == floor]
+        wall = nearest_edge_span_for_point(rooms, floor, x_m_raw, y_m_raw, prefer_outer=True, max_dist=0.8)
         if wall is None:
             #
             # Debug-Information für den Benutzer
             wand_typen = set()
             for e in self.elements:
-                if e.has_geometry() and (e.floor == floor or (e.floor is None and self.rooms.get(e.room_id, RoomModel()).floor == floor)):
+                if e.has_geometry() and (e.floor == floor or (e.floor is None and getattr(self.rooms.get(e.room_id), 'floor', None) == floor)):
                     wand_typen.add((e.element_type or "").strip())
 
             msg = "Bitte nahe an einer (Außen-)Wand klicken (<= 0,5 m).\n\n"
@@ -175,7 +91,8 @@ class MainWindowWindowInsertMixin:
             return
             #
 
-        w_el, orient, c, a0, a1 = wall
+        span = wall
+        orient, c, a0, a1 = span.orient, span.c, span.a0, span.a1
         a_min = min(a0, a1)
         a_max = max(a0, a1)
 
@@ -224,24 +141,26 @@ class MainWindowWindowInsertMixin:
             y1 = cy + half
             x0 = x1 = c
 
-        rid = w_el.room_id
+        rid = span.owner_room_id
         uid = f"win_{uuid.uuid4().hex[:10]}"
-        #meta = f"host={w_el.uid or ''}|orient={orient}|c={c:.3f}|a0={a_min:.3f}|a1={a_max:.3f}"
 
-        #
         # s = Fenstermitte entlang der Wand, gemessen ab a_min
         if orient == "H":
             s = cx - a_min
         else:
             s = cy - a_min
 
-        meta = (
-            f"parent={w_el.uid or ''}|"
-            f"s={s:.4f}|w={L:.4f}|"
-            f"orient={orient}|c={c:.3f}|a0={a_min:.3f}|a1={a_max:.3f}"
+        meta = update_edge_anchor_meta(
+            '',
+            parent=span.uid,
+            orient=orient,
+            c=c,
+            a0=a_min,
+            a1=a_max,
+            s=s,
+            w=L,
+            rooms=getattr(span, 'room_ids', None),
         )
-
-        #print(f"[DEBUG][add-window] new window length={L}")
 
         e = ElementModel(
             room_id=rid,

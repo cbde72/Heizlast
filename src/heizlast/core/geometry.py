@@ -1,8 +1,20 @@
 from __future__ import annotations
 from dataclasses import dataclass
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 from ..domain.models import ElementModel, RoomModel
 from .config import DEFAULT_U, DEFAULT_FACTOR
+from .anchors import build_edge_span_meta
+from .polygon_ops import (
+    deserialize_polygon_m,
+    move_polygon_edge,
+    parse_polygon_m,
+    polygon_bbox,
+    rect_to_polygon,
+    serialize_polygon_m,
+    simplify_orthogonal_polygon,
+    translate_polygon,
+    validate_orthogonal_polygon,
+)
 
 EPS = 1e-6
 
@@ -17,170 +29,28 @@ class Edge:
     height_m: float
 
 
-def parse_polygon_m(poly: str | None) -> list[tuple[float, float]]:
-    if not poly:
-        return []
-    out: list[tuple[float, float]] = []
-    for part in str(poly).replace(';', '|').split('|'):
-        part = part.strip()
-        if not part or ',' not in part:
-            continue
-        xs, ys = part.split(',', 1)
-        try:
-            out.append((float(xs.strip()), float(ys.strip())))
-        except Exception:
-            pass
-    return out
+@dataclass(frozen=True)
+class EdgeSpan:
+    orient: str
+    c: float
+    a0: float
+    a1: float
+    floor: str
+    room_ids: Tuple[str, ...]
+    owner_room_id: str
+    height_m: float
+    element_type: str
+    meta: str
+    uid: str
 
+    @property
+    def length_m(self) -> float:
+        return abs(float(self.a1) - float(self.a0))
 
-def serialize_polygon_m(points: list[tuple[float, float]]) -> str:
-    return '|'.join(f"{float(x):.3f},{float(y):.3f}" for x, y in points)
-
-
-
-
-def deserialize_polygon_m(text: str | None) -> list[tuple[float, float]]:
-    return parse_polygon_m(text)
-
-
-def _point_eq(a: tuple[float, float], b: tuple[float, float], eps: float = 1e-9) -> bool:
-    return abs(a[0] - b[0]) <= eps and abs(a[1] - b[1]) <= eps
-
-
-def simplify_orthogonal_polygon(points: list[tuple[float, float]], eps: float = 1e-9) -> list[tuple[float, float]]:
-    pts = list(points or [])
-    if len(pts) >= 2 and _point_eq(pts[0], pts[-1], eps):
-        pts = pts[:-1]
-    changed = True
-    while changed and len(pts) >= 3:
-        changed = False
-        out: list[tuple[float, float]] = []
-        n = len(pts)
-        for i in range(n):
-            p_prev = pts[(i - 1) % n]
-            p_cur = pts[i]
-            p_next = pts[(i + 1) % n]
-            if _point_eq(p_prev, p_cur, eps) or _point_eq(p_cur, p_next, eps):
-                changed = True
-                continue
-            collinear_v = abs(p_prev[0] - p_cur[0]) <= eps and abs(p_cur[0] - p_next[0]) <= eps
-            collinear_h = abs(p_prev[1] - p_cur[1]) <= eps and abs(p_cur[1] - p_next[1]) <= eps
-            if collinear_v or collinear_h:
-                changed = True
-                continue
-            out.append(p_cur)
-        pts = out
-    return pts
-
-
-def _polygon_is_axis_aligned(points: list[tuple[float, float]], eps: float = 1e-9) -> bool:
-    if len(points) < 3:
-        return False
-    n = len(points)
-    for i in range(n):
-        x0, y0 = points[i]
-        x1, y1 = points[(i + 1) % n]
-        if abs(x0 - x1) > eps and abs(y0 - y1) > eps:
-            return False
-    return True
-
-
-def _segments_intersect(a1, a2, b1, b2, eps: float = 1e-9) -> bool:
-    def orient(p, q, r):
-        val = (q[1] - p[1]) * (r[0] - q[0]) - (q[0] - p[0]) * (r[1] - q[1])
-        if abs(val) <= eps:
-            return 0
-        return 1 if val > 0 else 2
-
-    def on_seg(p, q, r):
-        return (min(p[0], r[0]) - eps <= q[0] <= max(p[0], r[0]) + eps and
-                min(p[1], r[1]) - eps <= q[1] <= max(p[1], r[1]) + eps)
-
-    o1 = orient(a1, a2, b1)
-    o2 = orient(a1, a2, b2)
-    o3 = orient(b1, b2, a1)
-    o4 = orient(b1, b2, a2)
-    if o1 != o2 and o3 != o4:
-        return True
-    if o1 == 0 and on_seg(a1, b1, a2):
-        return True
-    if o2 == 0 and on_seg(a1, b2, a2):
-        return True
-    if o3 == 0 and on_seg(b1, a1, b2):
-        return True
-    if o4 == 0 and on_seg(b1, a2, b2):
-        return True
-    return False
-
-
-def _polygon_self_intersects(points: list[tuple[float, float]], eps: float = 1e-9) -> bool:
-    n = len(points)
-    if n < 4:
-        return False
-    for i in range(n):
-        a1 = points[i]
-        a2 = points[(i + 1) % n]
-        for j in range(i + 1, n):
-            if j == i or (j + 1) % n == i or (i + 1) % n == j:
-                continue
-            if i == 0 and j == n - 1:
-                continue
-            b1 = points[j]
-            b2 = points[(j + 1) % n]
-            if _segments_intersect(a1, a2, b1, b2, eps):
-                return True
-    return False
-
-
-def validate_orthogonal_polygon(points: list[tuple[float, float]], eps: float = 1e-9) -> bool:
-    pts = simplify_orthogonal_polygon(points, eps=eps)
-    if len(pts) < 4:
-        return False
-    if not _polygon_is_axis_aligned(pts, eps=eps):
-        return False
-    area = 0.0
-    for i in range(len(pts)):
-        x1, y1 = pts[i]
-        x2, y2 = pts[(i + 1) % len(pts)]
-        area += x1 * y2 - x2 * y1
-    if abs(area) <= 1e-6:
-        return False
-    if _polygon_self_intersects(pts, eps=eps):
-        return False
-    return True
-
-
-def move_polygon_edge(points: list[tuple[float, float]], idx: int, new_coord: float, snap: float = 0.05) -> list[tuple[float, float]]:
-    pts = list(points or [])
-    n = len(pts)
-    if n < 3 or idx < 0 or idx >= n:
-        return pts
-
-    def snap_m(v: float) -> float:
-        return round(v / snap) * snap if snap > 0 else v
-
-    next_idx = (idx + 1) % n
-    x0, y0 = pts[idx]
-    x1, y1 = pts[next_idx]
-    if abs(y0 - y1) <= 1e-9:
-        y = snap_m(float(new_coord))
-        pts[idx] = (x0, y)
-        pts[next_idx] = (x1, y)
-    elif abs(x0 - x1) <= 1e-9:
-        x = snap_m(float(new_coord))
-        pts[idx] = (x, y0)
-        pts[next_idx] = (x, y1)
-    return pts
-
-def polygon_bbox(points: list[tuple[float, float]]) -> tuple[float, float, float, float]:
-    xs = [x for x, _ in points]
-    ys = [y for _, y in points]
-    return min(xs), min(ys), max(xs), max(ys)
-
-
-def translate_polygon(points: list[tuple[float, float]], dx: float, dy: float) -> list[tuple[float, float]]:
-    return [(float(x) + float(dx), float(y) + float(dy)) for x, y in points]
-
+    def endpoints(self) -> tuple[tuple[float, float], tuple[float, float]]:
+        if self.orient == 'H':
+            return (float(self.a0), float(self.c)), (float(self.a1), float(self.c))
+        return (float(self.c), float(self.a0)), (float(self.c), float(self.a1))
 
 def orthogonalize_points(points: list[tuple[float, float]]) -> list[tuple[float, float]]:
     if not points:
@@ -225,16 +95,41 @@ def room_edges(room: RoomModel) -> List[Edge]:
 def _key(orient: str, c: float, tol: float=1e-6) -> Tuple[str, int]:
     return (orient, int(round(c / tol)))
 
+
 def _normalize_interval(a0: float, a1: float) -> Tuple[float,float]:
     return (a0, a1) if a0 <= a1 else (a1, a0)
 
-def build_auto_walls_shared_merge(rooms: List[RoomModel]) -> List[ElementModel]:
+
+def _fmt_uid_num(x: float) -> str:
+    return f"{float(x):.6f}".replace('-', 'm').replace('.', 'p')
+
+
+def _edge_span_uid(floor: str, orient: str, c: float, a0: float, a1: float, element_type: str) -> str:
+    et = 'shared' if 'innen' in (element_type or '').strip().lower() else 'outer'
+    return f"auto_{et}_{floor}_{orient}_{_fmt_uid_num(c)}_{_fmt_uid_num(a0)}_{_fmt_uid_num(a1)}"
+
+
+def _dist_point_to_axis_segment(x: float, y: float, orient: str, c: float, a0: float, a1: float) -> float:
+    a_min = min(a0, a1)
+    a_max = max(a0, a1)
+    if orient == 'H':
+        if a_min <= x <= a_max:
+            return abs(y - c)
+        xx = a_min if x < a_min else a_max
+        return ((x - xx) ** 2 + (y - c) ** 2) ** 0.5
+    if a_min <= y <= a_max:
+        return abs(x - c)
+    yy = a_min if y < a_min else a_max
+    return ((x - c) ** 2 + (y - yy) ** 2) ** 0.5
+
+
+def classify_floor_edge_spans(rooms: List[RoomModel]) -> List[EdgeSpan]:
     groups: Dict[Tuple[str,int], List[Edge]] = {}
     for r in rooms:
         for e in room_edges(r):
             groups.setdefault(_key(e.orient, e.c), []).append(e)
-    elements: List[ElementModel] = []
-    uid_counter = 0
+
+    spans: List[EdgeSpan] = []
     for (orient, _), edges in groups.items():
         cuts: List[float] = []
         for e in edges:
@@ -242,33 +137,76 @@ def build_auto_walls_shared_merge(rooms: List[RoomModel]) -> List[ElementModel]:
             cuts.extend([a0, a1])
         cuts = sorted({round(x, 6) for x in cuts})
         for i in range(len(cuts) - 1):
-            s0, s1 = cuts[i], cuts[i+1]
+            s0, s1 = cuts[i], cuts[i + 1]
             if s1 - s0 <= EPS:
                 continue
             mid = (s0 + s1) / 2.0
-            covering = [e for e in edges if _normalize_interval(e.a0, e.a1)[0] - EPS <= mid <= _normalize_interval(e.a0, e.a1)[1] + EPS]
+            covering = [
+                e for e in edges
+                if _normalize_interval(e.a0, e.a1)[0] - EPS <= mid <= _normalize_interval(e.a0, e.a1)[1] + EPS
+            ]
             if not covering:
                 continue
-            unique_rooms = {e.room_id for e in covering}
+            unique_rooms = tuple(sorted({e.room_id for e in covering}))
             if len(unique_rooms) >= 2:
-                etype = 'Innenwand'; u = DEFAULT_U['Innenwand']; factor = DEFAULT_FACTOR['Innenwand']; color_meta = 'auto_shared|nolabel'
+                etype = 'Innenwand'
+                color_meta = 'auto_shared'
             else:
-                etype = 'Aussenwand'; u = DEFAULT_U.get('Aussenwand', 0.5); factor = DEFAULT_FACTOR.get('Aussenwand', 1.0); color_meta = 'auto_contour'
-            owner = covering[0]
-            involved = ','.join(sorted(unique_rooms))
-            meta = f"{color_meta}|rooms={involved}|line={orient}:{owner.c:.3f}"
-            uid_counter += 1
-            if orient == 'H':
-                x0, y0 = s0, owner.c; x1, y1 = s1, owner.c; length = abs(s1 - s0)
-            else:
-                x0, y0 = owner.c, s0; x1, y1 = owner.c, s1; length = abs(s1 - s0)
-            height = max(e.height_m for e in covering)
-            area = length * height
-            el = ElementModel(room_id=owner.room_id, element_type=etype, area_m2=area, u_w_m2k=u, factor=factor, floor=owner.floor,
-                              x0_m=x0, y0_m=y0, x1_m=x1, y1_m=y1, length_m=length, height_m=height,
-                              uid=f"auto_{etype}_{uid_counter}", meta=meta)
-            elements.append(el)
-    return elements
+                etype = 'Aussenwand'
+                color_meta = 'auto_contour'
+            owner = next((e for e in covering if e.room_id == unique_rooms[0]), covering[0])
+            uid = _edge_span_uid(owner.floor, orient, owner.c, s0, s1, etype)
+            meta = build_edge_span_meta(kind=color_meta, room_ids=unique_rooms, orient=orient, c=owner.c, a0=s0, a1=s1, uid=uid)
+            if etype == 'Innenwand':
+                meta = meta + '|nolabel'
+            spans.append(
+                EdgeSpan(
+                    orient=orient, c=float(owner.c), a0=float(s0), a1=float(s1),
+                    floor=owner.floor, room_ids=unique_rooms, owner_room_id=owner.room_id,
+                    height_m=max(e.height_m for e in covering), element_type=etype, meta=meta, uid=uid,
+                )
+            )
+    return spans
+
+
+def edge_span_to_element(span: EdgeSpan) -> ElementModel:
+    (x0, y0), (x1, y1) = span.endpoints()
+    length = span.length_m
+    area = length * float(span.height_m)
+    u = DEFAULT_U['Innenwand'] if span.element_type == 'Innenwand' else DEFAULT_U.get('Aussenwand', 0.5)
+    factor = DEFAULT_FACTOR['Innenwand'] if span.element_type == 'Innenwand' else DEFAULT_FACTOR.get('Aussenwand', 1.0)
+    return ElementModel(
+        room_id=span.owner_room_id, element_type=span.element_type, area_m2=area, u_w_m2k=u, factor=factor, floor=span.floor,
+        x0_m=x0, y0_m=y0, x1_m=x1, y1_m=y1, length_m=length, height_m=float(span.height_m), uid=span.uid, meta=span.meta
+    )
+
+
+def build_auto_walls_shared_merge(rooms: List[RoomModel]) -> List[ElementModel]:
+    return [edge_span_to_element(span) for span in classify_floor_edge_spans(rooms)]
+
+
+def nearest_edge_span_for_point(rooms: List[RoomModel], floor: str, x_m: float, y_m: float, *, prefer_outer: bool = True, max_dist: Optional[float] = None, room_id: Optional[str] = None) -> Optional[EdgeSpan]:
+    spans = [s for s in classify_floor_edge_spans(rooms) if s.floor == floor]
+    if room_id:
+        spans = [s for s in spans if room_id in s.room_ids]
+    if prefer_outer:
+        outer = [s for s in spans if s.element_type == 'Aussenwand']
+        if outer:
+            spans = outer
+    best: Optional[EdgeSpan] = None
+    best_d = 1e99
+    for s in spans:
+        d = _dist_point_to_axis_segment(float(x_m), float(y_m), s.orient, float(s.c), float(s.a0), float(s.a1))
+        if prefer_outer and s.element_type == 'Aussenwand':
+            d *= 0.8
+        if d < best_d:
+            best_d = d
+            best = s
+    if best is None:
+        return None
+    if max_dist is not None and best_d > float(max_dist):
+        return None
+    return best
 
 
 def rect_to_polygon(x: float, y: float, w: float, h: float) -> list[tuple[float, float]]:
@@ -277,7 +215,11 @@ def rect_to_polygon(x: float, y: float, w: float, h: float) -> list[tuple[float,
 
 
 def room_polygon(room: RoomModel) -> list[tuple[float, float]]:
-    pts = room.polygon_points() if hasattr(room, 'polygon_points') else []
+    try:
+        room.ensure_polygon()
+    except Exception:
+        pass
+    pts = parse_polygon_m(getattr(room, "polygon_m", None))
     if len(pts) >= 3:
         return pts
     return rect_to_polygon(room.x_m, room.y_m, room.w_m, room.h_m)

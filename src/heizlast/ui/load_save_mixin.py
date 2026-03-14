@@ -2,7 +2,7 @@ import math
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from ..domain.models import RoomModel
-from .graphics import snap_m
+from ..core.polygon_ops import snap_m
 
 from PySide6.QtWidgets import QFileDialog, QMessageBox
 from .dialogs.new_project_dialog import NewProjectDialog
@@ -220,33 +220,29 @@ class MainWindowLoadSaveMixin:
     # ---------------- Auswahl und Formular ----------------
 
     def _normalize_room_geometry(self, r: RoomModel) -> None:
-         """
-         Single Source of Truth: Raumgeometrie (x/y/w/h/height).
-         Diese Funktion ist die zentrale Stelle, die garantiert:
-           - w/h immer > 0 und >= MIN_SIZE
-           - x/y gesnapt
-           - height gesetzt
-         """
-         if r is None:
-             return
-
-         MIN_SIZE = 0.20
+         try:
+             if hasattr(self, "controller") and getattr(self, "controller", None) is not None:
+                 self.controller.domain.normalize_room_geometry(r)
+                 return
+         except Exception:
+             pass
 
          try:
+             MIN_SIZE = 0.20
+             r.ensure_polygon()
+             r.normalize_polygon_bbox()
              r.x_m = snap_m(float(r.x_m or 0.0))
              r.y_m = snap_m(float(r.y_m or 0.0))
-
-             # w/h immer positiv und Mindestmaß
              r.w_m = max(MIN_SIZE, snap_m(abs(float(r.w_m or MIN_SIZE))))
              r.h_m = max(MIN_SIZE, snap_m(abs(float(r.h_m or MIN_SIZE))))
-
-             # Raumhöhe absichern
              if float(getattr(r, "height_m", 0.0) or 0.0) <= 1e-6:
                  r.height_m = 2.50
-
+             if getattr(r, "is_axis_aligned_rect_polygon", lambda: False)():
+                 r.resize_rect_polygon_from_bbox(r.x_m, r.y_m, r.w_m, r.h_m)
+             else:
+                 r.normalize_polygon_bbox()
              r.recompute_volume()
          except Exception:
-             # Im Zweifel nichts crashen lassen
              pass
 
     def _on_load(self):
@@ -271,6 +267,12 @@ class MainWindowLoadSaveMixin:
             QMessageBox.critical(self, "Load error", str(e))
             return False
 
+        for r in rooms:
+            try:
+                r.ensure_polygon()
+                self._normalize_room_geometry(r)
+            except Exception:
+                pass
         self.rooms = {r.id: r for r in rooms}
         self.elements = elements
 

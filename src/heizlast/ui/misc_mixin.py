@@ -2,7 +2,9 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from ..domain.models import RoomModel
-from ..core.geometry import orthogonalize_points, serialize_polygon_m, validate_orthogonal_polygon, simplify_orthogonal_polygon, room_polygon, merge_room_polygons, subtract_room_polygons, split_room_polygon
+from ..core.geometry import orthogonalize_points, room_polygon, merge_room_polygons, subtract_room_polygons, split_room_polygon
+from ..domain.services.room_operation_service import RoomOperationRecord
+from ..core.polygon_ops import serialize_polygon_m, validate_orthogonal_polygon, simplify_orthogonal_polygon, snap_m
 from PySide6.QtWidgets import QDialog
 from PySide6.QtWidgets import QMessageBox, QVBoxLayout, QPushButton
 
@@ -17,15 +19,13 @@ except Exception:
     FigureCanvas = None
     Poly3DCollection = None
 from .graphics import PX_PER_M
-from .graphics import snap_m
-from .graphics import RoomRectItem
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor,QPen,QBrush
 from PySide6.QtWidgets import QVBoxLayout
 
 from PySide6.QtCore import QPointF
 
-from ..domain.models import ElementModel, RoomModel
+from ..domain.models import ElementModel
 
 class MainWindowMiscMixin:
     def _meta_parse_any(self, meta: str) -> tuple[dict, str]:
@@ -327,13 +327,13 @@ class MainWindowMiscMixin:
                     best = QPointF(best.x(), y * PX_PER_M)
         return best
 
-    def _create_room_from_polygon(self, floor: str, pts_m: list[tuple[float, float]], select: bool = True):
+    def _create_room_from_polygon(self, floor: str, pts_m: list[tuple[float, float]], select: bool = True, room_id: str | None = None, name: str | None = None):
         pts_m = simplify_orthogonal_polygon([(snap_m(x), snap_m(y)) for x, y in pts_m])
         if not validate_orthogonal_polygon(pts_m):
             return None
-        rid = self._new_room_id(floor)
+        rid = str(room_id or self._new_room_id(floor))
         xs = [x for x, _ in pts_m]; ys = [y for _, y in pts_m]
-        r = RoomModel(id=rid, floor=floor, name=rid, x_m=min(xs), y_m=min(ys), w_m=max(xs)-min(xs), h_m=max(ys)-min(ys), polygon_m=serialize_polygon_m(pts_m))
+        r = RoomModel(id=rid, floor=floor, name=str(name or rid), x_m=min(xs), y_m=min(ys), w_m=max(xs)-min(xs), h_m=max(ys)-min(ys), polygon_m=serialize_polygon_m(pts_m))
         self._normalize_room_geometry(r)
         self.rooms[rid] = r
         self._rebuild_all_graphics()
@@ -414,25 +414,77 @@ class MainWindowMiscMixin:
             out = [self._selected_room_id]
         return out
 
+    def _controller_house_state(self):
+        ctrl = getattr(self, "controller", None)
+        state = getattr(ctrl, "state", None)
+        if state is not None:
+            return state
+        raise RuntimeError("No AppController/HouseState available")
+
+    def _push_room_operation_record(self, rec: RoomOperationRecord | None) -> None:
+        if rec is None:
+            return
+        stack = getattr(self, '_room_op_undo_stack', None)
+        if stack is None:
+            stack = []
+            self._room_op_undo_stack = stack
+        stack.append(rec)
+        self._room_op_redo_stack = []
+
+    def _apply_room_operation_record_to_ui(self, state: HouseState, rec: RoomOperationRecord | None) -> None:
+        self._sync_from_house_state(state)
+        try:
+            self._rebuild_all_graphics()
+        except Exception:
+            pass
+        self._selected_room_id = getattr(rec, 'selected_room_id', None) if rec is not None else None
+        try:
+            self._populate_room_form()
+        except Exception:
+            pass
+
+    def _undo_last_room_operation(self) -> None:
+        stack = getattr(self, '_room_op_undo_stack', None) or []
+        if not stack:
+            return
+        rec = stack.pop()
+        state = self._controller_house_state()
+        rec.undo(state)
+        redo = getattr(self, '_room_op_redo_stack', None)
+        if redo is None:
+            redo = []
+            self._room_op_redo_stack = redo
+        redo.append(rec)
+        self._apply_room_operation_record_to_ui(state, rec)
+
+    def _redo_last_room_operation(self) -> None:
+        stack = getattr(self, '_room_op_redo_stack', None) or []
+        if not stack:
+            return
+        rec = stack.pop()
+        state = self._controller_house_state()
+        rec.redo(state)
+        undo = getattr(self, '_room_op_undo_stack', None)
+        if undo is None:
+            undo = []
+            self._room_op_undo_stack = undo
+        undo.append(rec)
+        self._apply_room_operation_record_to_ui(state, rec)
+
     def _on_merge_selected_rooms(self):
         ids = self._selected_room_ids()
         if len(ids) < 2:
             try: self.statusBar().showMessage('Bitte mindestens zwei Räume zum Verschmelzen selektieren.', 4000)
             except Exception: pass
             return
-        rooms = [self.rooms[rid] for rid in ids if rid in self.rooms]
-        floors = {r.floor for r in rooms}
-        if len(floors) != 1:
+        ctrl = getattr(self, "controller", None)
+        if ctrl is None:
             return
-        merged = merge_room_polygons([room_polygon(r) for r in rooms])
-        if not validate_orthogonal_polygon(merged):
+        rec = ctrl.merge_rooms(ids)
+        if rec is None:
             return
-        keep = rooms[0]
-        for r in rooms[1:]:
-            self.rooms.pop(r.id, None)
-        keep.set_polygon_points(merged)
-        self._normalize_room_geometry(keep)
-        self._rebuild_all_graphics()
+        self._push_room_operation_record(rec)
+        self._apply_room_operation_record_to_ui(ctrl.state, rec)
 
     def _on_subtract_selected_rooms(self):
         ids = self._selected_room_ids()
@@ -440,21 +492,16 @@ class MainWindowMiscMixin:
             try: self.statusBar().showMessage('Bitte zuerst den Basisraum, dann die abzuziehenden Räume selektieren.', 4000)
             except Exception: pass
             return
-        rooms = [self.rooms[rid] for rid in ids if rid in self.rooms]
-        floors = {r.floor for r in rooms}
-        if len(floors) != 1:
+        ctrl = getattr(self, "controller", None)
+        if ctrl is None:
             return
-        base = rooms[0]
-        result = subtract_room_polygons(room_polygon(base), [room_polygon(r) for r in rooms[1:]])
-        if not validate_orthogonal_polygon(result):
+        rec = ctrl.subtract_rooms(ids[0], ids[1:])
+        if rec is None:
             try: self.statusBar().showMessage('Subtraktion ergab keine gültige orthogonale Restfläche.', 5000)
             except Exception: pass
             return
-        for r in rooms[1:]:
-            self.rooms.pop(r.id, None)
-        base.set_polygon_points(result)
-        self._normalize_room_geometry(base)
-        self._rebuild_all_graphics()
+        self._push_room_operation_record(rec)
+        self._apply_room_operation_record_to_ui(ctrl.state, rec)
 
     def _on_toggle_polygon_room_mode(self, checked=False):
         self._set_room_draw_tool('poly' if checked else None)
@@ -636,13 +683,13 @@ class MainWindowMiscMixin:
                         break
                 if room is None:
                     return True
-                a, b = split_room_polygon(room_polygon(room), orientation, coord)
-                if not (validate_orthogonal_polygon(a) and validate_orthogonal_polygon(b)):
+                service = self._build_room_operation_service()
+                state = self._controller_house_state()
+                rec = service.split_room(state, room.id, orientation=orientation, coord=coord)
+                if rec is None:
                     return True
-                room.set_polygon_points(a)
-                self._normalize_room_geometry(room)
-                self._create_room_from_polygon(floor, b, select=False)
-                self._rebuild_all_graphics()
+                self._push_room_operation_record(rec)
+                self._apply_room_operation_record_to_ui(state, rec)
                 return True
             if self._start_pos_scene and self._preview_room:
                 f0, p0 = self._start_pos_scene

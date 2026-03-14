@@ -15,8 +15,11 @@ from PySide6.QtWidgets import (
 
 from PySide6.QtCore import QPointF, Qt
 
+from ..core.anchors import dump_meta, parse_edge_anchor, parse_line_token, parse_meta, update_edge_anchor_meta
 from ..core.element_access import get_room_elements
+from ..core.geometry import classify_floor_edge_spans, nearest_edge_span_for_point
 from ..domain.models import ElementModel
+from ..core.polygon_ops import snap_m
 from .dialogs.window_dialog import WindowDialog
 
 class MainWindowElementEditMixin:
@@ -140,148 +143,84 @@ class MainWindowElementEditMixin:
 
     # ---------------- Element-Hervorhebung ----------------
 
-    def _dist_point_to_segment2(self, px, py, ax, ay, bx, by) -> float:
-        # squared distance
-        vx, vy = bx - ax, by - ay
-        wx, wy = px - ax, py - ay
-        vv = vx * vx + vy * vy
-        if vv <= 1e-12:
-            dx, dy = px - ax, py - ay
-            return dx * dx + dy * dy
-        t = (wx * vx + wy * vy) / vv
-        if t < 0.0:
-            cx, cy = ax, ay
-        elif t > 1.0:
-            cx, cy = bx, by
-        else:
-            cx, cy = ax + t * vx, ay + t * vy
-        dx, dy = px - cx, py - cy
-        return dx * dx + dy * dy
-
-    def _pick_nearest_wall_uid_for_window(self, win, walls: list) -> str | None:
-        cx = (float(win.x0_m) + float(win.x1_m)) * 0.5
-        cy = (float(win.y0_m) + float(win.y1_m)) * 0.5
-        best_uid = None
-        best_d2 = 1e99
-        for w in walls:
-            if not getattr(w, "has_geometry", lambda: False)():
-                continue
-            d2 = self._dist_point_to_segment2(
-                cx, cy,
-                float(w.x0_m), float(w.y0_m),
-                float(w.x1_m), float(w.y1_m),
-            )
-            if d2 < best_d2:
-                best_d2 = d2
-                best_uid = w.uid
-        return best_uid
-
-    #
 
     def _reanchor_windows_for_room(self, room_id: str) -> None:
-        # Wände dieses Raums sammeln + indexieren
-        walls = [e for e in self.elements if getattr(e, "room_id", None) == room_id and self._is_wall_element(e)]
-        if not walls:
+        room = self.rooms.get(room_id)
+        if room is None:
             return
-        walls_by_uid = {w.uid: w for w in walls if getattr(w, "uid", None)}
+        floor = getattr(room, 'floor', None)
+        rooms_on_floor = [r for r in self.rooms.values() if getattr(r, 'floor', None) == floor]
+        spans = [s for s in classify_floor_edge_spans(rooms_on_floor) if room_id in s.room_ids and s.element_type == 'Aussenwand']
+        if not spans:
+            return
+        spans_by_uid = {s.uid: s for s in spans}
 
         for win in self.elements:
-            if getattr(win, "room_id", None) != room_id:
+            if getattr(win, 'room_id', None) != room_id:
                 continue
-            if str(getattr(win, "element_type", "")) != "Fenster":
+            if str(getattr(win, 'element_type', '')) != 'Fenster':
                 continue
             if not win.has_geometry():
                 continue
 
-            parts = self._parse_meta(getattr(win, "meta", "") or "")
-
-            # Parent-Wand bestimmen
-            parent = parts.get("parent")
-            if not parent or parent not in walls_by_uid:
-                parent = self._pick_nearest_wall_uid_for_window(win, walls)
-                if not parent:
+            anchor = parse_edge_anchor(getattr(win, 'meta', '') or '')
+            parent = anchor.get('parent')
+            span = spans_by_uid.get(parent) if parent else None
+            if span is None:
+                cx = (float(win.x0_m) + float(win.x1_m)) * 0.5
+                cy = (float(win.y0_m) + float(win.y1_m)) * 0.5
+                span = nearest_edge_span_for_point(rooms_on_floor, floor, cx, cy, prefer_outer=True, room_id=room_id)
+                if span is None:
                     continue
-                parts["parent"] = parent
 
-            wall = walls_by_uid.get(parent)
-            if wall is None or not wall.has_geometry():
-                continue
-
-            # Wand-Vektor / Länge
-            x0, y0 = float(wall.x0_m), float(wall.y0_m)
-            x1, y1 = float(wall.x1_m), float(wall.y1_m)
+            (x0, y0), (x1, y1) = span.endpoints()
             dx, dy = (x1 - x0), (y1 - y0)
             L = (dx * dx + dy * dy) ** 0.5
             if L <= 1e-9:
                 continue
             ux, uy = dx / L, dy / L
 
-            # Fensterlänge konstant halten: w
-            try:
-                w_len = float(parts.get("w", "0") or 0.0)
-            except Exception:
-                w_len = 0.0
+            w_len = float(anchor.get('w') or 0.0)
             if w_len <= 1e-9:
                 wx0, wy0 = float(win.x0_m), float(win.y0_m)
                 wx1, wy1 = float(win.x1_m), float(win.y1_m)
                 w_len = ((wx1 - wx0) ** 2 + (wy1 - wy0) ** 2) ** 0.5
-                parts["w"] = f"{w_len:.4f}"
 
-            # Position entlang Wand: s (Fenster-Mitte ab Wandstart)
-            try:
-                s = float(parts.get("s", "0") or 0.0)
-            except Exception:
-                s = 0.0
-
+            s = float(anchor.get('s') or 0.0)
             if s <= 0.0:
-                # initial aus aktueller Fenstermitte projizieren
                 cx = (float(win.x0_m) + float(win.x1_m)) * 0.5
                 cy = (float(win.y0_m) + float(win.y1_m)) * 0.5
                 s = (cx - x0) * ux + (cy - y0) * uy
 
-            # Clamp: Fenster darf nicht über Wand hinaus (Touch ok)
             half = 0.5 * w_len
             if L <= w_len:
-                s = 0.5 * L  # Wand zu kurz -> zentrieren
+                s = 0.5 * L
             else:
                 s = max(half, min(s, L - half))
-            parts["s"] = f"{s:.4f}"
 
-            # Neue Fenster-Endpunkte aus Wand + (s,w)
             cx = x0 + ux * s
             cy = y0 + uy * s
             ax = cx - ux * half
             ay = cy - uy * half
             bx = cx + ux * half
             by = cy + uy * half
-
             win.x0_m, win.y0_m, win.x1_m, win.y1_m = ax, ay, bx, by
 
-
-            #win.meta = self._format_meta(parts)
-            #
-            AX_TOL = 1e-6
-
-            if abs(dy) <= AX_TOL and abs(dx) > AX_TOL:
-                # horizontale Wand
-                parts["orient"] = "H"
-                parts["c"] = f"{y0:.3f}"
-                a_min = min(x0, x1)
-                a_max = max(x0, x1)
-                parts["a0"] = f"{a_min:.3f}"
-                parts["a1"] = f"{a_max:.3f}"
-
-            elif abs(dx) <= AX_TOL and abs(dy) > AX_TOL:
-                # vertikale Wand
-                parts["orient"] = "V"
-                parts["c"] = f"{x0:.3f}"
-                a_min = min(y0, y1)
-                a_max = max(y0, y1)
-                parts["a0"] = f"{a_min:.3f}"
-                parts["a1"] = f"{a_max:.3f}"
-
-            win.meta = self._format_meta(parts)
-            #
+            orient = 'H' if abs(dy) <= 1e-6 and abs(dx) > 1e-6 else 'V'
+            axis_c = y0 if orient == 'H' else x0
+            axis_a0 = min(x0, x1) if orient == 'H' else min(y0, y1)
+            axis_a1 = max(x0, x1) if orient == 'H' else max(y0, y1)
+            win.meta = update_edge_anchor_meta(
+                getattr(win, 'meta', '') or '',
+                parent=span.uid,
+                orient=orient,
+                c=axis_c,
+                a0=axis_a0,
+                a1=axis_a1,
+                s=s,
+                w=w_len,
+                rooms=getattr(span, 'room_ids', None),
+            )
 
     #
 
@@ -299,12 +238,10 @@ class MainWindowElementEditMixin:
 
             # orient aus meta "line=H:..." oder "line=V:..."
             orient = None
-            for part in meta.split("|"):
-                part = part.strip()
-                if part.startswith("line="):
-                    val = part.split("=", 1)[1].strip()
-                    orient = val.split(":", 1)[0].strip()  # "H" oder "V"
-                    break
+            d_meta = parse_meta(meta)
+            orient, _ = parse_line_token(d_meta.get("line"))
+            if not orient:
+                orient = str(d_meta.get("orient", "") or "").strip().upper()[:1] or None
 
             if orient == "H":
                 #print(f"[DEBUG][main-ui-roomWH] uid={e.uid} set_length_from_room_w={r.w_m}")
@@ -347,18 +284,6 @@ class MainWindowElementEditMixin:
         """Zentrale Sicht: alle Elemente, die zu rid gehören (owner + shared via meta rooms=...)."""
         return get_room_elements(self.elements, rid)
 
-    def _parse_meta(self, meta: str) -> dict:
-        meta = meta or ""
-        parts = {}
-        for kv in meta.split("|"):
-            if "=" in kv:
-                k, v = kv.split("=", 1)
-                parts[k] = v
-        return parts
-
-    def _format_meta(self, parts: dict) -> str:
-        # stabiler Output (optional: sort)
-        return "|".join(f"{k}={v}" for k, v in parts.items())
 
     def _propose_element_move(self, e, new_x0_m: float, new_y0_m: float) -> Optional[tuple]:
         """
@@ -549,7 +474,7 @@ class MainWindowElementEditMixin:
         if not meta:
             return {}
         try:
-            d = self._parse_meta(meta)
+            d = parse_meta(meta)
             raw = d.get("overrides", "")
             if not raw:
                 return {}
@@ -572,22 +497,22 @@ class MainWindowElementEditMixin:
 
         # Direkter Element-Aufruf
         if hasattr(target, "meta") and not isinstance(target, str):
-            parts = self._parse_meta(getattr(target, "meta", "") or "")
+            parts = parse_meta(getattr(target, "meta", "") or "")
             for k, v in merged.items():
                 if v in (None, ""):
                     parts.pop(k, None)
                 else:
                     parts[str(k)] = str(v)
-            target.meta = self._format_meta(parts)
+            target.meta = dump_meta(parts)
             return target.meta
 
         # String-in/String-out für bestehende Call-Sites
-        d = self._parse_meta(target or "")
+        d = parse_meta(target or "")
         if merged:
             d["overrides"] = json.dumps(merged, ensure_ascii=False, sort_keys=True)
         else:
             d.pop("overrides", None)
-        return self._format_meta(d)
+        return dump_meta(d)
 
     def _snapshot_user_overrides_for_autowalls(self) -> dict:
         """
@@ -603,7 +528,7 @@ class MainWindowElementEditMixin:
                     continue
 
                 # bevorzugt persistierte ov_* lesen; Fallback auf JSON-overrides
-                parts = self._parse_meta(getattr(e, "meta", "") or "")
+                parts = parse_meta(getattr(e, "meta", "") or "")
                 ov = {k: v for k, v in parts.items() if str(k).startswith("ov_") and v not in (None, "")}
                 if not ov:
                     ov = self._meta_get_overrides(getattr(e, "meta", ""))

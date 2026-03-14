@@ -8,7 +8,8 @@ from PySide6.QtWidgets import QGraphicsScene, QMainWindow
 
 from ..core.element_metrics import ElementMetricsService
 from ..domain.models import ElementModel, RoomModel
-from .graphics import PlanView, PX_PER_M, RoomRectItem, ElementLineItem, WindowLineItem, snap_m
+from .graphics import PlanView, PX_PER_M, RoomPolygonItem, ElementLineItem, WindowLineItem
+from ..core.polygon_ops import snap_m
 from .build_mixin import MainWindowBuildMixin
 from .load_save_mixin import MainWindowLoadSaveMixin
 from .export_mixin import MainWindowExportMixin
@@ -65,7 +66,7 @@ class MainWindow(
         self.view_EG.viewport().installEventFilter(self)
         self.view_DG.viewport().installEventFilter(self)
 
-        self.room_items: Dict[str, RoomRectItem] = {}
+        self.room_items: Dict[str, RoomPolygonItem] = {}
         self.element_items: Dict[str, ElementLineItem] = {}
 
         # UI state

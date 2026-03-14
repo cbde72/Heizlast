@@ -4,26 +4,7 @@ from typing import Iterable, List, Optional, Set
 
 # Importpfade an dein Package anpassen, falls nötig:
 from ..domain.models import ElementModel
-
-
-def meta_rooms(meta: str) -> Set[str]:
-    """
-    Parse meta string (pipe-separated) and return set of room IDs listed in rooms=...
-    Example meta: "auto_contour|rooms=R1,R2|line=H:0.000"
-    """
-    out: Set[str] = set()
-    try:
-        if not meta:
-            return out
-        for part in str(meta).split("|"):
-            part = part.strip()
-            if part.startswith("rooms="):
-                raw = part.split("=", 1)[1].strip()
-                out |= {x.strip() for x in raw.split(",") if x.strip()}
-                return out
-    except Exception:
-        pass
-    return out
+from .anchors import meta_rooms
 
 
 def element_belongs_to_room(e: ElementModel, room_id: str) -> bool:
