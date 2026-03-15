@@ -187,7 +187,6 @@ def reassign_elements_after_room_operation(
         if rooms_keep:
             meta['rooms'] = ','.join(rooms_keep)
             try:
-                from .anchors import dump_meta
                 e.meta = dump_meta(meta)
             except Exception:
                 pass

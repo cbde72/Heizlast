@@ -4,17 +4,7 @@ from typing import Dict, List, Optional, Tuple
 from ..domain.models import ElementModel, RoomModel
 from .config import DEFAULT_U, DEFAULT_FACTOR
 from .anchors import build_edge_span_meta
-from .polygon_ops import (
-    deserialize_polygon_m,
-    move_polygon_edge,
-    parse_polygon_m,
-    polygon_bbox,
-    rect_to_polygon,
-    serialize_polygon_m,
-    simplify_orthogonal_polygon,
-    translate_polygon,
-    validate_orthogonal_polygon,
-)
+from .polygon_ops import parse_polygon_m, rect_to_polygon, simplify_orthogonal_polygon
 
 EPS = 1e-6
 
@@ -68,29 +58,19 @@ def orthogonalize_points(points: list[tuple[float, float]]) -> list[tuple[float,
 
 
 def room_edges(room: RoomModel) -> List[Edge]:
-    pts = room.polygon_points() if hasattr(room, 'polygon_points') else []
-    if len(pts) >= 3:
-        out: List[Edge] = []
-        n = len(pts)
-        for i in range(n):
-            x0, y0 = pts[i]
-            x1, y1 = pts[(i + 1) % n]
-            if abs(y0 - y1) <= EPS:
-                a0, a1 = sorted((x0, x1))
-                out.append(Edge('H', float(y0), float(a0), float(a1), room.id, room.floor, room.height_m))
-            elif abs(x0 - x1) <= EPS:
-                a0, a1 = sorted((y0, y1))
-                out.append(Edge('V', float(x0), float(a0), float(a1), room.id, room.floor, room.height_m))
-        return out
-    x0 = room.x_m; y0 = room.y_m; x1 = room.x_m + room.w_m; y1 = room.y_m + room.h_m
-    a = min(x0, x1); b = max(x0, x1)
-    c = min(y0, y1); d = max(y0, y1)
-    return [
-        Edge('H', c, a, b, room.id, room.floor, room.height_m),
-        Edge('H', d, a, b, room.id, room.floor, room.height_m),
-        Edge('V', a, c, d, room.id, room.floor, room.height_m),
-        Edge('V', b, c, d, room.id, room.floor, room.height_m),
-    ]
+    pts = room_polygon(room)
+    out: List[Edge] = []
+    n = len(pts)
+    for i in range(n):
+        x0, y0 = pts[i]
+        x1, y1 = pts[(i + 1) % n]
+        if abs(y0 - y1) <= EPS:
+            a0, a1 = sorted((x0, x1))
+            out.append(Edge('H', float(y0), float(a0), float(a1), room.id, room.floor, room.height_m))
+        elif abs(x0 - x1) <= EPS:
+            a0, a1 = sorted((y0, y1))
+            out.append(Edge('V', float(x0), float(a0), float(a1), room.id, room.floor, room.height_m))
+    return out
 
 def _key(orient: str, c: float, tol: float=1e-6) -> Tuple[str, int]:
     return (orient, int(round(c / tol)))
@@ -208,10 +188,6 @@ def nearest_edge_span_for_point(rooms: List[RoomModel], floor: str, x_m: float, 
         return None
     return best
 
-
-def rect_to_polygon(x: float, y: float, w: float, h: float) -> list[tuple[float, float]]:
-    x0 = float(x); y0 = float(y); x1 = x0 + float(w); y1 = y0 + float(h)
-    return [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
 
 
 def room_polygon(room: RoomModel) -> list[tuple[float, float]]:
