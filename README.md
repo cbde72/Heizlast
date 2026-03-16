@@ -1,8 +1,3 @@
-Hier ist ein **professionelles GitHub-README** für dein Projekt **Heizlast** (inkl. der neuen Funktionen wie 3D-Haus, Dachprofile, Wand-2D-Ansicht, Materialwahl usw.).
-Du kannst es direkt als `README.md` in dein Repository legen.
-
----
-
 # Heizlast – Building Heat Load & Geometry Tool
 
 Engineering-Tool zur **Heizlastberechnung und Gebäudegeometrie-Analyse** nach **DIN EN 12831** mit integrierter **2D-Planung, 3D-Gebäudemodell und Dachgeometrie-Simulation**.
