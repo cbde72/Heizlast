@@ -3,11 +3,35 @@ from dataclasses import dataclass, asdict, field
 from typing import Any, Dict, Literal
 import json
 from pathlib import Path
+from .. import PROJECT_SCHEMA_VERSION
 
 ThicknessMode = Literal["half", "full"]
 FloorAreaMode = Literal["inner", "outer"]
 TBMode = Literal["none", "delta_u", "psi", "percent"]
 GroundMode = Literal["none", "simplified", "perimeter"]
+RoofType = Literal["satteldach", "pultdach", "walmdach", "flachdach"]
+RidgeOrientation = Literal["length", "width"]
+PultRiseSide = Literal["left", "right"]
+FacadeMaterial = Literal["klinker", "putz", "holz", "beton"]
+RoofMaterial = Literal["ziegel"]
+
+
+@dataclass
+class AtticCfgDTO:
+    enabled: bool = False
+    building_width_m: float = 8.0
+    building_length_m: float = 10.0
+    knee_wall_height_m: float = 1.0
+    roof_type: RoofType = "satteldach"
+    ridge_orientation: RidgeOrientation = "length"
+    roof_overhang_m: float = 0.30
+    ridge_offset_ratio: float = 0.0
+    pult_rise_side: PultRiseSide = "right"
+    roof_pitch_deg: float = 35.0
+    facade_material: FacadeMaterial = "klinker"
+    roof_material: RoofMaterial = "ziegel"
+    u_roof_w_m2k: float = 0.30
+    u_gable_w_m2k: float = 0.45
 
 
 @dataclass
@@ -33,7 +57,8 @@ class GroundModelCfgDTO:
 
 @dataclass
 class ProjectCfg:
-    cfg_version: int = 4
+    cfg_version: int = PROJECT_SCHEMA_VERSION
+    internal_project_version: str = "V22-intern-01"
 
     # Randbedingungen
     t_out_c: float = -10.0
@@ -64,6 +89,9 @@ class ProjectCfg:
     # Erdreichmodell
     ground: GroundModelCfgDTO = field(default_factory=GroundModelCfgDTO)
 
+    # DG Dach / Giebel
+    attic: AtticCfgDTO = field(default_factory=AtticCfgDTO)
+
     def to_json_dict(self) -> Dict[str, Any]:
         return asdict(self)
 
@@ -85,12 +113,53 @@ class ProjectCfg:
             if "ground" not in d or not isinstance(d["ground"], dict):
                 d["ground"] = {}
             version = 4
+        if version < 5:
+            if "attic" not in d or not isinstance(d.get("attic", {}), dict):
+                d["attic"] = {}
+            version = 5
+        if version < 6:
+            d.setdefault("internal_project_version", "V11-intern-01")
+            version = 6
+        if version < 7:
+            if "attic" not in d or not isinstance(d.get("attic", {}), dict):
+                d["attic"] = {}
+            d.setdefault("internal_project_version", "V13-intern-01")
+            version = 7
+        if version < 8:
+            if "attic" not in d or not isinstance(d.get("attic", {}), dict):
+                d["attic"] = {}
+            a = d.get("attic", {})
+            if isinstance(a, dict):
+                a.setdefault("ridge_orientation", "length")
+                a.setdefault("roof_overhang_m", 0.30)
+                a.setdefault("ridge_offset_ratio", 0.0)
+                a.setdefault("pult_rise_side", "right")
+            d.setdefault("internal_project_version", "V15-intern-01")
+            version = 8
+        if version < 9:
+            if "attic" not in d or not isinstance(d.get("attic", {}), dict):
+                d["attic"] = {}
+            a = d.get("attic", {})
+            if isinstance(a, dict):
+                a.setdefault("facade_material", "klinker")
+            d.setdefault("internal_project_version", "V18-intern-01")
+            version = 9
+        if version < 10:
+            if "attic" not in d or not isinstance(d.get("attic", {}), dict):
+                d["attic"] = {}
+            a = d.get("attic", {})
+            if isinstance(a, dict):
+                a.setdefault("roof_material", "ziegel")
+            d.setdefault("internal_project_version", "V19-intern-01")
+            version = 10
 
         tb_raw = d.get("tb", {}) if isinstance(d.get("tb", {}), dict) else {}
         g_raw = d.get("ground", {}) if isinstance(d.get("ground", {}), dict) else {}
+        a_raw = d.get("attic", {}) if isinstance(d.get("attic", {}), dict) else {}
 
         return ProjectCfg(
-            cfg_version=4,
+            cfg_version=PROJECT_SCHEMA_VERSION,
+            internal_project_version=str(d.get("internal_project_version", "V22-intern-01")),
             t_out_c=float(d.get("t_out_c", -10.0)),
             t_keller_c=float(d.get("t_keller_c", 14.0)),
             t_oben_c=float(d.get("t_oben_c", 12.0)),
@@ -121,6 +190,22 @@ class ProjectCfg:
                 f_wall=float(g_raw.get("f_wall", 0.60)),
                 psi_perimeter_w_mk=float(g_raw.get("psi_perimeter_w_mk", 0.0)),
             ),
+            attic=AtticCfgDTO(
+                enabled=bool(a_raw.get("enabled", False)),
+                building_width_m=float(a_raw.get("building_width_m", 8.0)),
+                building_length_m=float(a_raw.get("building_length_m", 10.0)),
+                knee_wall_height_m=float(a_raw.get("knee_wall_height_m", 1.0)),
+                roof_type=str(a_raw.get("roof_type", "satteldach") or "satteldach").strip().lower(),
+                ridge_orientation=str(a_raw.get("ridge_orientation", "length") or "length").strip().lower(),
+                roof_overhang_m=float(a_raw.get("roof_overhang_m", 0.30)),
+                ridge_offset_ratio=float(a_raw.get("ridge_offset_ratio", 0.0)),
+                pult_rise_side=str(a_raw.get("pult_rise_side", "right") or "right").strip().lower(),
+                roof_pitch_deg=float(a_raw.get("roof_pitch_deg", 35.0)),
+                facade_material=str(a_raw.get("facade_material", "klinker") or "klinker").strip().lower(),
+                roof_material=str(a_raw.get("roof_material", "ziegel") or "ziegel").strip().lower(),
+                u_roof_w_m2k=float(a_raw.get("u_roof_w_m2k", 0.30)),
+                u_gable_w_m2k=float(a_raw.get("u_gable_w_m2k", 0.45)),
+            ),
         )
 
 
@@ -133,6 +218,6 @@ def load_project_cfg(path: Path) -> ProjectCfg:
         return ProjectCfg()
     d = json.loads(path.read_text(encoding="utf-8"))
     cfg = ProjectCfg.from_json_dict(d)
-    if int(d.get("cfg_version", 1) or 1) < 4:
+    if int(d.get("cfg_version", 1) or 1) < PROJECT_SCHEMA_VERSION:
         save_project_cfg(path, cfg)
     return cfg

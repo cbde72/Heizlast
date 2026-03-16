@@ -45,3 +45,22 @@ def test_load_rooms_migrates_missing_polygon_field_via_roommodel(tmp_path):
     assert room.polygon_m
     assert room.is_axis_aligned_rect_polygon()
     assert room.area_m2() == 12.0
+
+
+
+def test_project_cfg_roundtrip_preserves_attic_u_values(tmp_path):
+    from heizlast.configs.project_config import ProjectCfg, save_project_cfg, load_project_cfg
+
+    path = tmp_path / 'project.json'
+    cfg = ProjectCfg()
+    cfg.attic.enabled = True
+    cfg.attic.u_roof_w_m2k = 0.19
+    cfg.attic.u_gable_w_m2k = 0.23
+
+    save_project_cfg(path, cfg)
+    loaded = load_project_cfg(path)
+
+    assert loaded.cfg_version == 5
+    assert loaded.attic.enabled is True
+    assert loaded.attic.u_roof_w_m2k == 0.19
+    assert loaded.attic.u_gable_w_m2k == 0.23

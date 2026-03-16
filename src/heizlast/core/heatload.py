@@ -31,7 +31,7 @@ normative Detailmodellierung (ψ-Katalog, Anschlussdetails) ohne passende Eingab
 
 from dataclasses import dataclass
 import re
-from typing import Dict, List, Literal, Tuple
+from typing import Dict, List, Literal, Optional, Tuple
 
 from .config import VentilationCfg, DEFAULT_U
 from .ground_model import GroundModelCfg, _effective_ground_temp, _is_ground_element

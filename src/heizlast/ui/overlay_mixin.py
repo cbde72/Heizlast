@@ -53,6 +53,11 @@ class MainWindowOverlayMixin:
                         getattr(it, "leader").setVisible(show)
                 except Exception:
                     pass
+            if hasattr(it, "set_auto_attic_visual_enabled"):
+                try:
+                    it.set_auto_attic_visual_enabled(bool(getattr(self, "show_auto_attic_markers", False)))
+                except Exception:
+                    pass
 
     def _on_regenerate_labels(self):
         """Wendet Label-Sichtbarkeit an und aktualisiert die Darstellung."""
@@ -90,6 +95,24 @@ class MainWindowOverlayMixin:
         except Exception:
             pass
         self._apply_room_debug_overlay(getattr(self, "_last_heatload_results", None))
+
+    def _on_toggle_auto_attic_markers(self, checked: bool) -> None:
+        self.show_auto_attic_markers = bool(checked)
+        try:
+            self._settings.setValue("auto_attic_markers", bool(checked))
+        except Exception:
+            pass
+        if hasattr(self, "act_auto_attic_markers") and self.act_auto_attic_markers.isChecked() != bool(checked):
+            self.act_auto_attic_markers.blockSignals(True)
+            self.act_auto_attic_markers.setChecked(bool(checked))
+            self.act_auto_attic_markers.blockSignals(False)
+        self._apply_element_label_visibility()
+        try:
+            self.scene_EG.update()
+            self.scene_DG.update()
+            self.scene_KG.update()
+        except Exception:
+            pass
 
     def _apply_room_debug_overlay(self, results: Optional[Dict[str, dict]]) -> None:
         """Wendet Debug-Overlay auf Räume an."""
@@ -145,6 +168,10 @@ class MainWindowOverlayMixin:
             self.cb_area_ref_outer.blockSignals(True)
             self.cb_area_ref_outer.setChecked(checked)
             self.cb_area_ref_outer.blockSignals(False)
+        if hasattr(self, "act_area_ref_outer") and self.act_area_ref_outer.isChecked() != checked:
+            self.act_area_ref_outer.blockSignals(True)
+            self.act_area_ref_outer.setChecked(checked)
+            self.act_area_ref_outer.blockSignals(False)
 
         self._recompute_and_redraw()
 

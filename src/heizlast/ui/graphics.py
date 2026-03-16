@@ -65,7 +65,7 @@ def angle_upright_degrees(p0: QPointF, p1: QPointF) -> float:
 # --------------------------------------------------------------------------------------
 
 class PlanView(QGraphicsView):
-    """V06-style view: antialiasing + background grid."""
+    """V06-style view with smoother CAD-like zoom and pan behaviour."""
     def __init__(self, scene: QGraphicsScene):
         super().__init__(scene)
         self.setRenderHint(QPainter.Antialiasing, True)
@@ -79,6 +79,12 @@ class PlanView(QGraphicsView):
         self._zoom_step = 1.15
         self._zoom_min = -12
         self._zoom_max = 24
+        self._panning = False
+        self._pan_start = None
+
+        # Drag only on explicit pan gesture, selection remains unchanged otherwise.
+        self.setDragMode(QGraphicsView.NoDrag)
+        self._context_menu_handler = None
 
     def reset_zoom(self):
         self.resetTransform()
@@ -101,6 +107,23 @@ class PlanView(QGraphicsView):
         self.fitInView(self.sceneRect(), Qt.KeepAspectRatio)
         self._zoom_level = 0
 
+    def fit_content(self, padding_px: float = 40.0):
+        """Zentriert und zoomt auf den tatsächlichen Inhalt der Szene."""
+        scene = self.scene()
+        if scene is None:
+            self.fit_all()
+            return
+
+        rect = scene.itemsBoundingRect()
+        if not rect.isValid() or rect.isNull() or rect.width() <= 1.0 or rect.height() <= 1.0:
+            self.fit_all()
+            return
+
+        rect = rect.adjusted(-padding_px, -padding_px, padding_px, padding_px)
+        self.fitInView(rect, Qt.KeepAspectRatio)
+        self.centerOn(rect.center())
+        self._zoom_level = 0
+
     def drawBackground(self, painter, rect):
         painter.setPen(QPen(Qt.lightGray, 1))
         step = GRID_M * PX_PER_M
@@ -120,22 +143,60 @@ class PlanView(QGraphicsView):
             y += int(step)
 
     def wheelEvent(self, event):
-        # Nur Ctrl+Wheel = Zoom
-        if event.modifiers() & Qt.ControlModifier:
-            delta = event.angleDelta().y()
-            if delta == 0:
-                return
+        # Maus-Rad zoomt immer zur Mausposition; Ctrl bleibt ebenfalls unterstützt.
+        delta = event.angleDelta().y()
+        if delta == 0:
+            event.ignore()
+            return
 
+        steps = max(1, abs(delta) // 120)
+        for _ in range(int(steps)):
             if delta > 0:
                 self.zoom_in()
             else:
                 self.zoom_out()
 
+        event.accept()
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MiddleButton:
+            self._panning = True
+            self._pan_start = event.position()
+            self.setCursor(Qt.ClosedHandCursor)
             event.accept()
             return
+        super().mousePressEvent(event)
 
-        # Ohne Ctrl: Standard-Scroll
-        super().wheelEvent(event)
+    def mouseMoveEvent(self, event):
+        if self._panning and self._pan_start is not None:
+            delta = event.position() - self._pan_start
+            self._pan_start = event.position()
+            self.horizontalScrollBar().setValue(self.horizontalScrollBar().value() - int(delta.x()))
+            self.verticalScrollBar().setValue(self.verticalScrollBar().value() - int(delta.y()))
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.MiddleButton and self._panning:
+            self._panning = False
+            self._pan_start = None
+            self.setCursor(Qt.ArrowCursor)
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+
+    def contextMenuEvent(self, event):
+        handler = getattr(self, "_context_menu_handler", None)
+        if callable(handler):
+            try:
+                if handler(self, event):
+                    event.accept()
+                    return
+            except Exception:
+                pass
+        super().contextMenuEvent(event)
 
 
 # --------------------------------------------------------------------------------------
@@ -547,25 +608,112 @@ class ElementLineItem(QGraphicsLineItem):
         self._base_pen = None
         self._base_label_brush = None
         self._base_leader_pen = None
+        self._show_auto_attic_visual = False
+        self._badge_circle = None
+        self._badge_text = None
 
         self._apply_style()
         self._sync_from_model()
 
     # --- styling / highlight -------------------------------------------------
 
+    def _is_auto_attic(self) -> bool:
+        try:
+            return is_auto_attic_element(self.element)
+        except Exception:
+            return False
+
+    def _auto_attic_part(self) -> str:
+        try:
+            return str(parse_attic_meta(getattr(self.element, "meta", None)).get("attic_part", "") or "")
+        except Exception:
+            return ""
+
+    def _auto_attic_style_spec(self) -> tuple[QColor, str]:
+        part = self._auto_attic_part()
+        mapping = {
+            "roof_left": (QColor(168, 85, 247), "DL"),
+            "roof_right": (QColor(217, 70, 239), "DR"),
+            "roof_front": (QColor(129, 140, 248), "DF"),
+            "roof_back": (QColor(99, 102, 241), "DH"),
+            "gable_front": (QColor(245, 158, 11), "GV"),
+            "gable_back": (QColor(234, 88, 12), "GH"),
+            "gable_left": (QColor(251, 191, 36), "GL"),
+            "gable_right": (QColor(249, 115, 22), "GR"),
+        }
+        return mapping.get(part, (QColor(139, 92, 246), "DG"))
+
+    def set_auto_attic_visual_enabled(self, enabled: bool) -> None:
+        self._show_auto_attic_visual = bool(enabled)
+        self._apply_style()
+        self._sync_label_and_leader()
+        self.update()
+
+    def _ensure_auto_attic_badge(self) -> None:
+        if self._badge_circle is None:
+            self._badge_circle = QGraphicsEllipseItem(self)
+            self._badge_circle.setZValue(23)
+            self._badge_circle.setRect(-9.0, -9.0, 18.0, 18.0)
+            self._badge_circle.setPen(QPen(Qt.white, 1.5))
+        if self._badge_text is None:
+            self._badge_text = QGraphicsSimpleTextItem(self)
+            self._badge_text.setZValue(24)
+
+    def _sync_auto_attic_badge(self) -> None:
+        enabled = bool(self._show_auto_attic_visual and self._is_auto_attic())
+        if not enabled:
+            if self._badge_circle is not None:
+                self._badge_circle.hide()
+            if self._badge_text is not None:
+                self._badge_text.hide()
+            return
+
+        self._ensure_auto_attic_badge()
+        color, badge = self._auto_attic_style_spec()
+        self._badge_circle.setBrush(QBrush(color))
+        self._badge_text.setBrush(QBrush(Qt.white))
+        self._badge_text.setText(badge)
+
+        ln = self.line()
+        mx = (ln.x1() + ln.x2()) / 2.0
+        my = (ln.y1() + ln.y2()) / 2.0
+        dx = ln.x2() - ln.x1()
+        dy = ln.y2() - ln.y1()
+        length = max(1.0, math.hypot(dx, dy))
+        nx = -dy / length
+        ny = dx / length
+        bx = mx + nx * 14.0
+        by = my + ny * 14.0
+        self._badge_circle.setPos(bx, by)
+        br = self._badge_text.boundingRect()
+        self._badge_text.setPos(bx - br.width() / 2.0, by - br.height() / 2.0)
+        self._badge_circle.show()
+        self._badge_text.show()
+
     def _apply_style(self):
         style = ELEMENT_STYLES.get(self.element.element_type, ELEMENT_STYLES["default"])
-        pen = QPen(style["color"], style["width"])
-        if style.get("dash"):
+        line_color = style["color"]
+        line_width = style["width"]
+        dash = bool(style.get("dash"))
+        if self._show_auto_attic_visual and self._is_auto_attic():
+            attic_color, _ = self._auto_attic_style_spec()
+            line_color = attic_color
+            line_width = max(float(line_width) + 1.0, 4.0)
+            dash = True
+        pen = QPen(line_color, line_width)
+        if dash:
             pen.setStyle(Qt.DashLine)
+        pen.setCapStyle(Qt.RoundCap)
+        pen.setJoinStyle(Qt.RoundJoin)
         self.setPen(pen)
-        self.label.setBrush(QBrush(style["color"]))
-        self.leader.setPen(QPen(style["color"], 1))
+        self.label.setBrush(QBrush(line_color))
+        self.leader.setPen(QPen(line_color, 1))
 
         # cache base
         self._base_pen = QPen(self.pen())
         self._base_label_brush = QBrush(self.label.brush())
         self._base_leader_pen = QPen(self.leader.pen())
+        self._sync_auto_attic_badge()
 
     def _set_selected_visual(self, selected: bool) -> None:
         if selected:
@@ -662,6 +810,8 @@ class ElementLineItem(QGraphicsLineItem):
             self.leader.show()
         else:
             self.leader.hide()
+
+        self._sync_auto_attic_badge()
 
     def _write_back_model_from_item(self):
         # write back endpoints based on item pos + local line

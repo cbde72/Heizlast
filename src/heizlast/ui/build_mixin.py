@@ -1,8 +1,9 @@
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QSize
-from PySide6.QtGui import QAction, QActionGroup, QKeySequence, QShortcut, QIcon
+from PySide6.QtCore import Qt, QSize, QPointF
+from PySide6.QtGui import QAction, QActionGroup, QKeySequence, QShortcut, QIcon, QPainter, QPen, QBrush, QColor, QPolygonF, QPainterPath, QPixmap
 from .graphics import PlanView, PX_PER_M, ElementLineItem, WindowLineItem
+from .attic_sketch import AtticSketchPanel
 from ..core.polygon_ops import snap_m
 
 from PySide6.QtWidgets import (
@@ -48,8 +49,165 @@ class MainWindowBuildMixin:
     def _std_icon(self, sp):
         return self.style().standardIcon(sp)
 
+    def _asset_icon_path(self, name: str) -> Path | None:
+        base = Path(__file__).resolve().parents[1] / "assets" / "icons"
+        candidate = base / f"{name}.svg"
+        return candidate if candidate.exists() else None
+
+    def _load_asset_icon(self, name: str) -> QIcon:
+        candidate = self._asset_icon_path(name)
+        if candidate is None:
+            return QIcon()
+        return QIcon(str(candidate))
+
+    def _draw_shape_icon(self, name: str) -> QIcon:
+        size = 24
+        pm = QPixmap(size, size)
+        pm.fill(Qt.transparent)
+        painter = QPainter(pm)
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        fg = self.palette().buttonText().color()
+        accent = self.palette().highlight().color()
+        muted = QColor(fg)
+        muted.setAlpha(150)
+        pen = QPen(fg, 1.8, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
+        accent_pen = QPen(accent, 2.0, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
+        dashed_pen = QPen(accent, 1.6, Qt.DashLine, Qt.RoundCap, Qt.RoundJoin)
+        painter.setPen(pen)
+        painter.setBrush(Qt.NoBrush)
+
+        if name == "select":
+            path = QPainterPath()
+            path.moveTo(5, 4)
+            path.lineTo(5, 18)
+            path.lineTo(9.5, 14.0)
+            path.lineTo(12.5, 20)
+            path.lineTo(15.2, 18.8)
+            path.lineTo(12.1, 12.8)
+            path.lineTo(18.5, 12.8)
+            path.closeSubpath()
+            painter.fillPath(path, QBrush(accent))
+            painter.drawPath(path)
+        elif name == "draw_floorplan":
+            painter.setPen(QPen(muted, 1.2))
+            for x in (5, 11, 17):
+                painter.drawLine(x, 4, x, 20)
+            for y in (5, 11, 17):
+                painter.drawLine(4, y, 20, y)
+            painter.setPen(accent_pen)
+            painter.drawRect(6, 6, 12, 9)
+        elif name == "rect_room":
+            painter.setPen(accent_pen)
+            painter.drawRect(5.5, 6.0, 13.0, 10.0)
+        elif name == "l_room":
+            painter.setPen(accent_pen)
+            painter.drawPolyline(QPolygonF([
+                QPointF(5.5, 6.0), QPointF(18.0, 6.0), QPointF(18.0, 10.0),
+                QPointF(12.0, 10.0), QPointF(12.0, 16.0), QPointF(5.5, 16.0), QPointF(5.5, 6.0)
+            ]))
+        elif name == "polygon_room":
+            painter.setPen(accent_pen)
+            painter.drawPolygon(QPolygonF([
+                QPointF(6.0, 7.0), QPointF(16.5, 5.5), QPointF(19.0, 11.0),
+                QPointF(14.0, 17.5), QPointF(7.0, 16.0), QPointF(4.5, 11.0)
+            ]))
+        elif name == "split_room":
+            painter.setPen(QPen(fg, 1.6))
+            painter.drawRect(4.5, 5.5, 15.0, 12.0)
+            painter.setPen(dashed_pen)
+            painter.drawLine(12.0, 4.0, 12.0, 19.0)
+        elif name == "merge_rooms":
+            painter.setPen(QPen(fg, 1.6))
+            painter.drawRect(4.5, 7.0, 6.5, 8.0)
+            painter.drawRect(13.0, 7.0, 6.5, 8.0)
+            painter.setPen(accent_pen)
+            painter.drawLine(10.5, 11.0, 13.0, 11.0)
+            painter.drawLine(11.7, 9.8, 11.7, 12.2)
+        elif name == "subtract_rooms":
+            painter.setPen(QPen(fg, 1.6))
+            painter.drawRect(4.5, 6.0, 14.5, 11.0)
+            painter.setBrush(QBrush(accent))
+            painter.drawRect(12.0, 8.0, 5.0, 5.0)
+            painter.setPen(QPen(Qt.white, 1.8, Qt.SolidLine, Qt.RoundCap))
+            painter.drawLine(13.0, 10.5, 16.0, 10.5)
+        elif name == "window_insert":
+            painter.setPen(QPen(fg, 1.6))
+            painter.drawLine(5.0, 17.0, 19.0, 17.0)
+            painter.setPen(accent_pen)
+            painter.drawLine(8.0, 17.0, 16.0, 17.0)
+            painter.drawLine(8.0, 14.0, 8.0, 20.0)
+            painter.drawLine(16.0, 14.0, 16.0, 20.0)
+        elif name == "roof_profile":
+            painter.setPen(accent_pen)
+            painter.drawPolyline(QPolygonF([QPointF(4.5, 16.5), QPointF(10.0, 7.0), QPointF(19.5, 16.5)]))
+            painter.setPen(QPen(fg, 1.4))
+            painter.drawLine(4.5, 16.5, 4.5, 20.0)
+            painter.drawLine(19.5, 16.5, 19.5, 20.0)
+            painter.drawLine(4.5, 20.0, 19.5, 20.0)
+        elif name == "roof_settings":
+            painter.setPen(accent_pen)
+            painter.drawPolyline(QPolygonF([QPointF(4.5, 15.5), QPointF(10.0, 7.0), QPointF(19.5, 15.5)]))
+            painter.setPen(QPen(fg, 1.4))
+            painter.drawLine(4.5, 15.5, 4.5, 19.0)
+            painter.drawLine(19.5, 15.5, 19.5, 19.0)
+            painter.drawLine(4.5, 19.0, 19.5, 19.0)
+            painter.drawEllipse(14.5, 4.0, 5.0, 5.0)
+            painter.drawLine(17.0, 4.0, 17.0, 2.5)
+            painter.drawLine(17.0, 9.0, 17.0, 10.5)
+            painter.drawLine(14.5, 6.5, 13.0, 6.5)
+            painter.drawLine(19.5, 6.5, 21.0, 6.5)
+        elif name == "attic_markers":
+            painter.setPen(accent_pen)
+            painter.drawPolyline(QPolygonF([QPointF(4.5, 15.5), QPointF(10.0, 7.5), QPointF(19.5, 15.5)]))
+            painter.setPen(QPen(fg, 1.4))
+            painter.drawRoundedRect(4.0, 16.0, 7.0, 4.5, 1.5, 1.5)
+            painter.drawRoundedRect(13.0, 16.0, 7.0, 4.5, 1.5, 1.5)
+            painter.drawLine(4.5, 15.5, 4.5, 20.5)
+            painter.drawLine(19.5, 15.5, 19.5, 20.5)
+        elif name == "fit_view":
+            painter.setPen(QPen(fg, 1.6))
+            painter.drawRect(5.5, 5.5, 13.0, 13.0)
+            painter.setPen(accent_pen)
+            painter.drawLine(3.5, 9.0, 3.5, 5.0)
+            painter.drawLine(3.5, 5.0, 7.5, 5.0)
+            painter.drawLine(20.5, 9.0, 20.5, 5.0)
+            painter.drawLine(20.5, 5.0, 16.5, 5.0)
+            painter.drawLine(3.5, 15.0, 3.5, 19.0)
+            painter.drawLine(3.5, 19.0, 7.5, 19.0)
+            painter.drawLine(20.5, 15.0, 20.5, 19.0)
+            painter.drawLine(20.5, 19.0, 16.5, 19.0)
+        elif name == "go_dg":
+            painter.setPen(QPen(fg, 1.4))
+            painter.drawRect(4.5, 10.0, 15.0, 9.0)
+            painter.setPen(accent_pen)
+            painter.drawPolyline(QPolygonF([QPointF(4.5, 10.0), QPointF(10.0, 4.5), QPointF(19.5, 10.0)]))
+            painter.drawLine(12.5, 13.0, 17.5, 13.0)
+            painter.drawLine(15.0, 10.5, 17.5, 13.0)
+            painter.drawLine(15.0, 15.5, 17.5, 13.0)
+        else:
+            painter.end()
+            return QIcon()
+
+        painter.end()
+        return QIcon(pm)
+
     def _toolbar_icon(self, name: str):
-        """Liefert konsistente Standard-Icons für Toolbar und Menüs."""
+        """Liefert konsistente und funktionsnahe Icons für Toolbar und Menüs."""
+        icon = self._load_asset_icon(name)
+        if not icon.isNull():
+            return icon
+
+        vector_names = {
+            "select", "draw_floorplan", "rect_room", "l_room", "polygon_room",
+            "split_room", "merge_rooms", "subtract_rooms", "window_insert",
+            "auto_walls", "auto_keller", "project_settings", "view_3d",
+            "regen", "delete_selection", "roof_profile", "roof_settings",
+            "attic_markers", "fit_view", "go_dg"
+        }
+        if name in vector_names:
+            icon = self._draw_shape_icon(name)
+            if not icon.isNull():
+                return icon
         icon_map = {
             "new": QStyle.SP_FileIcon,
             "open": QStyle.SP_DialogOpenButton,
@@ -57,14 +215,6 @@ class MainWindowBuildMixin:
             "save_as": QStyle.SP_DriveFDIcon,
             "export": QStyle.SP_DialogApplyButton,
             "project_settings": QStyle.SP_FileDialogContentsView,
-            "window_insert": QStyle.SP_FileDialogNewFolder,
-            "polygon_room": QStyle.SP_DialogResetButton,
-            "rect_room": QStyle.SP_FileDialogDetailedView,
-            "l_room": QStyle.SP_FileDialogListView,
-            "split_room": QStyle.SP_ArrowRight,
-            "merge_rooms": QStyle.SP_CommandLink,
-            "subtract_rooms": QStyle.SP_LineEditClearButton,
-            "draw_floorplan": QStyle.SP_ComputerIcon,
             "delete_selection": QStyle.SP_TrashIcon,
             "auto_keller": QStyle.SP_ArrowDown,
             "view_3d": QStyle.SP_TitleBarMaxButton,
@@ -116,6 +266,25 @@ class MainWindowBuildMixin:
         m_view = mbar.addMenu("&Ansicht")
         self._create_view_menu(m_view)
 
+        # Dach-Menü
+        m_roof = mbar.addMenu("&Dach")
+        self._create_roof_menu(m_roof)
+
+        # Info-Menü
+        m_info = mbar.addMenu("&Info")
+        self._create_info_menu(m_info)
+
+
+    def _create_info_menu(self, menu):
+        """Erstellt das Info-Menü."""
+        self.act_info_dialog = self._make_action(
+            "Info…",
+            slot=self._on_show_info_dialog,
+            icon=self._toolbar_icon("project_settings"),
+            tip="Versionen, Hauptfunktionen und DIN-Konformität anzeigen",
+        )
+        menu.addAction(self.act_info_dialog)
+
     def _create_file_menu(self, menu):
         """Erstellt das Datei-Menü."""
         self.act_new_project = self._make_action(
@@ -128,7 +297,7 @@ class MainWindowBuildMixin:
         self.act_new_project_with_settings = self._make_action(
             "Neues Projekt mit Projektparametern…",
             slot=self._on_new_project_with_settings,
-            icon=self._std_icon(QStyle.SP_FileDialogContentsView),
+            icon=self._toolbar_icon("new_with_settings"),
             tip="Leeres Projekt anlegen und direkt die Projektparameter öffnen",
         )
 
@@ -163,7 +332,7 @@ class MainWindowBuildMixin:
             "Beenden",
             slot=self.close,
             shortcut=QKeySequence.Quit,
-            icon=self._std_icon(QStyle.SP_DialogCloseButton),
+            icon=self._toolbar_icon("quit"),
             tip="Anwendung schließen",
         )
 
@@ -196,7 +365,7 @@ class MainWindowBuildMixin:
         self.act_autowalls = self._make_action(
             "Auto-Wände neu",
             slot=self._rebuild_autowalls_all,
-            icon=self._std_icon(QStyle.SP_BrowserReload),
+            icon=self._toolbar_icon("auto_walls"),
             tip="Außen- und Innenwände aus der Raumgeometrie neu erzeugen",
         )
         self.act_auto_keller = self._make_action(
@@ -226,21 +395,21 @@ class MainWindowBuildMixin:
         self.addAction(self.act_delete_selection)
         menu.addAction(self.act_delete_selection)
 
-        self.act_delete_windows = QAction(self._std_icon(QStyle.SP_TitleBarShadeButton), "Fenster löschen", self)
+        self.act_delete_windows = QAction(self._toolbar_icon("delete_windows"), "Fenster löschen", self)
         self.act_delete_windows.setShortcut(QKeySequence("Ctrl+Delete"))
         self.act_delete_windows.triggered.connect(self._delete_selected_windows)
         self.act_delete_windows.setShortcutContext(Qt.ApplicationShortcut)
         self.addAction(self.act_delete_windows)
         menu.addAction(self.act_delete_windows)
 
-        self.act_undo_room_op = QAction(self._std_icon(QStyle.SP_ArrowBack), "Raum-Operation rückgängig", self)
+        self.act_undo_room_op = QAction(self._toolbar_icon("undo"), "Raum-Operation rückgängig", self)
         self.act_undo_room_op.setShortcut(QKeySequence.Undo)
         self.act_undo_room_op.triggered.connect(self._undo_last_room_operation)
         self.act_undo_room_op.setShortcutContext(Qt.ApplicationShortcut)
         self.addAction(self.act_undo_room_op)
         menu.addAction(self.act_undo_room_op)
 
-        self.act_redo_room_op = QAction(self._std_icon(QStyle.SP_ArrowForward), "Raum-Operation wiederholen", self)
+        self.act_redo_room_op = QAction(self._toolbar_icon("redo"), "Raum-Operation wiederholen", self)
         self.act_redo_room_op.setShortcut(QKeySequence.Redo)
         self.act_redo_room_op.triggered.connect(self._redo_last_room_operation)
         self.act_redo_room_op.setShortcutContext(Qt.ApplicationShortcut)
@@ -249,6 +418,17 @@ class MainWindowBuildMixin:
 
         self._room_tool_group = QActionGroup(self)
         self._room_tool_group.setExclusive(True)
+
+        self.act_select_tool = self._make_action(
+            "Auswahlmodus",
+            slot=self._on_toggle_select_mode,
+            checkable=True,
+            checked=True,
+            icon=self._toolbar_icon("select"),
+            tip="Objekte selektieren und verschieben, ohne neue Räume zu zeichnen",
+        )
+        self._room_tool_group.addAction(self.act_select_tool)
+        menu.addAction(self.act_select_tool)
 
         self.act_draw_floorplan = self._make_action(
             "Grundriss zeichnen",
@@ -262,7 +442,7 @@ class MainWindowBuildMixin:
             "Rechteck-Raum zeichnen",
             slot=self._on_toggle_rect_room_mode,
             checkable=True,
-            checked=True,
+            checked=False,
             icon=self._toolbar_icon("rect_room"),
             tip="Rechteckige Räume per Drag im Grundriss zeichnen",
         )
@@ -299,6 +479,7 @@ class MainWindowBuildMixin:
             icon=self._toolbar_icon("split_room"),
             tip="Selektierten Raum mit einer horizontalen oder vertikalen Schnittlinie teilen",
         )
+        self._room_tool_group.addAction(self.act_split_room)
         menu.addAction(self.act_split_room)
 
         self.act_merge_rooms = self._make_action(
@@ -317,7 +498,7 @@ class MainWindowBuildMixin:
         )
         menu.addAction(self.act_subtract_rooms)
 
-        self.act_delete_rooms = QAction(self._std_icon(QStyle.SP_TrashIcon), "Raum löschen", self)
+        self.act_delete_rooms = QAction(self._toolbar_icon("delete_room"), "Raum löschen", self)
         self.act_delete_rooms.setShortcut(QKeySequence("Shift+Delete"))
         self.act_delete_rooms.triggered.connect(self._delete_selected_rooms)
         self.act_delete_rooms.setShortcutContext(Qt.ApplicationShortcut)
@@ -333,65 +514,81 @@ class MainWindowBuildMixin:
             icon=self._toolbar_icon("regen"),
             tip="Labels und Leader-Lines neu aufbauen",
         )
+        self.act_fit_current_view = self._make_action(
+            "Aktuelle Skizze einpassen",
+            slot=self._fit_current_plan_view,
+            shortcut="Ctrl+0",
+            icon=self._toolbar_icon("fit_view"),
+            tip="Zentriert und zoomt die aktuelle Skizze in der aktiven Geschossansicht",
+        )
         self.act_lbl_outer = self._make_action(
             "Beschriftung Außenwände",
             slot=self._on_toggle_outerwall_labels,
             checkable=True,
             checked=True,
-            icon=self._std_icon(QStyle.SP_FileDialogListView),
+            icon=self._toolbar_icon("label_outer"),
         )
         self.act_lbl_windows = self._make_action(
             "Beschriftung Fenster",
             slot=self._on_toggle_window_labels,
             checkable=True,
             checked=True,
-            icon=self._std_icon(QStyle.SP_FileDialogInfoView),
+            icon=self._toolbar_icon("label_windows"),
         )
         self.act_lbl_inner = self._make_action(
             "Beschriftung Innenwände",
             slot=self._on_toggle_innerwall_labels,
             checkable=True,
             checked=True,
-            icon=self._std_icon(QStyle.SP_FileDialogDetailedView),
+            icon=self._toolbar_icon("label_inner"),
         )
         self.act_debug_overlay = self._make_action(
             "Debug-Overlay: A_in/A_out/A_ref",
             slot=self._on_toggle_debug_overlay,
             checkable=True,
             checked=False,
-            icon=self._std_icon(QStyle.SP_MessageBoxInformation),
+            icon=self._toolbar_icon("debug_overlay"),
+        )
+        self.act_auto_attic_markers = self._make_action(
+            "Auto-DG-Markierungen in Grafik",
+            slot=self._on_toggle_auto_attic_markers,
+            checkable=True,
+            checked=True,
+            icon=self._toolbar_icon("attic_markers"),
         )
         self.act_area_ref_outer = self._make_action(
             "W/m²: Außenfläche als Bezugsfläche",
             slot=self._on_toggle_area_ref_outer_action,
             checkable=True,
             checked=False,
-            icon=self._std_icon(QStyle.SP_ArrowRight),
+            icon=self._toolbar_icon("area_ref_outer"),
         )
         self.act_heatmap = self._make_action(
             "Heatmap anzeigen",
             slot=self._on_heat_toggle,
             checkable=True,
             checked=True,
-            icon=self._std_icon(QStyle.SP_DialogYesButton),
+            icon=self._toolbar_icon("heatmap"),
         )
         self.act_autowalls_enabled = self._make_action(
             "Auto-Wände aktiv",
             slot=self._on_autow_toggle,
             checkable=True,
             checked=True,
-            icon=self._std_icon(QStyle.SP_DialogApplyButton),
+            icon=self._toolbar_icon("auto_walls"),
+            tip="Automatische Außen- und Innenwände ein- oder ausschalten",
         )
         self.act_add_window = self._make_action(
             "Fenster einfügen",
             slot=self._on_add_window_toggle,
             checkable=True,
             checked=False,
-            icon=self._std_icon(QStyle.SP_FileDialogNewFolder),
+            icon=self._toolbar_icon("window_insert"),
             tip="Aktiviert den Modus zum Einfügen von Fenstern",
         )
 
         menu.addAction(self.act_regen)
+        menu.addAction(self.act_fit_current_view)
         menu.addSeparator()
         menu.addAction(self.act_heatmap)
         menu.addAction(self.act_autowalls_enabled)
@@ -401,8 +598,98 @@ class MainWindowBuildMixin:
         menu.addAction(self.act_lbl_windows)
         menu.addAction(self.act_lbl_inner)
         menu.addAction(self.act_debug_overlay)
+        menu.addAction(self.act_auto_attic_markers)
         menu.addSeparator()
         menu.addAction(self.act_area_ref_outer)
+
+
+    def _create_roof_menu(self, menu):
+        """Erstellt Menüeinträge speziell für DG-Dach / Giebel."""
+        self._roof_profile_actions = {}
+        self._roof_profile_group = QActionGroup(self)
+        self._roof_profile_group.setExclusive(True)
+        self.act_attic_settings = self._make_action(
+            "DG-Dachparameter…",
+            slot=self._on_attic_project_settings,
+            icon=self._toolbar_icon("roof_settings"),
+            tip="Öffnet die Projektparameter direkt auf dem Tab DG Dach",
+        )
+        self.act_switch_to_dg = self._make_action(
+            "Zum Dachgeschoss wechseln",
+            slot=self._on_switch_to_dg_view,
+            icon=self._toolbar_icon("go_dg"),
+            tip="Aktiviert die DG-Ansicht und passt die aktuelle Skizze ein",
+        )
+        self.act_refresh_attic_preview = self._make_action(
+            "DG-Skizze aktualisieren",
+            slot=self._refresh_attic_preview,
+            icon=self._toolbar_icon("roof_profile"),
+            tip="Aktualisiert die Dach-/Giebelskizze aus den aktuellen Projektparametern",
+        )
+        self.act_show_attic_dock = self._make_action(
+            "DG-Dock anzeigen",
+            slot=self._on_toggle_attic_dock,
+            checkable=True,
+            checked=True,
+            icon=self._toolbar_icon("roof_profile"),
+            tip="Blendet das Dock DG Dach / Giebel ein oder aus",
+        )
+        self.act_auto_attic_markers.setIcon(self._toolbar_icon("attic_markers"))
+
+        roof_menu = menu.addMenu("Dachprofil wählen")
+        for label, key in (("Satteldach", "satteldach"), ("Pultdach", "pultdach"), ("Walmdach", "walmdach"), ("Flachdach", "flachdach")):
+            act = self._make_action(
+                label,
+                slot=lambda checked=False, rt=key: self._set_attic_roof_type(rt),
+                checkable=True,
+                checked=(key == "satteldach"),
+                icon=self._toolbar_icon("roof_profile"),
+                tip=f"Setzt das Dachprofil auf {label}",
+            )
+            self._roof_profile_group.addAction(act)
+            roof_menu.addAction(act)
+            self._roof_profile_actions[key] = act
+
+        self._facade_material_actions = {}
+        self._facade_material_group = QActionGroup(self)
+        self._facade_material_group.setExclusive(True)
+        facade_menu = menu.addMenu("3D-Material wählen")
+        self._roof_material_actions = {}
+        self._roof_material_group = QActionGroup(self)
+        self._roof_material_group.setExclusive(True)
+        roof_material_menu = menu.addMenu("Dachmaterial wählen")
+        for key, label in (("ziegel", "Ziegel"),):
+            act = self._make_action(
+                label,
+                slot=lambda checked=False, mt=key: self._set_roof_material(mt),
+                checkable=True,
+                checked=False,
+                icon=self._toolbar_icon("roof_profile"),
+                tip=f"Setzt das 3D-Dachmaterial auf {label}",
+            )
+            self._roof_material_group.addAction(act)
+            roof_material_menu.addAction(act)
+            self._roof_material_actions[key] = act
+        for label, key in (("Klinker", "klinker"), ("Putz", "putz"), ("Holz", "holz"), ("Beton", "beton")):
+            act = self._make_action(
+                label,
+                slot=lambda checked=False, mt=key: self._set_facade_material(mt),
+                checkable=True,
+                checked=(key == "klinker"),
+                icon=self._toolbar_icon("roof_profile"),
+                tip=f"Setzt das 3D-Fassadenmaterial auf {label}",
+            )
+            self._facade_material_group.addAction(act)
+            facade_menu.addAction(act)
+            self._facade_material_actions[key] = act
+
+        menu.addAction(self.act_attic_settings)
+        menu.addAction(self.act_switch_to_dg)
+        menu.addAction(self.act_refresh_attic_preview)
+        menu.addAction(self.act_fit_current_view)
+        menu.addSeparator()
+        menu.addAction(self.act_show_attic_dock)
+        menu.addAction(self.act_auto_attic_markers)
 
     def _create_toolbars(self):
         """Erstellt eine kompakte, thematisch gruppierte Haupt-Toolbar."""
@@ -428,22 +715,28 @@ class MainWindowBuildMixin:
                 self.act_auto_keller,
                 self.act_show_3d,
                 self.act_regen,
+                self.act_fit_current_view,
+                self.act_area_ref_outer,
             ]),
-            ("Zeichnen", [
-                self.act_draw_floorplan,
+            ("Werkzeuge", [
+                self.act_select_tool,
                 self.act_rect_room,
                 self.act_l_room,
                 self.act_polygon_room,
                 self.act_split_room,
+                self.act_add_window,
+                self.act_autowalls_enabled,
             ]),
             ("Bearbeiten", [
                 self.act_merge_rooms,
                 self.act_subtract_rooms,
-                self.act_add_window,
                 self.act_delete_selection,
             ]),
         ]
 
+        # Auto-Wände bewusst als latched Toggle in der Werkzeuge-Gruppe platzieren:
+        # Die Funktion gehört zum Geometrie-/Zeichenworkflow und soll daher
+        # direkt bei Auswahl-, Raum- und Fensterwerkzeugen erreichbar sein.
         seen = set()
         for title, actions in groups:
             self._add_toolbar_section(self.tb_main, title)
@@ -459,6 +752,62 @@ class MainWindowBuildMixin:
         for btn in self.tb_main.findChildren(QToolButton):
             btn.setAutoRaise(True)
             btn.setToolButtonStyle(Qt.ToolButtonIconOnly)
+
+        self.tb_roof = QToolBar("Dachgestaltung", self)
+        self.tb_roof.setObjectName("toolbar_roof")
+        self.tb_roof.setMovable(False)
+        self.tb_roof.setFloatable(False)
+        self.tb_roof.setToolButtonStyle(Qt.ToolButtonTextUnderIcon)
+        self.tb_roof.setIconSize(QSize(22, 22))
+        self.tb_roof.setToolTip("Werkzeuge für DG-Dach, Giebel und Skizzenansicht")
+        self.addToolBar(Qt.TopToolBarArea, self.tb_roof)
+
+        self.tb_roof.addWidget(QLabel("Dachprofil:"))
+        self.cb_roof_profile_quick = QComboBox()
+        self.cb_roof_profile_quick.addItems(["Satteldach", "Pultdach", "Walmdach", "Flachdach"])
+        self.cb_roof_profile_quick.setToolTip("Schnellauswahl des Dachprofils")
+        self.cb_roof_profile_quick.currentTextChanged.connect(self._on_roof_profile_changed)
+        self.tb_roof.addWidget(self.cb_roof_profile_quick)
+        self.tb_roof.addSeparator()
+        self.tb_roof.addWidget(QLabel("3D-Material:"))
+        self.cb_facade_material_quick = QComboBox()
+        self.cb_facade_material_quick.addItems(["Klinker", "Putz", "Holz", "Beton"])
+        self.cb_facade_material_quick.setToolTip("Schnellauswahl des 3D-Fassadenmaterials")
+        self.cb_facade_material_quick.currentTextChanged.connect(self._on_facade_material_changed)
+        self.tb_roof.addWidget(self.cb_facade_material_quick)
+        self.tb_roof.addSeparator()
+        self.tb_roof.addWidget(QLabel("Dachmaterial:"))
+        self.cb_roof_material_quick = QComboBox()
+        self.cb_roof_material_quick.addItems(["Ziegel"])
+        self.cb_roof_material_quick.setToolTip("Schnellauswahl des 3D-Dachmaterials")
+        self.cb_roof_material_quick.currentTextChanged.connect(self._on_roof_material_changed)
+        self.tb_roof.addWidget(self.cb_roof_material_quick)
+        self.tb_roof.addSeparator()
+
+        roof_actions = [
+            self.act_attic_settings,
+            self.act_switch_to_dg,
+            self.act_refresh_attic_preview,
+            self.act_show_attic_dock,
+            self.act_auto_attic_markers,
+            self.act_fit_current_view,
+        ]
+        for action in roof_actions:
+            if action is None:
+                continue
+            self.tb_roof.addAction(action)
+
+        for btn in self.tb_roof.findChildren(QToolButton):
+            btn.setAutoRaise(True)
+            btn.setToolButtonStyle(Qt.ToolButtonTextUnderIcon)
+
+        if hasattr(self, "_sync_roof_profile_widgets"):
+            self._sync_roof_profile_widgets()
+        if hasattr(self, "_sync_facade_material_widgets"):
+            self._sync_facade_material_widgets()
+        if hasattr(self, "_sync_roof_material_widgets"):
+            self._sync_roof_material_widgets()
+
 
     def _create_central_widget(self):
         """Erstellt das zentrale Widget nur mit Geschoss-Tabs; Eigenschaften/Elemente liegen in DockWidgets."""
@@ -498,11 +847,19 @@ class MainWindowBuildMixin:
 
         lbl_hint = QLabel("Planansicht")
         lbl_hint.setObjectName("planInfoTitle")
-        lbl_sub = QLabel("Grundriss zeichnen: Rechteck-, L- und Polygonräume, Trennen/Verschmelzen/Subtrahieren über Menü und Toolbar")
+        lbl_sub = QLabel("Auswahlmodus zum Selektieren, dazu Werkzeuge für Rechteck-, L- und Polygonräume, Trennen, Verschmelzen, Subtrahieren und Fenster")
         lbl_sub.setObjectName("planInfoText")
 
         control_lay.addWidget(lbl_hint)
         control_lay.addWidget(lbl_sub, 1)
+
+        self.btn_fit_current_view = QPushButton("Ansicht einpassen")
+        self.btn_fit_current_view.setObjectName("fitCurrentViewButton")
+        self.btn_fit_current_view.setIcon(self._toolbar_icon("fit_view"))
+        self.btn_fit_current_view.setToolTip("Zentriert und zoomt auf die aktuelle Skizze der aktiven Geschossansicht")
+        self.btn_fit_current_view.clicked.connect(self._fit_current_plan_view)
+        control_lay.addWidget(self.btn_fit_current_view)
+
         left.addWidget(control_bar)
 
         return left
@@ -558,6 +915,14 @@ class MainWindowBuildMixin:
         self.dock_elements.setWidget(elem_widget)
         self.addDockWidget(Qt.RightDockWidgetArea, self.dock_elements)
         self.splitDockWidget(self.dock_properties, self.dock_elements, Qt.Vertical)
+
+        self.dock_attic = QDockWidget("DG Dach / Giebel", self)
+        self.dock_attic.setObjectName("dock_attic")
+        self.dock_attic.setAllowedAreas(Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea)
+        self.attic_sketch_panel = AtticSketchPanel(self)
+        self.dock_attic.setWidget(self.attic_sketch_panel)
+        self.addDockWidget(Qt.RightDockWidgetArea, self.dock_attic)
+        self.splitDockWidget(self.dock_elements, self.dock_attic, Qt.Vertical)
         self.dock_properties.raise_()
 
     def _create_statusbar(self):
@@ -683,8 +1048,13 @@ class MainWindowBuildMixin:
         """Verbindet die UI-Signale mit den Slots."""
         self.act_heatmap.toggled.connect(self._on_heat_toggle)
         self.act_autowalls_enabled.toggled.connect(self._on_autow_toggle)
+        self.act_auto_attic_markers.toggled.connect(self._on_toggle_auto_attic_markers)
+        if hasattr(self, "act_show_attic_dock"):
+            self.act_show_attic_dock.toggled.connect(self._on_toggle_attic_dock)
+        if hasattr(self, "dock_attic"):
+            self.dock_attic.visibilityChanged.connect(self._sync_attic_dock_action)
         if getattr(self, "cb_area_ref_outer", None) is not None:
-            self.cb_area_ref_outer.toggled.connect(lambda _: self._recompute_and_redraw())
+            self.cb_area_ref_outer.toggled.connect(self._on_toggle_area_ref_outer_action)
         self.btn_apply.clicked.connect(self._apply_room_form)
 
         # Auswahländerungen in den Szenen
@@ -697,6 +1067,35 @@ class MainWindowBuildMixin:
         # Shortcut für Element löschen in der Liste
         self._sc_del_elem = QShortcut(QKeySequence.Delete, self.list_room_elements)
         self._sc_del_elem.activated.connect(self._delete_selected_room_element)
+
+    def _on_switch_to_dg_view(self):
+        try:
+            if hasattr(self, "tabs") and hasattr(self, "view_DG"):
+                self.tabs.setCurrentWidget(self.view_DG)
+            if hasattr(self, "dock_attic"):
+                self.dock_attic.show()
+                self.dock_attic.raise_()
+            self._refresh_attic_preview()
+            self._fit_current_plan_view()
+        except Exception:
+            pass
+
+    def _on_toggle_attic_dock(self, checked: bool):
+        dock = getattr(self, "dock_attic", None)
+        if dock is None:
+            return
+        dock.setVisible(bool(checked))
+        if checked:
+            try:
+                dock.raise_()
+            except Exception:
+                pass
+
+    def _sync_attic_dock_action(self, visible: bool):
+        if hasattr(self, "act_show_attic_dock"):
+            self.act_show_attic_dock.blockSignals(True)
+            self.act_show_attic_dock.setChecked(bool(visible))
+            self.act_show_attic_dock.blockSignals(False)
 
     def _restore_ui_settings(self):
         """Stellt gespeicherte UI-Einstellungen wieder her."""
@@ -720,6 +1119,18 @@ class MainWindowBuildMixin:
                 self.act_debug_overlay.blockSignals(True)
                 self.act_debug_overlay.setChecked(bool(dbg_on))
                 self.act_debug_overlay.blockSignals(False)
+        except Exception:
+            pass
+
+        try:
+            aa_on = self._settings.value("auto_attic_markers", True, type=bool)
+            self.show_auto_attic_markers = bool(aa_on)
+            if hasattr(self, "act_auto_attic_markers"):
+                self.act_auto_attic_markers.blockSignals(True)
+                self.act_auto_attic_markers.setChecked(bool(aa_on))
+                self.act_auto_attic_markers.blockSignals(False)
+            if hasattr(self, "dock_attic") and hasattr(self, "act_show_attic_dock"):
+                self._sync_attic_dock_action(self.dock_attic.isVisible())
         except Exception:
             pass
 
@@ -755,6 +1166,7 @@ class MainWindowBuildMixin:
             self._settings.setValue("main_state", self.saveState())
             self._settings.setValue("main_was_maximized", self.isMaximized())
             self._settings.setValue("last_project_dir", getattr(self, "_last_project_dir", "") or "")
+            self._settings.setValue("auto_attic_markers", bool(getattr(self, "show_auto_attic_markers", True)))
         except Exception:
             pass
         return super().closeEvent(event)

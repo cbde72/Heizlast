@@ -37,4 +37,32 @@ try:
 except Exception:  # pragma: no cover
     pass
 
+try:
+    from .attic_geometry import AtticGeometry
+except Exception:  # pragma: no cover
+    pass
+
 from .polygon_ops import snap_m, parse_polygon_m, serialize_polygon_m
+
+
+__all__ = [
+    "CSV_DELIMITER",
+    "DEFAULT_U",
+    "DEFAULT_FACTOR",
+    "VentilationCfg",
+    "load_rooms",
+    "load_elements",
+    "save_rooms",
+    "save_elements",
+    "get_room_elements",
+    "element_axis_length_from_geometry",
+    "meta_rooms",
+    "ElementMetricsService",
+    "build_auto_walls_shared_merge",
+    "calc_heatloads",
+    "ensure_auto_decks",
+    "AtticGeometry",
+    "snap_m",
+    "parse_polygon_m",
+    "serialize_polygon_m",
+]

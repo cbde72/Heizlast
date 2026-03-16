@@ -1,7 +1,7 @@
 from typing import Optional
 from ..domain.models import RoomModel
 from PySide6.QtWidgets import QMessageBox, QDialog, QInputDialog
-from ..core import ElementMetricsService
+from ..core.element_metrics import ElementMetricsService
 from ..core.config import DEFAULT_FACTOR, DEFAULT_U
 
 from ..configs.project_config import save_project_cfg
@@ -9,11 +9,10 @@ from ..domain.models import ElementModel, RoomModel
 from ..ui.dialogs.project_settings_dialog import ProjectSettingsDialog
 
 class MainWindowSettingsMixin:
-    def _on_project_settings(self):
-        """Öffnet den Projekteinstellungen-Dialog."""
-        dlg = ProjectSettingsDialog(self, self.project_cfg)
+    def _open_project_settings_dialog(self, initial_tab: str | None = None):
+        dlg = ProjectSettingsDialog(self, self.project_cfg, initial_tab=initial_tab)
         if dlg.exec() != QDialog.Accepted:
-            return
+            return False
         dlg.apply_to_cfg(self.project_cfg)
 
         self.t_out_c = float(self.project_cfg.t_out_c)
@@ -35,6 +34,173 @@ class MainWindowSettingsMixin:
                 pass
 
         self._recompute_and_redraw()
+        if hasattr(self, "_refresh_attic_preview"):
+            self._refresh_attic_preview()
+        self._sync_roof_profile_widgets()
+        self._sync_facade_material_widgets()
+        self._sync_roof_material_widgets()
+        return True
+
+
+
+
+    def _current_facade_material(self) -> str:
+        attic = getattr(self.project_cfg, "attic", None)
+        material = str(getattr(attic, "facade_material", "klinker") or "klinker").strip().lower()
+        allowed = {"klinker", "putz", "holz", "beton"}
+        return material if material in allowed else "klinker"
+
+    def _facade_material_display_name(self, material: str) -> str:
+        return {"klinker": "Klinker", "putz": "Putz", "holz": "Holz", "beton": "Beton"}.get(str(material or "").lower(), "Klinker")
+
+    def _current_roof_material(self) -> str:
+        attic = getattr(getattr(self, "project_cfg", None), "attic", None)
+        material = str(getattr(attic, "roof_material", "ziegel") or "ziegel").strip().lower()
+        allowed = {"ziegel"}
+        return material if material in allowed else "ziegel"
+
+    def _roof_material_display_name(self, material: str) -> str:
+        return {"ziegel": "Ziegel"}.get(str(material or "").lower(), "Ziegel")
+
+    def _sync_roof_profile_widgets(self) -> None:
+        roof_type = str(getattr(getattr(self.project_cfg, "attic", None), "roof_type", "satteldach") or "satteldach").strip().lower()
+        allowed = {"satteldach", "pultdach", "walmdach", "flachdach"}
+        if roof_type not in allowed:
+            roof_type = "satteldach"
+
+        combo = getattr(self, "cb_roof_profile_quick", None)
+        if combo is not None:
+            label = {
+                "satteldach": "Satteldach",
+                "pultdach": "Pultdach",
+                "walmdach": "Walmdach",
+                "flachdach": "Flachdach",
+            }.get(roof_type, "Satteldach")
+            combo.blockSignals(True)
+            combo.setCurrentText(label)
+            combo.blockSignals(False)
+
+        actions = getattr(self, "_roof_profile_actions", None) or {}
+        for key, act in actions.items():
+            try:
+                act.blockSignals(True)
+                act.setChecked(str(key).lower() == roof_type)
+                act.blockSignals(False)
+            except Exception:
+                pass
+
+    def _set_attic_roof_type(self, roof_type: str, *, persist: bool = True) -> None:
+        roof_type = str(roof_type or "satteldach").strip().lower()
+        allowed = {"satteldach", "pultdach", "walmdach", "flachdach"}
+        if roof_type not in allowed:
+            roof_type = "satteldach"
+
+        attic = getattr(self.project_cfg, "attic", None)
+        if attic is None:
+            return
+
+        attic.roof_type = roof_type
+        self._sync_roof_profile_widgets()
+
+        if self._project_rooms_path and persist:
+            try:
+                cfg_path = self._project_json_path_for_rooms(self._project_rooms_path)
+                save_project_cfg(cfg_path, self.project_cfg)
+            except Exception:
+                pass
+
+        self._recompute_and_redraw()
+        if hasattr(self, "_refresh_attic_preview"):
+            self._refresh_attic_preview()
+        try:
+            self.statusBar().showMessage(f"Dachprofil gesetzt: {self._roof_display_name(roof_type)}", 2500)
+        except Exception:
+            pass
+
+    def _on_roof_profile_changed(self, label: str) -> None:
+        mapping = {
+            "Satteldach": "satteldach",
+            "Pultdach": "pultdach",
+            "Walmdach": "walmdach",
+            "Flachdach": "flachdach",
+        }
+        self._set_attic_roof_type(mapping.get(str(label), "satteldach"))
+
+    def _sync_facade_material_widgets(self) -> None:
+        material = self._current_facade_material()
+
+        combo = getattr(self, "cb_facade_material_quick", None)
+        if combo is not None:
+            combo.blockSignals(True)
+            combo.setCurrentText(self._facade_material_display_name(material))
+            combo.blockSignals(False)
+
+        actions = getattr(self, "_facade_material_actions", None) or {}
+        for key, act in actions.items():
+            try:
+                act.blockSignals(True)
+                act.setChecked(str(key).lower() == material)
+                act.blockSignals(False)
+            except Exception:
+                pass
+
+    def _sync_roof_material_widgets(self) -> None:
+        material = self._current_roof_material()
+
+        combo = getattr(self, "cb_roof_material_quick", None)
+        if combo is not None:
+            combo.blockSignals(True)
+            combo.setCurrentText(self._roof_material_display_name(material))
+            combo.blockSignals(False)
+
+        actions = getattr(self, "_roof_material_actions", None) or {}
+        for key, act in actions.items():
+            try:
+                act.blockSignals(True)
+                act.setChecked(str(key).lower() == material)
+                act.blockSignals(False)
+            except Exception:
+                pass
+
+    def _set_facade_material(self, material: str, *, persist: bool = True) -> None:
+        material = str(material or "klinker").strip().lower()
+        allowed = {"klinker", "putz", "holz", "beton"}
+        if material not in allowed:
+            material = "klinker"
+
+        attic = getattr(self.project_cfg, "attic", None)
+        if attic is None:
+            return
+
+        attic.facade_material = material
+        self._sync_facade_material_widgets()
+
+        if self._project_rooms_path and persist:
+            try:
+                cfg_path = self._project_json_path_for_rooms(self._project_rooms_path)
+                save_project_cfg(cfg_path, self.project_cfg)
+            except Exception:
+                pass
+
+        self._recompute_and_redraw()
+        if hasattr(self, "_refresh_attic_preview"):
+            self._refresh_attic_preview()
+        try:
+            self.statusBar().showMessage(f"3D-Fassadenmaterial gesetzt: {self._facade_material_display_name(material)}", 2500)
+        except Exception:
+            pass
+
+    def _on_facade_material_changed(self, label: str) -> None:
+        mapping = {"Klinker": "klinker", "Putz": "putz", "Holz": "holz", "Beton": "beton"}
+        self._set_facade_material(mapping.get(str(label), "klinker"))
+
+    def _on_project_settings(self):
+        """Öffnet den Projekteinstellungen-Dialog."""
+        self._open_project_settings_dialog()
+
+    def _on_attic_project_settings(self):
+        """Öffnet die Projektparameter direkt auf dem Tab DG Dach."""
+        self._open_project_settings_dialog("DG Dach")
 
     def _on_auto_keller(self) -> None:
         """Erzeugt automatisch einen Keller (KG) aus den *tatsächlichen* EG-Außenwänden.
@@ -306,6 +472,39 @@ class MainWindowSettingsMixin:
             self, "Auto Keller",
             f"Keller erzeugt: {kg_id}  ({slab_area:.1f} m² Bodenplatte, Höhe {h:.2f} m)"
         )
+
+    def _set_roof_material(self, material: str, *, persist: bool = True) -> None:
+        material = str(material or "ziegel").strip().lower()
+        allowed = {"ziegel"}
+        if material not in allowed:
+            material = "ziegel"
+
+        attic = getattr(self.project_cfg, "attic", None)
+        if attic is None:
+            return
+
+        attic.roof_material = material
+        self._sync_roof_material_widgets()
+
+        if self._project_rooms_path and persist:
+            try:
+                cfg_path = self._project_json_path_for_rooms(self._project_rooms_path)
+                save_project_cfg(cfg_path, self.project_cfg)
+            except Exception:
+                pass
+
+        self._recompute_and_redraw()
+        if hasattr(self, "_refresh_attic_preview"):
+            self._refresh_attic_preview()
+        try:
+            self.statusBar().showMessage(f"Dachmaterial gesetzt: {self._roof_material_display_name(material)}", 2500)
+        except Exception:
+            pass
+
+    def _on_roof_material_changed(self, label: str) -> None:
+        mapping = {"Ziegel": "ziegel"}
+        self._set_roof_material(mapping.get(str(label), "ziegel"))
+
 
 def load_project_from_paths(self, rooms_csv_path, elements_csv_path=None):
     """Best-effort loader for packaged runtime starts."""

@@ -2,6 +2,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from pathlib import Path
 from ..domain.models import RoomModel
 from ..configs.project_config import ProjectCfg
+from ..core.attic_geometry import AtticGeometry
 
 from PySide6.QtCore import QPointF, QSettings
 from PySide6.QtWidgets import QGraphicsScene, QMainWindow
@@ -22,6 +23,8 @@ from .redraw_mixin import MainWindowRedrawMixin
 from .autowalls_mixin import MainWindowAutowallsMixin
 from .overlay_mixin import MainWindowOverlayMixin
 from .misc_mixin import MainWindowMiscMixin
+from ..infrastructure.attic_svg import AtticSvgRenderer
+from .. import APP_NAME, __internal_version__
 
 class MainWindow(
     MainWindowBuildMixin,
@@ -44,7 +47,7 @@ class MainWindow(
         #import gui_room_refactor_v2.element_metrics
         #print("ELEMENT_METRICS FILE:", gui_room_refactor_v2.element_metrics.__file__)
         super().__init__()
-        self.setWindowTitle("Heizlast Tool")
+        self.setWindowTitle(f"{APP_NAME} – {__internal_version__}")
 
         # Data
         self.rooms: Dict[str, RoomModel] = {}
@@ -65,6 +68,9 @@ class MainWindow(
         self.view_KG.viewport().installEventFilter(self)
         self.view_EG.viewport().installEventFilter(self)
         self.view_DG.viewport().installEventFilter(self)
+        self.view_KG._context_menu_handler = self._handle_plan_context_menu
+        self.view_EG._context_menu_handler = self._handle_plan_context_menu
+        self.view_DG._context_menu_handler = self._handle_plan_context_menu
 
         self.room_items: Dict[str, RoomPolygonItem] = {}
         self.element_items: Dict[str, ElementLineItem] = {}
@@ -81,9 +87,10 @@ class MainWindow(
         self.show_innerwall_labels = True
         self.show_window_labels = True
         self.show_debug_overlay = False
+        self.show_auto_attic_markers = True
 
-        self._room_draw_mode = True
-        self._draw_tool = 'rect'
+        self._room_draw_mode = False
+        self._draw_tool = 'select'
         self._polygon_room_mode = False
         self._l_room_mode = False
         self._split_room_mode = False
@@ -111,6 +118,68 @@ class MainWindow(
         # Restore persisted settings
         self._restore_ui_settings()
 
+
         self._recompute_and_redraw()
+        self._refresh_attic_preview()
+
+    def _current_attic_geometry(self) -> Optional[AtticGeometry]:
+        cfg = getattr(self, "project_cfg", None)
+        attic_cfg = getattr(cfg, "attic", None)
+        if not attic_cfg or not bool(getattr(attic_cfg, "enabled", False)):
+            return None
+        try:
+            return AtticGeometry(
+                building_width_m=float(attic_cfg.building_width_m),
+                building_length_m=float(attic_cfg.building_length_m),
+                knee_wall_height_m=float(attic_cfg.knee_wall_height_m),
+                roof_pitch_deg=float(attic_cfg.roof_pitch_deg),
+                roof_type=str(getattr(attic_cfg, "roof_type", "satteldach") or "satteldach").strip().lower(),
+                ridge_orientation=str(getattr(attic_cfg, "ridge_orientation", "length") or "length").strip().lower(),
+                roof_overhang_m=float(getattr(attic_cfg, "roof_overhang_m", 0.30) or 0.0),
+                ridge_offset_ratio=float(getattr(attic_cfg, "ridge_offset_ratio", 0.0) or 0.0),
+                pult_rise_side=str(getattr(attic_cfg, "pult_rise_side", "right") or "right").strip().lower(),
+            )
+        except Exception:
+            return None
+
+    def _refresh_attic_preview(self) -> None:
+        panel = getattr(self, "attic_sketch_panel", None)
+        if panel is None:
+            return
+        panel.set_geometry(self._current_attic_geometry())
+
+    def _export_attic_svg_to(self, path: Path) -> bool:
+        geom = self._current_attic_geometry()
+        if geom is None:
+            return False
+        svg = AtticSvgRenderer().render(geom)
+        path.write_text(svg, encoding="utf-8")
+        return True
+
+    def _current_plan_view(self):
+        tabs = getattr(self, "tabs", None)
+        current = tabs.currentWidget() if tabs is not None else None
+        if current in (getattr(self, "view_KG", None), getattr(self, "view_EG", None), getattr(self, "view_DG", None)):
+            return current
+        return getattr(self, "view_EG", None)
+
+    def _fit_current_plan_view(self) -> None:
+        view = self._current_plan_view()
+        if view is None:
+            return
+        try:
+            if hasattr(view, "fit_content"):
+                view.fit_content()
+            else:
+                view.fit_all()
+        except Exception:
+            try:
+                view.fit_all()
+            except Exception:
+                return
+        try:
+            self.statusBar().showMessage("Ansicht auf aktuelle Skizze zentriert.", 2000)
+        except Exception:
+            pass
 
     # ---------------- UI Setup ----------------

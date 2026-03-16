@@ -1,7 +1,7 @@
 from typing import List, Optional
 from PySide6.QtCore import Qt
-from ..core import ElementMetricsService
-from ..core import meta_rooms
+from ..core.element_metrics import ElementMetricsService
+from ..core.element_access import meta_rooms
 
 from PySide6.QtWidgets import QMessageBox
 

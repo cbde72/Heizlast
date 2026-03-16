@@ -21,6 +21,7 @@ from PySide6.QtGui import QColor,QPen
 
 from ..core.config import VentilationCfg
 from ..core.heatload import calc_heatloads, ensure_auto_decks
+from ..core.attic_auto import rebuild_auto_attic_elements
 from ..domain.models import ElementModel, RoomModel
 from ..presentation.plan_presenter import PlanPresenter
 
@@ -63,6 +64,22 @@ class MainWindowRedrawMixin:
         except Exception:
             pass
         self._restore_auto_deck_overrides(snap)
+
+        prev_attic_sig = tuple(sorted(str(getattr(e, "uid", "") or "") for e in self.elements if str(getattr(e, "uid", "") or "").startswith("auto_attic_")))
+        try:
+            rebuild_auto_attic_elements(
+                rooms=list(self.rooms.values()),
+                elements=self.elements,
+                attic_cfg=cfg.attic,
+            )
+        except Exception:
+            pass
+        new_attic_sig = tuple(sorted(str(getattr(e, "uid", "") or "") for e in self.elements if str(getattr(e, "uid", "") or "").startswith("auto_attic_")))
+        if new_attic_sig != prev_attic_sig:
+            try:
+                self._rebuild_elements_graphics()
+            except Exception:
+                pass
         results = calc_heatloads(
             list(self.rooms.values()), self.elements, t_out_c=float(cfg.t_out_c),
             vent_cfg=vent_cfg,
@@ -131,6 +148,10 @@ class MainWindowRedrawMixin:
                     on_select=None,
                     on_propose_move=self._propose_element_move,
                 )
+                try:
+                    item.set_auto_attic_visual_enabled(bool(getattr(self, "show_auto_attic_markers", False)))
+                except Exception:
+                    pass
 
             floor = e.floor
             if floor is None:

@@ -4,7 +4,8 @@ from ..core.polygon_ops import snap_m
 from .graphics import RoomPolygonItem
 from .graphics import WindowLineItem
 from PySide6.QtWidgets import QMessageBox
-from ..core import get_room_elements
+from ..core.element_access import get_room_elements
+from ..core.attic_auto import is_auto_attic_element, auto_attic_marker_label
 from PySide6.QtGui import QPen
 
 from PySide6.QtCore import Qt
@@ -150,7 +151,8 @@ class MainWindowSelectionMixin:
             u_val = float(getattr(el, "u_w_m2k", 0.0) or 0.0)
 
             et = getattr(el, "element_type", "") or "Element"
-            label = f"{et}: {a_val:.2f} m² (L: {l_val:.2f} m, U: {u_val:.2f})"
+            auto_marker = f" [{auto_attic_marker_label(el)}]" if is_auto_attic_element(el) else ""
+            label = f"{et}{auto_marker}: {a_val:.2f} m² (L: {l_val:.2f} m, U: {u_val:.2f})"
 
             item = QListWidgetItem(label)
             item.setData(Qt.UserRole, getattr(el, "uid", None))

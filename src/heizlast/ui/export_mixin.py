@@ -1,7 +1,8 @@
+import json
 from pathlib import Path
 from ..core.config import VentilationCfg
-from ..core import calc_heatloads
-from ..core import ensure_auto_decks
+from ..core.heatload import calc_heatloads
+from ..core.heatload import ensure_auto_decks
 
 from PySide6.QtWidgets import QFileDialog, QMessageBox
 
@@ -96,6 +97,11 @@ class MainWindowExportMixin:
 
         # Grundrisse
         try:
+            try:
+                self._export_attic_svg_to(Path(outdir) / "attic_profile.svg")
+            except Exception:
+                pass
+
             cfg_kwargs = dict(heatmap_enabled=True, draw_elements=True, element_label=True)
             fields = getattr(FloorplanExportCfg, "__dataclass_fields__", {}) or {}
             if "label_outer_walls" in fields:

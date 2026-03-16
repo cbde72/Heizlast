@@ -6,9 +6,10 @@ from typing import Dict, Optional, Tuple
 
 from ..domain.house_state import HouseState
 from ..domain.services.house_domain_service import HouseDomainService
-from ..domain.services.room_operation_service import RoomOperationRecord, RoomOperationService
-from ..core.heatload import calc_heatloads, ensure_auto_decks
+from ..domain.services.room_operation_service import RoomOperationRecord
 from ..core.config import VentilationCfg
+from .heatload_service import HeatloadComputationService
+from .room_ops_service import RoomOperationsApplicationService
 
 
 @dataclass
@@ -21,17 +22,14 @@ class AppController:
     domain: HouseDomainService
     repo: object  # ProjectRepository-like
     settings: Optional[object] = None
+    heatloads: Optional[HeatloadComputationService] = None
+    room_ops: Optional[RoomOperationsApplicationService] = None
 
-    def _room_operation_service(self) -> RoomOperationService:
-        from ..core.geometry import build_auto_walls_shared_merge
-        return RoomOperationService(domain=self.domain, build_auto_walls=build_auto_walls_shared_merge)
-
-    def _run_room_operation(self, op_name: str, *args, **kwargs) -> Optional[RoomOperationRecord]:
-        service = self._room_operation_service()
-        op = getattr(service, op_name, None)
-        if op is None:
-            return None
-        return op(self.state, *args, **kwargs)
+    def __post_init__(self) -> None:
+        if self.heatloads is None:
+            self.heatloads = HeatloadComputationService()
+        if self.room_ops is None:
+            self.room_ops = RoomOperationsApplicationService(domain=self.domain)
 
     def load_project(self, rooms_csv_path: Path) -> Tuple[Path, Path]:
         rooms, elements, cfg, elements_csv_path = self.repo.load(rooms_csv_path)
@@ -48,13 +46,7 @@ class AppController:
 
         # Ensure decks exist according to cfg (idempotent)
         try:
-            ensure_auto_decks(
-                self.state.rooms.values(),
-                self.state.elements,
-                u_kellerdecke_w_m2k=float(cfg.u_kellerdecke_w_m2k),
-                u_eg_geschossdecke_w_m2k=float(cfg.u_eg_geschossdecke_w_m2k),
-                u_dg_geschossdecke_w_m2k=float(cfg.u_dg_geschossdecke_w_m2k),
-            )
+            self.heatloads.compute(self.state, VentilationCfg())
         except Exception:
             pass
 
@@ -103,45 +95,20 @@ class AppController:
 
         if autowalls_enabled:
             from ..core.geometry import build_auto_walls_shared_merge
-
             self.domain.rebuild_autowalls_all(self.state, build_auto_walls=build_auto_walls_shared_merge)
 
     def rebuild_autowalls(self) -> None:
         from ..core.geometry import build_auto_walls_shared_merge
         self.domain.rebuild_autowalls_all(self.state, build_auto_walls=build_auto_walls_shared_merge)
 
-
     def merge_rooms(self, room_ids: list[str]) -> Optional[RoomOperationRecord]:
-        return self._run_room_operation('merge_rooms', room_ids)
+        return self.room_ops.run(self.state, 'merge_rooms', room_ids)
 
     def subtract_rooms(self, base_room_id: str, cutter_room_ids: list[str]) -> Optional[RoomOperationRecord]:
-        return self._run_room_operation('subtract_rooms', base_room_id, cutter_room_ids)
+        return self.room_ops.run(self.state, 'subtract_rooms', base_room_id, cutter_room_ids)
 
     def split_room(self, room_id: str, *, orientation: str, coord: float) -> Optional[RoomOperationRecord]:
-        return self._run_room_operation('split_room', room_id, orientation=orientation, coord=coord)
+        return self.room_ops.run(self.state, 'split_room', room_id, orientation=orientation, coord=coord)
 
     def compute_heatloads(self, vent_cfg: Optional[VentilationCfg] = None) -> Dict:
-        cfg = self.state.project_cfg
-        vent_cfg = vent_cfg or VentilationCfg()
-
-        # Ensure decks (again idempotent; keeps app consistent)
-        try:
-            ensure_auto_decks(
-                self.state.rooms.values(),
-                self.state.elements,
-                u_kellerdecke_w_m2k=float(cfg.u_kellerdecke_w_m2k),
-                u_eg_geschossdecke_w_m2k=float(cfg.u_eg_geschossdecke_w_m2k),
-                u_dg_geschossdecke_w_m2k=float(cfg.u_dg_geschossdecke_w_m2k),
-            )
-        except Exception:
-            pass
-
-        return calc_heatloads(
-            list(self.state.rooms.values()),
-            self.state.elements,
-            t_out_c=float(cfg.t_out_c),
-            vent_cfg=vent_cfg,
-            thickness_mode=cfg.thickness_mode,
-            area_shrink_factor=float(cfg.area_shrink_factor),
-            floor_area_mode=cfg.floor_area_mode,
-        )
+        return self.heatloads.compute(self.state, vent_cfg)

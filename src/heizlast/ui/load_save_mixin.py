@@ -207,6 +207,8 @@ class MainWindowLoadSaveMixin:
             self.act_area_ref_outer.blockSignals(False)
 
         self._rebuild_all_graphics()
+        if hasattr(self, "_refresh_attic_preview"):
+            self._refresh_attic_preview()
         self._update_statusbar_summary()
 
     def _on_new_project_empty(self):
@@ -319,6 +321,8 @@ class MainWindowLoadSaveMixin:
 
         self._remember_project_path(rooms_path)
         self._rebuild_all_graphics()
+        if hasattr(self, "_refresh_attic_preview"):
+            self._refresh_attic_preview()
         self._update_statusbar_summary()
         self.statusBar().showMessage(f"Geladen: {rooms_path.name}", 3500)
         return True

@@ -4,30 +4,113 @@ from typing import Any, Dict, List, Optional, Tuple
 from ..domain.models import RoomModel
 from ..core.geometry import orthogonalize_points, room_polygon, merge_room_polygons, subtract_room_polygons, split_room_polygon
 from ..domain.services.room_operation_service import RoomOperationRecord
+from ..domain.house_state import HouseState
 from ..core.polygon_ops import serialize_polygon_m, validate_orthogonal_polygon, simplify_orthogonal_polygon, snap_m
 from PySide6.QtWidgets import QDialog
-from PySide6.QtWidgets import QMessageBox, QVBoxLayout, QPushButton
+from PySide6.QtWidgets import QVBoxLayout, QPushButton, QMessageBox, QMenu
 
 try:
     import matplotlib.pyplot as plt
     from matplotlib.figure import Figure
     from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
+    from matplotlib.backends.backend_qtagg import NavigationToolbar2QT as NavigationToolbar
     from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 except Exception:
     plt = None
     Figure = None
     FigureCanvas = None
+    NavigationToolbar = None
     Poly3DCollection = None
 from .graphics import PX_PER_M
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor,QPen,QBrush
-from PySide6.QtWidgets import QVBoxLayout
-
 from PySide6.QtCore import QPointF
 
 from ..domain.models import ElementModel
+from .. import APP_NAME, __version__, __internal_version__, PROJECT_SCHEMA_VERSION
+from .dialogs.info_dialog import InfoDialog
+from .dialogs.wall_elevation_dialog import WallElevationDialog, WallOpeningViewModel
+from ..core.wall_openings import wall_openings_for_element
 
 class MainWindowMiscMixin:
+
+    def _is_wall_like_element(self, element: ElementModel) -> bool:
+        et = str(getattr(element, "element_type", "") or "").strip().lower()
+        return "wand" in et
+
+    def _wall_openings_for_element(self, wall: ElementModel) -> list[WallOpeningViewModel]:
+        room = getattr(self, "rooms", {}).get(getattr(wall, "room_id", None))
+        openings = wall_openings_for_element(wall, getattr(self, "elements", []) or [], room=room, default_window_sill_m=0.90)
+        return [
+            WallOpeningViewModel(
+                offset_m=float(o.offset_m),
+                width_m=float(o.width_m),
+                sill_m=float(o.sill_m),
+                height_m=float(o.height_m),
+                label=str(o.label),
+                opening_type=str(o.opening_type),
+            )
+            for o in openings
+        ]
+
+
+    def _show_wall_elevation_dialog(self, wall: ElementModel) -> None:
+        wall_width_m = float(getattr(wall, "length_m", 0.0) or 0.0)
+        wall_height_m = float(getattr(wall, "height_m", 0.0) or 0.0)
+        if wall_width_m <= 0.0:
+            try:
+                wall_width_m = float(wall.compute_length() or 0.0)
+            except Exception:
+                wall_width_m = 0.0
+        if wall_height_m <= 0.0:
+            room = getattr(self, "rooms", {}).get(getattr(wall, "room_id", None))
+            wall_height_m = float(getattr(room, "height_m", 2.50) or 2.50)
+        openings = self._wall_openings_for_element(wall)
+        title = f"2D-Ansicht – {getattr(wall, 'element_type', 'Wand')} ({getattr(wall, 'floor', '')})"
+        dlg = WallElevationDialog(title=title, wall_width_m=wall_width_m, wall_height_m=wall_height_m, openings=openings, parent=self)
+        dlg.exec()
+
+    def _handle_plan_context_menu(self, view, event) -> bool:
+        scene_pos = view.mapToScene(event.pos())
+        item = view.itemAt(event.pos())
+        target_element = None
+        if item is not None:
+            if hasattr(item, "element") and isinstance(getattr(item, "element"), ElementModel):
+                target_element = getattr(item, "element")
+            elif hasattr(item, "parentItem") and item.parentItem() is not None and hasattr(item.parentItem(), "element") and isinstance(getattr(item.parentItem(), "element"), ElementModel):
+                target_element = getattr(item.parentItem(), "element")
+        if target_element is None or not self._is_wall_like_element(target_element):
+            return False
+
+        try:
+            for sc in (getattr(self, "scene_KG", None), getattr(self, "scene_EG", None), getattr(self, "scene_DG", None)):
+                if sc is not None:
+                    sc.clearSelection()
+            item.setSelected(True)
+        except Exception:
+            pass
+
+        menu = QMenu(view)
+        act = menu.addAction("Ansicht")
+        chosen = menu.exec(view.mapToGlobal(event.pos()))
+        if chosen is act:
+            self._show_wall_elevation_dialog(target_element)
+            return True
+        return bool(chosen is not None)
+
+    def _on_show_info_dialog(self) -> None:
+        cfg = getattr(self, "project_cfg", None)
+        internal_project_version = getattr(cfg, "internal_project_version", "V13-intern-01")
+        dlg = InfoDialog(
+            self,
+            app_name=APP_NAME,
+            app_version=__version__,
+            internal_app_version=__internal_version__,
+            project_schema_version=PROJECT_SCHEMA_VERSION,
+            internal_project_version=internal_project_version,
+        )
+        dlg.exec()
+
     def _meta_parse_any(self, meta: str) -> tuple[dict, str]:
         """Parst meta entweder als JSON-Objekt ('{...}') oder als Pipe-Format 'k=v|k2=v2'.
         Returns (dict, fmt) with fmt in {'json','pipe'} and preserves arbitrary keys.
@@ -152,6 +235,241 @@ class MainWindowMiscMixin:
             ]]
         return poly_by_floor
 
+    def _current_roof_type(self) -> str:
+        attic = getattr(getattr(self, "project_cfg", None), "attic", None)
+        rt = str(getattr(attic, "roof_type", "satteldach") or "satteldach").strip().lower()
+        allowed = {"satteldach", "pultdach", "walmdach", "flachdach"}
+        return rt if rt in allowed else "satteldach"
+
+
+    def _current_facade_material(self) -> str:
+        attic = getattr(getattr(self, "project_cfg", None), "attic", None)
+        material = str(getattr(attic, "facade_material", "klinker") or "klinker").strip().lower()
+        allowed = {"klinker", "putz", "holz", "beton"}
+        return material if material in allowed else "klinker"
+
+    def _facade_material_display_name(self, material: str) -> str:
+        return {"klinker": "Klinker", "putz": "Putz", "holz": "Holz", "beton": "Beton"}.get(str(material or "").lower(), "Klinker")
+
+    def _facade_material_style(self) -> dict:
+        material = self._current_facade_material()
+        styles = {
+            "klinker": {
+                "wall_face": (0.70, 0.33, 0.22, 1.0),
+                "wall_edge": (0.28, 0.16, 0.11, 0.85),
+                "texture": "brick",
+                "texture_rows": 10,
+            },
+            "putz": {
+                "wall_face": (0.90, 0.88, 0.82, 1.0),
+                "wall_edge": (0.55, 0.53, 0.48, 0.85),
+                "texture": "plaster",
+                "texture_rows": 9,
+            },
+            "holz": {
+                "wall_face": (0.61, 0.45, 0.28, 1.0),
+                "wall_edge": (0.30, 0.21, 0.10, 0.85),
+                "texture": "wood",
+                "texture_rows": 8,
+            },
+            "beton": {
+                "wall_face": (0.70, 0.71, 0.72, 1.0),
+                "wall_edge": (0.36, 0.38, 0.40, 0.85),
+                "texture": "concrete",
+                "texture_rows": 7,
+            },
+        }
+        style = dict(styles.get(material, styles["klinker"]))
+        style["material"] = material
+        style["material_name"] = self._facade_material_display_name(material)
+        return style
+
+    def _current_roof_material(self) -> str:
+        attic = getattr(getattr(self, "project_cfg", None), "attic", None)
+        material = str(getattr(attic, "roof_material", "ziegel") or "ziegel").strip().lower()
+        allowed = {"ziegel"}
+        return material if material in allowed else "ziegel"
+
+    def _roof_material_display_name(self, material: str) -> str:
+        return {"ziegel": "Ziegel"}.get(str(material or "").lower(), "Ziegel")
+
+    def _roof_material_style(self) -> dict:
+        material = self._current_roof_material()
+        style = {"roof_face": (0.74, 0.24, 0.15, 1.0), "roof_edge": (0.30, 0.10, 0.08, 0.95), "material": material, "material_name": self._roof_material_display_name(material)}
+        return style
+
+    def _add_roof_texture_lines(self, ax, face, roof_style: dict) -> None:
+        if not face or len(face) < 3:
+            return
+        x0=min(float(p[0]) for p in face); x1=max(float(p[0]) for p in face)
+        y0=min(float(p[1]) for p in face); y1=max(float(p[1]) for p in face)
+        z0=min(float(p[2]) for p in face); z1=max(float(p[2]) for p in face)
+        if abs(x1-x0) < 1e-9 or abs(y1-y0) < 1e-9:
+            return
+        for r in range(1,9):
+            t = r / 9.0
+            z = z0 + (z1 - z0) * t
+            y = y0 + (y1 - y0) * t
+            ax.plot([x0, x1], [y, y], [z, z], linewidth=0.55, alpha=0.35)
+
+    def _roof_display_name(self, roof_type: str) -> str:
+        mapping = {
+            "satteldach": "Satteldach",
+            "pultdach": "Pultdach",
+            "walmdach": "Walmdach",
+            "flachdach": "Flachdach",
+        }
+        return mapping.get(str(roof_type or "").lower(), "Satteldach")
+
+    def _roof_peak_height(self) -> float:
+        attic = getattr(getattr(self, "project_cfg", None), "attic", None)
+        if attic is None:
+            return 1.0
+        width = max(0.5, float(getattr(attic, "building_width_m", 8.0) or 8.0))
+        pitch_deg = max(0.0, min(85.0, float(getattr(attic, "roof_pitch_deg", 35.0) or 35.0)))
+        roof_type = self._current_roof_type()
+        import math
+        if roof_type == "flachdach":
+            return 0.12
+        if roof_type == "pultdach":
+            return max(0.2, width * math.tan(math.radians(max(1.0, pitch_deg))))
+        return max(0.2, 0.5 * width * math.tan(math.radians(max(1.0, pitch_deg))))
+
+    def _roof_profile_params(self) -> dict:
+        attic = getattr(getattr(self, "project_cfg", None), "attic", None)
+        return {
+            "roof_type": self._current_roof_type(),
+            "ridge_orientation": str(getattr(attic, "ridge_orientation", "length") or "length").strip().lower(),
+            "roof_overhang_m": max(0.0, float(getattr(attic, "roof_overhang_m", 0.30) or 0.0)),
+            "ridge_offset_ratio": float(getattr(attic, "ridge_offset_ratio", 0.0) or 0.0),
+            "pult_rise_side": str(getattr(attic, "pult_rise_side", "right") or "right").strip().lower(),
+        }
+
+    def _add_surface_texture_lines(self, ax, p0, p1, z0: float, z1: float, material: str = "klinker", rows: int = 10) -> None:
+        x0, y0 = float(p0[0]), float(p0[1])
+        x1, y1 = float(p1[0]), float(p1[1])
+        rows = max(4, int(rows))
+        dz = (z1 - z0) / rows if rows else (z1 - z0)
+
+        if material == "holz":
+            for c in range(9):
+                t = c / 8.0
+                xb = x0 + (x1 - x0) * t
+                yb = y0 + (y1 - y0) * t
+                ax.plot([xb, xb], [yb, yb], [z0, z1], linewidth=0.7, alpha=0.18)
+            for r in range(0, rows + 1, 2):
+                z = z0 + r * dz
+                ax.plot([x0, x1], [y0, y1], [z, z], linewidth=0.5, alpha=0.10)
+            return
+
+        if material == "putz":
+            for r in range(rows + 1):
+                z = z0 + r * dz
+                ax.plot([x0, x1], [y0, y1], [z, z], linewidth=0.4, alpha=0.08)
+            for c in range(5):
+                t = c / 4.0
+                xb = x0 + (x1 - x0) * t
+                yb = y0 + (y1 - y0) * t
+                ax.plot([xb, xb], [yb, yb], [z0, z1], linewidth=0.35, alpha=0.06)
+            return
+
+        if material == "beton":
+            for r in range(0, rows + 1, 2):
+                z = z0 + r * dz
+                ax.plot([x0, x1], [y0, y1], [z, z], linewidth=0.45, alpha=0.12)
+            for c in range(4):
+                t = c / 3.0
+                xb = x0 + (x1 - x0) * t
+                yb = y0 + (y1 - y0) * t
+                ax.plot([xb, xb], [yb, yb], [z0, z1], linewidth=0.3, alpha=0.08)
+            return
+
+        for r in range(rows + 1):
+            z = z0 + r * dz
+            ax.plot([x0, x1], [y0, y1], [z, z], linewidth=0.5, alpha=0.28)
+        for c in range(7):
+            t = c / 6.0
+            xb = x0 + (x1 - x0) * t
+            yb = y0 + (y1 - y0) * t
+            ax.plot([xb, xb], [yb, yb], [z0, z1], linewidth=0.45, alpha=0.18)
+
+    def _build_roof_faces(self, pts: list[tuple[float, float]], z_top: float) -> tuple[list[list[tuple[float, float, float]]], list[tuple[float, float, float]]]:
+        if len(pts) < 4:
+            return [], []
+        xs = [float(p[0]) for p in pts]
+        ys = [float(p[1]) for p in pts]
+        min_x, max_x = min(xs), max(xs)
+        min_y, max_y = min(ys), max(ys)
+        params = self._roof_profile_params()
+        roof_type = params["roof_type"]
+        ridge_orientation = params["ridge_orientation"]
+        overhang = float(params["roof_overhang_m"])
+        ridge_offset_ratio = max(-0.8, min(0.8, float(params["ridge_offset_ratio"])))
+        pult_side = params["pult_rise_side"]
+
+        core_dx = max(1e-9, max_x - min_x)
+        core_dy = max(1e-9, max_y - min_y)
+        ex0, ex1 = min_x - overhang, max_x + overhang
+        ey0, ey1 = min_y - overhang, max_y + overhang
+        peak = z_top + self._roof_peak_height()
+
+        if roof_type == "flachdach":
+            return [[(ex0, ey0, z_top + 0.05), (ex1, ey0, z_top + 0.05), (ex1, ey1, z_top + 0.05), (ex0, ey1, z_top + 0.05)]], []
+
+        cross_span = core_dx if ridge_orientation == "length" else core_dy
+        along_span = core_dy if ridge_orientation == "length" else core_dx
+        ridge_pos = 0.5 * cross_span * (1.0 + ridge_offset_ratio)
+        ridge_pos = max(0.10 * cross_span, min(0.90 * cross_span, ridge_pos))
+        left_run = max(1e-9, ridge_pos)
+        right_run = max(1e-9, cross_span - ridge_pos)
+        hip_run = max(1e-9, min(left_run, right_run, 0.5 * along_span)) if roof_type == "walmdach" else 0.0
+
+        if roof_type == "pultdach":
+            if ridge_orientation == "width":
+                y_low, y_high = (ey1, ey0) if pult_side == "left" else (ey0, ey1)
+                return [[(ex0, y_low, z_top), (ex1, y_low, z_top), (ex1, y_high, peak), (ex0, y_high, peak)]], []
+            x_low, x_high = (ex1, ex0) if pult_side == "left" else (ex0, ex1)
+            return [[(x_low, ey0, z_top), (x_high, ey0, peak), (x_high, ey1, peak), (x_low, ey1, z_top)]], []
+
+        if ridge_orientation == "width":
+            ridge_y = min_y + ridge_pos
+            if roof_type == "walmdach":
+                ridge_x0 = min_x + hip_run
+                ridge_x1 = max_x - hip_run
+                ridge = [(ridge_x0, ridge_y, peak), (ridge_x1, ridge_y, peak)]
+                faces = [
+                    [(ex0, ey0, z_top), ridge[0], ridge[1], (ex1, ey0, z_top)],
+                    [(ex0, ey1, z_top), ridge[0], ridge[1], (ex1, ey1, z_top)],
+                    [(ex0, ey0, z_top), ridge[0], (ex0, ey1, z_top)],
+                    [(ex1, ey0, z_top), ridge[1], (ex1, ey1, z_top)],
+                ]
+                return faces, ridge
+            ridge = [(ex0, ridge_y, peak), (ex1, ridge_y, peak)]
+            faces = [
+                [(ex0, ey0, z_top), (ex1, ey0, z_top), ridge[1], ridge[0]],
+                [(ex0, ey1, z_top), (ex1, ey1, z_top), ridge[1], ridge[0]],
+            ]
+            return faces, ridge
+
+        ridge_x = min_x + ridge_pos
+        if roof_type == "walmdach":
+            ridge_y0 = min_y + hip_run
+            ridge_y1 = max_y - hip_run
+            ridge = [(ridge_x, ridge_y0, peak), (ridge_x, ridge_y1, peak)]
+            faces = [
+                [(ex0, ey0, z_top), ridge[0], (ex1, ey0, z_top)],
+                [(ex1, ey0, z_top), ridge[1], (ex1, ey1, z_top)],
+                [(ex1, ey1, z_top), ridge[1], (ex0, ey1, z_top)],
+                [(ex0, ey1, z_top), ridge[0], (ex0, ey0, z_top)],
+            ]
+            return faces, ridge
+
+        ridge = [(ridge_x, ey0, peak), (ridge_x, ey1, peak)]
+        faces = [
+            [(ex0, ey0, z_top), ridge[0], ridge[1], (ex0, ey1, z_top)],
+            [(ex1, ey0, z_top), ridge[0], ridge[1], (ex1, ey1, z_top)],
+        ]
+        return faces, ridge
     def _collect_floor_heights(self) -> dict:
         heights = {}
         rooms = getattr(self, "rooms", {}) or {}
@@ -178,45 +496,75 @@ class MainWindowMiscMixin:
         all_x = []
         all_y = []
         all_z = []
+        roof_type = self._current_roof_type()
+        roof_name = self._roof_display_name(roof_type)
+        material_style = self._facade_material_style()
+        roof_style = self._roof_material_style()
 
         for floor, polys in poly_by_floor.items():
             h = float(heights.get(floor, 2.5) or 2.5)
             z0 = float(z_base.get(floor, 0.0) or 0.0)
             z1 = z0 + h
+            is_top_floor = floor == max(poly_by_floor.keys(), key=lambda f: float(z_base.get(f, 0.0) or 0.0))
 
             for poly in polys:
                 if len(poly) < 3:
                     continue
                 pts = [(float(x), float(y)) for x, y in poly]
-                roof = [(x, y, z1) for x, y in pts]
                 base = [(x, y, z0) for x, y in pts]
 
-                ax.add_collection3d(Poly3DCollection([roof], alpha=0.15))
-                ax.add_collection3d(Poly3DCollection([base], alpha=0.08))
+                ax.add_collection3d(Poly3DCollection([base], alpha=0.06))
 
                 for i in range(len(pts)):
                     x0, y0 = pts[i]
                     x1, y1 = pts[(i + 1) % len(pts)]
                     wall = [[(x0, y0, z0), (x1, y1, z0), (x1, y1, z1), (x0, y0, z1)]]
-                    ax.add_collection3d(Poly3DCollection(wall, alpha=0.12))
-                    ax.plot([x0, x1], [y0, y1], [z0, z0])
-                    ax.plot([x0, x1], [y0, y1], [z1, z1])
-                    ax.plot([x0, x0], [y0, y0], [z0, z1])
+                    pc = Poly3DCollection(wall, alpha=0.72)
+                    pc.set_facecolor(material_style["wall_face"])
+                    pc.set_edgecolor(material_style["wall_edge"])
+                    ax.add_collection3d(pc)
+                    self._add_surface_texture_lines(ax, (x0, y0), (x1, y1), z0, z1, material=material_style["material"], rows=material_style["texture_rows"])
+                    ax.plot([x0, x1], [y0, y1], [z0, z0], linewidth=1.0)
+                    ax.plot([x0, x1], [y0, y1], [z1, z1], linewidth=1.0)
+                    ax.plot([x0, x0], [y0, y0], [z0, z1], linewidth=0.9)
+
+                if is_top_floor:
+                    roof_faces, ridge = self._build_roof_faces(pts, z1)
+                    for face in roof_faces:
+                        pc = Poly3DCollection([face], alpha=0.86)
+                        pc.set_facecolor(roof_style["roof_face"])
+                        pc.set_edgecolor(roof_style["roof_edge"])
+                        ax.add_collection3d(pc)
+                        self._add_roof_texture_lines(ax, face, roof_style)
+                    for i in range(len(ridge) - 1):
+                        a = ridge[i]
+                        b = ridge[i + 1]
+                        ax.plot([a[0], b[0]], [a[1], b[1]], [a[2], b[2]], linewidth=1.6)
+                    all_z.extend([z1 + self._roof_peak_height()])
+                else:
+                    roof = [(x, y, z1) for x, y in pts]
+                    pc = Poly3DCollection([roof], alpha=0.12)
+                    pc.set_facecolor((0.65, 0.65, 0.68, 1.0))
+                    ax.add_collection3d(pc)
 
                 all_x.extend([p[0] for p in pts])
                 all_y.extend([p[1] for p in pts])
                 all_z.extend([z0, z1])
 
         if all_x and all_y and all_z:
+            dx = max(all_x) - min(all_x)
+            dy = max(all_y) - min(all_y)
+            dz = max(all_z) - min(all_z)
             ax.set_xlim(min(all_x), max(all_x))
-            ax.set_ylim(min(all_y), max(all_y))
+            ax.set_ylim(max(all_y), min(all_y))
             ax.set_zlim(min(all_z), max(all_z))
+            ax.set_box_aspect((max(dx, 1.0), max(dy, 1.0), max(dz, 1.0)))
 
         ax.set_xlabel("x [m]")
         ax.set_ylabel("y [m]")
         ax.set_zlabel("z [m]")
-        ax.set_title("3D Hausansicht")
-
+        params = self._roof_profile_params()
+        ax.set_title(f"3D Hausansicht · {roof_name} · Fassade: {material_style['material_name']} · Dach: {roof_style['material_name']} · First: {params['ridge_orientation']} · Überstand: {params['roof_overhang_m']:.2f} m")
     def _on_show_3d_house(self) -> None:
         if plt is None or FigureCanvas is None or Poly3DCollection is None:
             QMessageBox.warning(self, "3D Ansicht", "matplotlib/QtAgg ist nicht verfügbar.")
@@ -226,8 +574,7 @@ class MainWindowMiscMixin:
         if not poly_by_floor:
             QMessageBox.warning(
                 self, "3D Ansicht",
-                "Keine EG-Außenkontur gefunden. Bitte erst 'Auto-Wände neu (All)' ausführen "
-                "und sicherstellen, dass Außenwände Geometrie + auto_contour-Meta haben."
+                "Keine Gebäudeaußenkontur gefunden. Bitte zuerst Räume anlegen oder Auto-Wände erzeugen."
             )
             return
 
@@ -235,15 +582,21 @@ class MainWindowMiscMixin:
         z_base = self._floor_z_offsets(heights)
 
         dlg = QDialog(self)
-        dlg.setWindowTitle("3D Hausansicht (Skin + Linien)")
+        dlg.setWindowTitle("3D Hausansicht (drehbar)")
         lay = QVBoxLayout(dlg)
 
         fig = Figure(figsize=(10, 6))
         canvas = FigureCanvas(fig)
+        if NavigationToolbar is not None:
+            lay.addWidget(NavigationToolbar(canvas, dlg))
         lay.addWidget(canvas)
 
         ax = fig.add_subplot(111, projection="3d")
         self._plot_3d_skin_and_lines(ax, poly_by_floor, heights, z_base)
+        try:
+            ax.view_init(elev=24, azim=-58)
+        except Exception:
+            pass
 
         fig.tight_layout()
         canvas.draw()
@@ -252,16 +605,23 @@ class MainWindowMiscMixin:
         btn.clicked.connect(dlg.accept)
         lay.addWidget(btn)
 
-        dlg.resize(1100, 750)
+        try:
+            self.statusBar().showMessage("3D-Ansicht geöffnet: Linke Maustaste drehen, rechte Maustaste zoomen/verschieben.", 7000)
+        except Exception:
+            pass
+
+        dlg.resize(1180, 820)
         dlg.exec()
 
     def _set_room_draw_tool(self, tool: str | None):
-        tool = tool or "rect"
+        tool = tool or "select"
         self._draw_tool = tool
         self._room_draw_mode = tool in {"rect", "l", "poly"}
         self._polygon_room_mode = tool == "poly"
         self._l_room_mode = tool == "l"
         self._split_room_mode = tool == "split"
+        if getattr(self, 'act_select_tool', None) is not None and tool != 'select':
+            self.act_select_tool.setChecked(False)
         if getattr(self, 'act_rect_room', None) is not None and tool != 'rect':
             self.act_rect_room.setChecked(False)
         if getattr(self, 'act_l_room', None) is not None and tool != 'l':
@@ -270,21 +630,39 @@ class MainWindowMiscMixin:
             self.act_polygon_room.setChecked(False)
         if getattr(self, 'act_split_room', None) is not None and tool != 'split':
             self.act_split_room.setChecked(False)
-        if getattr(self, 'act_add_window', None) is not None and self._room_draw_mode:
+        if getattr(self, 'act_add_window', None) is not None:
             self.act_add_window.setChecked(False)
             self._add_window_mode = False
+        for view in (getattr(self, "view_KG", None), getattr(self, "view_EG", None), getattr(self, "view_DG", None)):
+            if view is None:
+                continue
+            try:
+                view.viewport().setCursor(Qt.ArrowCursor if tool == 'select' else Qt.CrossCursor)
+            except Exception:
+                pass
         self._cancel_polygon_room_preview()
         self._cancel_l_room_preview()
         self._cancel_split_preview()
+        try:
+            msg = {
+                'select': 'Auswahlmodus aktiv: Räume und Elemente können selektiert und verschoben werden.',
+                'rect': 'Zeichnen aktiv: Rechteck-Raum per Ziehen aufspannen.',
+                'l': 'Zeichnen aktiv: L-Raum mit drei Klickpunkten definieren.',
+                'poly': 'Zeichnen aktiv: Polygonraum mit orthogonalen Klickpunkten definieren.',
+                'split': 'Teilen aktiv: selektierten Raum mit einer Linie teilen.',
+            }.get(tool)
+            if msg:
+                self.statusBar().showMessage(msg, 5000)
+        except Exception:
+            pass
 
     def _on_draw_floorplan(self):
         self._set_room_draw_tool('rect')
         if getattr(self, 'act_rect_room', None) is not None:
             self.act_rect_room.setChecked(True)
-        try:
-            self.statusBar().showMessage('Grundriss zeichnen aktiv: Rechteck-Raum', 4000)
-        except Exception:
-            pass
+
+    def _on_toggle_select_mode(self, checked=False):
+        self._set_room_draw_tool('select' if checked else None)
 
     def _on_toggle_rect_room_mode(self, checked=False):
         self._set_room_draw_tool('rect' if checked else None)
@@ -414,12 +792,57 @@ class MainWindowMiscMixin:
             out = [self._selected_room_id]
         return out
 
+
+    def _build_room_operation_service(self):
+        """Liefert einen RoomOperationService für UI-Aktionen.
+
+        Nutzt bevorzugt den bereits verdrahteten AppController. Falls die UI
+        ohne Controller läuft, wird ein lokaler Service auf Basis des
+        HouseDomainService erzeugt.
+        """
+        ctrl = getattr(self, "controller", None)
+        room_ops = getattr(ctrl, "room_ops", None) if ctrl is not None else None
+        if room_ops is not None:
+            factory = getattr(room_ops, "_service", None)
+            if callable(factory):
+                return factory()
+            return room_ops
+
+        from ..core.geometry import build_auto_walls_shared_merge
+        from ..domain.services.house_domain_service import HouseDomainService
+        from ..domain.services.room_operation_service import RoomOperationService
+
+        domain = getattr(ctrl, "domain", None) if ctrl is not None else None
+        if domain is None:
+            domain = HouseDomainService()
+        return RoomOperationService(domain=domain, build_auto_walls=build_auto_walls_shared_merge)
+
     def _controller_house_state(self):
         ctrl = getattr(self, "controller", None)
         state = getattr(ctrl, "state", None)
         if state is not None:
             return state
-        raise RuntimeError("No AppController/HouseState available")
+        return HouseState(
+            rooms=dict(getattr(self, "rooms", {}) or {}),
+            elements=list(getattr(self, "elements", []) or []),
+            project_cfg=getattr(self, "project_cfg", None),
+        )
+
+    def _sync_from_house_state(self, state: HouseState) -> None:
+        """Überträgt einen HouseState zurück in die UI-Datenstrukturen."""
+        self.rooms = dict(getattr(state, "rooms", {}) or {})
+        self.elements = list(getattr(state, "elements", []) or [])
+        cfg = getattr(state, "project_cfg", None)
+        if cfg is not None:
+            self.project_cfg = cfg
+            try:
+                self.t_out_c = float(self.project_cfg.t_out_c)
+            except Exception:
+                pass
+        try:
+            self.metrics.bind(self.rooms, self.elements)
+        except Exception:
+            pass
 
     def _push_room_operation_record(self, rec: RoomOperationRecord | None) -> None:
         if rec is None:
