@@ -269,7 +269,6 @@ Building Physics / HVAC Simulation
 
 ---
 
-Wenn du möchtest, kann ich dir zusätzlich noch:
 
 * ein **richtig professionelles GitHub README mit Bildern**
 * ein **Architekturdiagramm**
