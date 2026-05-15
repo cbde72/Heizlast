@@ -37,7 +37,7 @@ def backup_multi_ext():
 
     files_to_add = []
 
-    print(f"--- Backup-Vorgang gestartet ---")
+    print("--- Backup-Vorgang gestartet ---")
     print(f"Suche nach: {', '.join(EXTENSIONS)}")
     print(f"Projekt-Root: {root_dir}")
 
@@ -65,7 +65,7 @@ def backup_multi_ext():
                 arcname = file.relative_to(root_dir)
                 zipf.write(file, arcname=arcname)
 
-        print(f"\nERFOLG!")
+        print("\nERFOLG!")
         print(f"Gespeichert in: {zip_path}")
 
     except Exception as e:

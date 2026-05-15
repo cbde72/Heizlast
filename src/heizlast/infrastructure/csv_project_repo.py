@@ -6,7 +6,7 @@ from ..domain.models import ElementModel
 from ..core.csv_io import load_rooms, load_elements, save_rooms, save_elements
 from ..configs.project_config import ProjectCfg, load_project_cfg, save_project_cfg
 from ..core.config import CSV_DELIMITER
-from ..domain.models import RoomModel, ElementModel
+from ..domain.models import RoomModel
 
 
 class CSVProjectRepository:

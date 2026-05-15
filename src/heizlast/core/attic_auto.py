@@ -9,6 +9,7 @@ from .config import DEFAULT_FACTOR, DEFAULT_U
 from .geometry import classify_floor_edge_spans
 from ..domain.models import ElementModel, RoomModel
 from ..configs.project_config import AtticCfgDTO
+from .roof_line_geometry import estimate_roof_line_extra_area_m2
 
 EPS = 1e-9
 AUTO_ATTIC_UID_PREFIX = "auto_attic_"
@@ -24,6 +25,8 @@ class _RoofModel:
     ridge_orientation: str
     ridge_offset_ratio: float
     pult_rise_side: str
+    half_hip_ratio: float = 0.45
+    roof_line_area_factor: float = 1.0
 
     @property
     def cross_span_m(self) -> float:
@@ -58,9 +61,12 @@ class _RoofModel:
 
     @property
     def hip_run_m(self) -> float:
-        if self.roof_type != "walmdach":
+        if self.roof_type not in {"walmdach", "krueppelwalmdach"}:
             return 0.0
-        return max(EPS, min(self.left_run_m, self.right_run_m, 0.5 * self.along_span_m))
+        hip = max(EPS, min(self.left_run_m, self.right_run_m, 0.5 * self.along_span_m))
+        if self.roof_type == "krueppelwalmdach":
+            hip *= max(0.05, min(0.95, float(self.half_hip_ratio)))
+        return hip
 
     @property
     def slant_left_m(self) -> float:
@@ -158,8 +164,20 @@ def _build_geom_from_cfg(cfg: AtticCfgDTO) -> Optional[AtticGeometry]:
             roof_type=str(getattr(cfg, "roof_type", "satteldach") or "satteldach").strip().lower(),
             ridge_orientation=str(getattr(cfg, "ridge_orientation", "length") or "length").strip().lower(),
             roof_overhang_m=float(getattr(cfg, "roof_overhang_m", 0.30) or 0.0),
+            eave_overhang_m=float(getattr(cfg, "eave_overhang_m", getattr(cfg, "roof_overhang_m", 0.30)) or 0.0),
+            gable_overhang_m=float(getattr(cfg, "gable_overhang_m", getattr(cfg, "roof_overhang_m", 0.30)) or 0.0),
             ridge_offset_ratio=float(getattr(cfg, "ridge_offset_ratio", 0.0) or 0.0),
             pult_rise_side=str(getattr(cfg, "pult_rise_side", "right") or "right").strip().lower(),
+            half_hip_ratio=float(getattr(cfg, "half_hip_ratio", 0.45) or 0.45),
+            dormer_type=str(getattr(cfg, "dormer_type", "none") or "none").strip().lower(),
+            dormer_width_m=float(getattr(cfg, "dormer_width_m", 1.80) or 1.80),
+            dormer_height_m=float(getattr(cfg, "dormer_height_m", 1.20) or 1.20),
+            dormer_offset_ratio=float(getattr(cfg, "dormer_offset_ratio", 0.0) or 0.0),
+            roof_window_count=int(getattr(cfg, "roof_window_count", 0) or 0),
+            roof_window_width_m=float(getattr(cfg, "roof_window_width_m", 0.78) or 0.78),
+            roof_window_height_m=float(getattr(cfg, "roof_window_height_m", 1.18) or 1.18),
+            roof_window_side=str(getattr(cfg, "roof_window_side", "right") or "right").strip().lower(),
+            roof_lines=tuple((str(getattr(line, "kind", "first") or "first"), float(getattr(line, "x1_ratio", 0.0) or 0.0), float(getattr(line, "y1_ratio", 0.0) or 0.0), float(getattr(line, "x2_ratio", 0.0) or 0.0), float(getattr(line, "y2_ratio", 0.0) or 0.0)) for line in list(getattr(cfg, "roof_lines", []) or [])),
         )
     except Exception:
         return None
@@ -170,11 +188,18 @@ def _build_roof_model(cfg: AtticCfgDTO) -> _RoofModel:
     if ridge_orientation not in {"length", "width"}:
         ridge_orientation = "length"
     roof_type = str(getattr(cfg, "roof_type", "satteldach") or "satteldach").strip().lower()
-    if roof_type not in {"satteldach", "pultdach", "walmdach", "flachdach"}:
+    if roof_type not in {"satteldach", "pultdach", "walmdach", "krueppelwalmdach", "flachdach", "winkeldach"}:
         roof_type = "satteldach"
     pult_rise_side = str(getattr(cfg, "pult_rise_side", "right") or "right").strip().lower()
     if pult_rise_side not in {"left", "right"}:
         pult_rise_side = "right"
+    extra_area = estimate_roof_line_extra_area_m2(
+        getattr(cfg, "roof_lines", []) or [],
+        width_m=float(getattr(cfg, "building_width_m", 0.0) or 0.0),
+        length_m=float(getattr(cfg, "building_length_m", 0.0) or 0.0),
+        rise_m=(float(getattr(cfg, "building_width_m", 0.0) or 0.0) * math.tan(math.radians(max(1.0, float(getattr(cfg, "roof_pitch_deg", 0.0) or 0.0)))) * 0.5) if roof_type != "pultdach" else (float(getattr(cfg, "building_width_m", 0.0) or 0.0) * math.tan(math.radians(max(1.0, float(getattr(cfg, "roof_pitch_deg", 0.0) or 0.0))))),
+    )
+    base_plan = max(EPS, float(getattr(cfg, "building_width_m", 0.0) or 0.0) * float(getattr(cfg, "building_length_m", 0.0) or 0.0))
     return _RoofModel(
         width_m=float(getattr(cfg, "building_width_m", 0.0) or 0.0),
         length_m=float(getattr(cfg, "building_length_m", 0.0) or 0.0),
@@ -184,6 +209,8 @@ def _build_roof_model(cfg: AtticCfgDTO) -> _RoofModel:
         ridge_orientation=ridge_orientation,
         ridge_offset_ratio=float(getattr(cfg, "ridge_offset_ratio", 0.0) or 0.0),
         pult_rise_side=pult_rise_side,
+        half_hip_ratio=float(getattr(cfg, "half_hip_ratio", 0.45) or 0.45),
+        roof_line_area_factor=1.0 + max(0.0, float(extra_area)) / base_plan,
     )
 
 
@@ -215,7 +242,7 @@ def _side_wall_height(side: str, pos_m: float, model: _RoofModel) -> float:
     if model.ridge_orientation == "length":
         if side in {"front", "back"}:
             x = pos
-            if rt == "walmdach":
+            if rt in {"walmdach", "krueppelwalmdach"}:
                 return knee
             if rt == "pultdach":
                 if model.pult_rise_side == "left":
@@ -229,7 +256,7 @@ def _side_wall_height(side: str, pos_m: float, model: _RoofModel) -> float:
     # ridge along width
     if side in {"left", "right"}:
         y = pos
-        if rt == "walmdach":
+        if rt in {"walmdach", "krueppelwalmdach"}:
             return knee
         if rt == "pultdach":
             if model.pult_rise_side == "left":
@@ -265,7 +292,7 @@ def _roof_depth_at_along(side: str, along_m: float, model: _RoofModel) -> float:
 
 def _roof_strip_area(side: str, s0: float, s1: float, model: _RoofModel) -> float:
     breaks: list[float] = []
-    if model.roof_type == "walmdach":
+    if model.roof_type in {"walmdach", "krueppelwalmdach"}:
         hip = model.hip_run_m
         breaks = [hip, model.along_span_m - hip]
     return _integrate_linear(lambda s: _roof_depth_at_along(side, s, model), s0, s1, breaks)
@@ -323,7 +350,7 @@ def derive_auto_attic_elements(dg_rooms: Sequence[RoomModel], attic_cfg: AtticCf
                 continue
 
             if model.ridge_orientation == 'length':
-                area = _roof_strip_area(side, local0, local1, model)
+                area = _roof_strip_area(side, local0, local1, model) * float(getattr(model, "roof_line_area_factor", 1.0) or 1.0)
                 etype = 'Dach'
                 part = f'roof_{side}'
                 u_val = roof_u
@@ -377,7 +404,7 @@ def derive_auto_attic_elements(dg_rooms: Sequence[RoomModel], attic_cfg: AtticCf
                 factor = float(DEFAULT_FACTOR.get('Außenwand', DEFAULT_FACTOR.get('Aussenwand', 1.0)))
                 h_val = None
             else:
-                area = _roof_strip_area(side, local0, local1, model)
+                area = _roof_strip_area(side, local0, local1, model) * float(getattr(model, "roof_line_area_factor", 1.0) or 1.0)
                 etype = 'Dach'
                 part = f'roof_{side}'
                 u_val = roof_u

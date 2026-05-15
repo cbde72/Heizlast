@@ -1,5 +1,6 @@
 from __future__ import annotations
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QRectF, QPointF
+from PySide6.QtGui import QPainter, QPen, QColor, QBrush
 from PySide6.QtWidgets import (
     QDialog,
     QVBoxLayout,
@@ -17,9 +18,12 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QHBoxLayout,
     QFrame,
+    QPushButton,
+    QMessageBox,
+    QSpinBox,
 )
 from ... import PROJECT_SCHEMA_VERSION
-from ...configs.project_config import ProjectCfg
+from ...configs.project_config import ProjectCfg, DormerCfgDTO, RoofLineCfgDTO
 
 
 class _SettingsNavList(QListWidget):
@@ -34,12 +38,259 @@ class _SettingsNavList(QListWidget):
         return self.currentRow()
 
 
+class RoofLineEditorWidget(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("roofLineEditorWidget")
+        self.setMinimumHeight(280)
+        self._lines: list[RoofLineCfgDTO] = []
+        self._current_kind: str = "first"
+        self._draft_start: tuple[float, float] | None = None
+        self._selected_index: int = -1
+        self.on_lines_changed = None
+
+    def set_current_kind(self, kind: str) -> None:
+        self._current_kind = str(kind or "first").strip().lower()
+        self.update()
+
+    def set_lines(self, lines: list[RoofLineCfgDTO]) -> None:
+        self._lines = [RoofLineCfgDTO(**{k: getattr(line, k) for k in RoofLineCfgDTO.__dataclass_fields__.keys()}) for line in list(lines or [])]
+        if self._selected_index >= len(self._lines):
+            self._selected_index = len(self._lines) - 1
+        self.update()
+
+    def current_lines(self) -> list[RoofLineCfgDTO]:
+        return [RoofLineCfgDTO(**{k: getattr(line, k) for k in RoofLineCfgDTO.__dataclass_fields__.keys()}) for line in self._lines]
+
+    def selected_index(self) -> int:
+        return self._selected_index
+
+    def delete_selected_line(self) -> None:
+        if 0 <= self._selected_index < len(self._lines):
+            del self._lines[self._selected_index]
+            if self._selected_index >= len(self._lines):
+                self._selected_index = len(self._lines) - 1
+            self._emit_lines_changed()
+            self.update()
+
+    def clear_all(self) -> None:
+        self._lines = []
+        self._selected_index = -1
+        self._draft_start = None
+        self._emit_lines_changed()
+        self.update()
+
+    def mousePressEvent(self, event) -> None:
+        if event.button() != Qt.LeftButton:
+            return super().mousePressEvent(event)
+        ratio = self._event_to_ratio(event.position().x(), event.position().y())
+        hit = self._hit_test_line(*ratio)
+        if hit >= 0 and self._draft_start is None:
+            self._selected_index = hit
+            self.update()
+            self._emit_lines_changed()
+            return
+        if self._draft_start is None:
+            self._draft_start = ratio
+            self._selected_index = -1
+        else:
+            x1, y1 = self._draft_start
+            x2, y2 = ratio
+            if abs(x2 - x1) > 1e-4 or abs(y2 - y1) > 1e-4:
+                self._lines.append(RoofLineCfgDTO(kind=self._current_kind, x1_ratio=x1, y1_ratio=y1, x2_ratio=x2, y2_ratio=y2))
+                self._selected_index = len(self._lines) - 1
+                self._emit_lines_changed()
+            self._draft_start = None
+        self.update()
+
+    def paintEvent(self, _event) -> None:
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing, True)
+        outer = self.rect().adjusted(10, 10, -10, -10)
+        p.fillRect(self.rect(), QColor("#fafbfc"))
+        p.setPen(QPen(QColor("#d9e0e6"), 1))
+        p.setBrush(QBrush(QColor("#ffffff")))
+        p.drawRoundedRect(outer, 8, 8)
+        roof = QRectF(outer.left() + 26, outer.top() + 24, max(40.0, outer.width() - 52), max(40.0, outer.height() - 48))
+        p.setPen(QPen(QColor("#202a34"), 2))
+        p.setBrush(QBrush(QColor("#f6f8fa")))
+        p.drawRect(roof)
+        p.setPen(QPen(QColor("#d0d7de"), 1, Qt.DashLine))
+        for i in range(1, 4):
+            x = roof.left() + i * roof.width() / 4.0
+            y = roof.top() + i * roof.height() / 4.0
+            p.drawLine(QPointF(x, roof.top()), QPointF(x, roof.bottom()))
+            p.drawLine(QPointF(roof.left(), y), QPointF(roof.right(), y))
+        p.setPen(QPen(QColor("#57606a"), 1))
+        p.drawText(roof.adjusted(8, 6, -8, -6), Qt.AlignTop | Qt.AlignLeft, "Draufsicht – 1. Klick Start, 2. Klick Ende")
+        p.drawText(roof.adjusted(8, 6, -8, -6), Qt.AlignTop | Qt.AlignRight, "Typ: " + self._kind_label(self._current_kind))
+        for idx, line in enumerate(self._lines):
+            color = self._line_color(getattr(line, 'kind', 'first'))
+            width = 4 if idx == self._selected_index else 3
+            p.setPen(QPen(color, width, Qt.SolidLine, Qt.RoundCap))
+            p.drawLine(self._ratio_to_point(roof, line.x1_ratio, line.y1_ratio), self._ratio_to_point(roof, line.x2_ratio, line.y2_ratio))
+        if self._draft_start is not None:
+            pt = self._ratio_to_point(roof, *self._draft_start)
+            p.setPen(QPen(QColor("#1f6feb"), 2, Qt.DashLine))
+            p.setBrush(QBrush(QColor("#1f6feb")))
+            p.drawEllipse(pt, 4, 4)
+
+    def _ratio_to_point(self, roof: QRectF, x_ratio: float, y_ratio: float) -> QPointF:
+        xr = min(1.0, max(0.0, float(x_ratio)))
+        yr = min(1.0, max(0.0, float(y_ratio)))
+        return QPointF(roof.left() + xr * roof.width(), roof.top() + yr * roof.height())
+
+    def _event_to_ratio(self, x_px: float, y_px: float) -> tuple[float, float]:
+        outer = self.rect().adjusted(10, 10, -10, -10)
+        roof = QRectF(outer.left() + 26, outer.top() + 24, max(40.0, outer.width() - 52), max(40.0, outer.height() - 48))
+        xr = 0.0 if roof.width() <= 0 else (float(x_px) - roof.left()) / roof.width()
+        yr = 0.0 if roof.height() <= 0 else (float(y_px) - roof.top()) / roof.height()
+        return (min(1.0, max(0.0, xr)), min(1.0, max(0.0, yr)))
+
+    def _hit_test_line(self, x_ratio: float, y_ratio: float) -> int:
+        best_idx = -1
+        best_dist = 0.04
+        for idx, line in enumerate(self._lines):
+            dist = self._point_line_distance(x_ratio, y_ratio, line.x1_ratio, line.y1_ratio, line.x2_ratio, line.y2_ratio)
+            if dist <= best_dist:
+                best_dist = dist
+                best_idx = idx
+        return best_idx
+
+    def _point_line_distance(self, px: float, py: float, x1: float, y1: float, x2: float, y2: float) -> float:
+        vx = x2 - x1
+        vy = y2 - y1
+        wx = px - x1
+        wy = py - y1
+        vv = vx * vx + vy * vy
+        if vv <= 1e-12:
+            return ((px - x1) ** 2 + (py - y1) ** 2) ** 0.5
+        t = max(0.0, min(1.0, (wx * vx + wy * vy) / vv))
+        qx = x1 + t * vx
+        qy = y1 + t * vy
+        return ((px - qx) ** 2 + (py - qy) ** 2) ** 0.5
+
+    def _kind_label(self, kind: str) -> str:
+        return {"first": "First", "grat": "Grat", "kehle": "Kehle"}.get(str(kind or "").lower(), str(kind))
+
+    def _line_color(self, kind: str) -> QColor:
+        mapping = {"first": QColor("#1f6feb"), "grat": QColor("#d1242f"), "kehle": QColor("#8250df")}
+        return mapping.get(str(kind or "").lower(), QColor("#57606a"))
+
+    def _emit_lines_changed(self) -> None:
+        if callable(self.on_lines_changed):
+            self.on_lines_changed()
+
+
+class DormerEditDialog(QDialog):
+    def __init__(self, parent, dormer: DormerCfgDTO | None = None, *, active_sides: tuple[str, ...] = ("left", "right")):
+        super().__init__(parent)
+        self.setWindowTitle("Gaube bearbeiten" if dormer else "Gaube hinzufügen")
+        self.resize(520, 420)
+        self._dormer = dormer or DormerCfgDTO()
+
+        lay = QVBoxLayout(self)
+        form = QFormLayout()
+        form.setContentsMargins(8, 8, 8, 8)
+        form.setHorizontalSpacing(18)
+        form.setVerticalSpacing(10)
+
+        self.ed_id = QLineEdit(str(getattr(self._dormer, "id", "dormer_1") or "dormer_1"))
+        self.cb_type = QComboBox(); self.cb_type.addItems(["Schleppgaube", "Satteldachgaube", "Flachdachgaube"])
+        self.cb_type.setCurrentText({"schleppgaube": "Schleppgaube", "satteldachgaube": "Satteldachgaube", "flachdachgaube": "Flachdachgaube"}.get(str(getattr(self._dormer, "dormer_type", "schleppgaube") or "schleppgaube").strip().lower(), "Schleppgaube"))
+        self.cb_side = QComboBox(); self.set_active_sides(active_sides, selected=str(getattr(self._dormer, "roof_side", "right") or "right"))
+
+        self.sp_center = QDoubleSpinBox(); self.sp_center.setRange(0.0, 999.0); self.sp_center.setDecimals(2); self.sp_center.setValue(float(getattr(self._dormer, "center_along_m", 0.0)))
+        self.sp_width = QDoubleSpinBox(); self.sp_width.setRange(0.3, 20.0); self.sp_width.setDecimals(2); self.sp_width.setValue(float(getattr(self._dormer, "width_m", 1.80)))
+        self.sp_depth = QDoubleSpinBox(); self.sp_depth.setRange(0.2, 20.0); self.sp_depth.setDecimals(2); self.sp_depth.setValue(float(getattr(self._dormer, "depth_m", 1.40)))
+        self.sp_front_height = QDoubleSpinBox(); self.sp_front_height.setRange(0.2, 10.0); self.sp_front_height.setDecimals(2); self.sp_front_height.setValue(float(getattr(self._dormer, "front_height_m", 1.20)))
+        self.sp_window_count = QSpinBox(); self.sp_window_count.setRange(0, 8); self.sp_window_count.setValue(int(getattr(self._dormer, "window_count", 1) or 0))
+        self.sp_window_width = QDoubleSpinBox(); self.sp_window_width.setRange(0.2, 5.0); self.sp_window_width.setDecimals(2); self.sp_window_width.setValue(float(getattr(self._dormer, "window_width_m", 1.20)))
+        self.sp_window_height = QDoubleSpinBox(); self.sp_window_height.setRange(0.2, 5.0); self.sp_window_height.setDecimals(2); self.sp_window_height.setValue(float(getattr(self._dormer, "window_height_m", 1.20)))
+        self.sp_sill = QDoubleSpinBox(); self.sp_sill.setRange(0.0, 3.0); self.sp_sill.setDecimals(2); self.sp_sill.setValue(float(getattr(self._dormer, "sill_height_m", 0.90)))
+        self.cb_has_pitch = QCheckBox("eigene Gaubendach-Neigung verwenden")
+        pitch = getattr(self._dormer, "roof_pitch_deg", None)
+        self.cb_has_pitch.setChecked(pitch is not None)
+        self.sp_pitch = QDoubleSpinBox(); self.sp_pitch.setRange(0.0, 85.0); self.sp_pitch.setDecimals(1); self.sp_pitch.setValue(float(15.0 if pitch is None else pitch))
+        self.sp_edge_clearance = QDoubleSpinBox(); self.sp_edge_clearance.setRange(0.0, 5.0); self.sp_edge_clearance.setDecimals(2); self.sp_edge_clearance.setValue(float(getattr(self._dormer, "min_edge_clearance_m", 0.40)))
+
+        form.addRow("ID", self.ed_id)
+        form.addRow("Gaubentyp", self.cb_type)
+        form.addRow("Dachseite", self.cb_side)
+        form.addRow("Position entlang Dach [m]", self.sp_center)
+        form.addRow("Breite [m]", self.sp_width)
+        form.addRow("Tiefe [m]", self.sp_depth)
+        form.addRow("Front-Höhe [m]", self.sp_front_height)
+        form.addRow("Fensteranzahl", self.sp_window_count)
+        form.addRow("Fensterbreite [m]", self.sp_window_width)
+        form.addRow("Fensterhöhe [m]", self.sp_window_height)
+        form.addRow("Brüstungshöhe [m]", self.sp_sill)
+        form.addRow(self.cb_has_pitch)
+        form.addRow("Gaubendach-Neigung [°]", self.sp_pitch)
+        form.addRow("Mindestabstand Dachrand [m]", self.sp_edge_clearance)
+        lay.addLayout(form)
+
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        lay.addWidget(bb)
+        bb.accepted.connect(self.accept)
+        bb.rejected.connect(self.reject)
+        self.cb_has_pitch.toggled.connect(self.sp_pitch.setEnabled)
+        self.sp_pitch.setEnabled(self.cb_has_pitch.isChecked())
+
+    def set_active_sides(self, active_sides: tuple[str, ...], selected: str | None = None) -> None:
+        labels = {"left": "links", "right": "rechts", "front": "vorne", "back": "hinten"}
+        current = selected or self.cb_side.currentData() or "right"
+        self.cb_side.blockSignals(True)
+        self.cb_side.clear()
+        for side in active_sides:
+            self.cb_side.addItem(labels.get(side, side), side)
+        idx = max(0, self.cb_side.findData(current))
+        self.cb_side.setCurrentIndex(idx)
+        self.cb_side.blockSignals(False)
+
+    def to_dto(self) -> DormerCfgDTO:
+        dtype = {"Schleppgaube": "schleppgaube", "Satteldachgaube": "satteldachgaube", "Flachdachgaube": "flachdachgaube"}.get(self.cb_type.currentText(), "schleppgaube")
+        return DormerCfgDTO(
+            id=self.ed_id.text().strip() or "dormer_1",
+            dormer_type=dtype,
+            roof_side=str(self.cb_side.currentData() or "right"),
+            center_along_m=float(self.sp_center.value()),
+            width_m=float(self.sp_width.value()),
+            depth_m=float(self.sp_depth.value()),
+            front_height_m=float(self.sp_front_height.value()),
+            window_count=int(self.sp_window_count.value()),
+            window_width_m=float(self.sp_window_width.value()),
+            window_height_m=float(self.sp_window_height.value()),
+            sill_height_m=float(self.sp_sill.value()),
+            roof_pitch_deg=float(self.sp_pitch.value()) if self.cb_has_pitch.isChecked() else None,
+            min_edge_clearance_m=float(self.sp_edge_clearance.value()),
+        )
+
+
 class ProjectSettingsDialog(QDialog):
     def __init__(self, parent, cfg: ProjectCfg, initial_tab: str | None = None):
         super().__init__(parent)
         self.setWindowTitle("Projektparameter – Heizlast")
         self.resize(860, 720)
         self._cfg = cfg
+        self._dormers = [DormerCfgDTO(**d) if isinstance(d, dict) else DormerCfgDTO(**{k: getattr(d, k) for k in DormerCfgDTO.__dataclass_fields__.keys()}) for d in list(getattr(getattr(cfg, "attic", None), "dormers", []) or [])]
+        self._roof_lines = [RoofLineCfgDTO(**d) if isinstance(d, dict) else RoofLineCfgDTO(**{k: getattr(d, k) for k in RoofLineCfgDTO.__dataclass_fields__.keys()}) for d in list(getattr(getattr(cfg, "attic", None), "roof_lines", []) or [])]
+        if not self._dormers and str(getattr(getattr(cfg, "attic", None), "dormer_type", "none") or "none").strip().lower() != "none":
+            self._dormers = [DormerCfgDTO(
+                id="gaube_1",
+                dormer_type=str(getattr(cfg.attic, "dormer_type", "schleppgaube") or "schleppgaube").strip().lower(),
+                roof_side="right" if str(getattr(cfg.attic, "ridge_orientation", "length") or "length").strip().lower() == "length" else "back",
+                center_along_m=float(getattr(cfg.attic, "building_length_m", 10.0)) / 2.0,
+                width_m=float(getattr(cfg.attic, "dormer_width_m", 1.80)),
+                depth_m=1.40,
+                front_height_m=float(getattr(cfg.attic, "dormer_height_m", 1.20)),
+                window_count=1,
+                window_width_m=1.20,
+                window_height_m=1.20,
+                sill_height_m=0.90,
+                roof_pitch_deg=float(getattr(cfg.attic, "roof_pitch_deg", 35.0)),
+                min_edge_clearance_m=0.40,
+            )]
         self._apply_dialog_style()
 
         lay = QVBoxLayout(self)
@@ -72,7 +323,7 @@ class ProjectSettingsDialog(QDialog):
         lay.addWidget(nav_host, 1)
 
         # --- Tab: Projektinfo ---
-        self.ed_internal_project_version = QLineEdit(str(getattr(cfg, "internal_project_version", "V22-intern-01")))
+        self.ed_internal_project_version = QLineEdit(str(getattr(cfg, "internal_project_version", "V30-intern-01")))
         self.lb_cfg_schema = QLabel(str(PROJECT_SCHEMA_VERSION))
         self.lb_cfg_schema.setTextInteractionFlags(Qt.TextSelectableByMouse)
         self.lb_info = QLabel(
@@ -210,14 +461,25 @@ class ProjectSettingsDialog(QDialog):
         self.sp_attic_width = QDoubleSpinBox(); self.sp_attic_width.setRange(0.5, 200.0); self.sp_attic_width.setDecimals(2); self.sp_attic_width.setValue(float(getattr(cfg.attic, "building_width_m", 8.0)))
         self.sp_attic_length = QDoubleSpinBox(); self.sp_attic_length.setRange(0.5, 200.0); self.sp_attic_length.setDecimals(2); self.sp_attic_length.setValue(float(getattr(cfg.attic, "building_length_m", 10.0)))
         self.sp_attic_knee = QDoubleSpinBox(); self.sp_attic_knee.setRange(0.0, 10.0); self.sp_attic_knee.setDecimals(2); self.sp_attic_knee.setValue(float(getattr(cfg.attic, "knee_wall_height_m", 1.0)))
-        self.cb_attic_roof_type = QComboBox(); self.cb_attic_roof_type.addItems(["Satteldach", "Pultdach", "Walmdach", "Flachdach"])
+        self.cb_attic_roof_type = QComboBox(); self.cb_attic_roof_type.addItems(["Satteldach", "Pultdach", "Walmdach", "Krüppelwalmdach", "Flachdach", "Winkel-/Kehldach"])
         _roof_type_raw = str(getattr(cfg.attic, "roof_type", "satteldach") or "satteldach").strip().lower()
-        _roof_type_map = {"satteldach": "Satteldach", "pultdach": "Pultdach", "walmdach": "Walmdach", "flachdach": "Flachdach"}
+        _roof_type_map = {"satteldach": "Satteldach", "pultdach": "Pultdach", "walmdach": "Walmdach", "krueppelwalmdach": "Krüppelwalmdach", "flachdach": "Flachdach", "winkeldach": "Winkel-/Kehldach"}
         self.cb_attic_roof_type.setCurrentText(_roof_type_map.get(_roof_type_raw, "Satteldach"))
         self.cb_attic_ridge_orientation = QComboBox(); self.cb_attic_ridge_orientation.addItems(["längs", "quer"]); self.cb_attic_ridge_orientation.setCurrentText("quer" if str(getattr(cfg.attic, "ridge_orientation", "length") or "length").strip().lower() == "width" else "längs")
         self.sp_attic_overhang = QDoubleSpinBox(); self.sp_attic_overhang.setRange(0.0, 3.0); self.sp_attic_overhang.setDecimals(2); self.sp_attic_overhang.setSingleStep(0.05); self.sp_attic_overhang.setValue(float(getattr(cfg.attic, "roof_overhang_m", 0.30)))
+        self.sp_attic_eave_overhang = QDoubleSpinBox(); self.sp_attic_eave_overhang.setRange(0.0, 3.0); self.sp_attic_eave_overhang.setDecimals(2); self.sp_attic_eave_overhang.setSingleStep(0.05); self.sp_attic_eave_overhang.setValue(float(getattr(cfg.attic, "eave_overhang_m", getattr(cfg.attic, "roof_overhang_m", 0.30))))
+        self.sp_attic_gable_overhang = QDoubleSpinBox(); self.sp_attic_gable_overhang.setRange(0.0, 3.0); self.sp_attic_gable_overhang.setDecimals(2); self.sp_attic_gable_overhang.setSingleStep(0.05); self.sp_attic_gable_overhang.setValue(float(getattr(cfg.attic, "gable_overhang_m", getattr(cfg.attic, "roof_overhang_m", 0.30))))
         self.sp_attic_ridge_offset = QDoubleSpinBox(); self.sp_attic_ridge_offset.setRange(-0.80, 0.80); self.sp_attic_ridge_offset.setDecimals(2); self.sp_attic_ridge_offset.setSingleStep(0.05); self.sp_attic_ridge_offset.setValue(float(getattr(cfg.attic, "ridge_offset_ratio", 0.0)))
         self.cb_attic_pult_side = QComboBox(); self.cb_attic_pult_side.addItems(["links ansteigend", "rechts ansteigend"]); self.cb_attic_pult_side.setCurrentText("links ansteigend" if str(getattr(cfg.attic, "pult_rise_side", "right") or "right").strip().lower() == "left" else "rechts ansteigend")
+        self.sp_attic_half_hip = QDoubleSpinBox(); self.sp_attic_half_hip.setRange(0.05, 0.95); self.sp_attic_half_hip.setDecimals(2); self.sp_attic_half_hip.setSingleStep(0.05); self.sp_attic_half_hip.setValue(float(getattr(cfg.attic, "half_hip_ratio", 0.45)))
+        self.cb_attic_dormer_type = QComboBox(); self.cb_attic_dormer_type.addItems(["keine", "Schleppgaube", "Satteldachgaube", "Flachdachgaube"]); self.cb_attic_dormer_type.setCurrentText({"none":"keine","schleppgaube":"Schleppgaube","satteldachgaube":"Satteldachgaube","flachdachgaube":"Flachdachgaube"}.get(str(getattr(cfg.attic, "dormer_type", "none") or "none").strip().lower(), "keine"))
+        self.sp_attic_dormer_width = QDoubleSpinBox(); self.sp_attic_dormer_width.setRange(0.5, 8.0); self.sp_attic_dormer_width.setDecimals(2); self.sp_attic_dormer_width.setValue(float(getattr(cfg.attic, "dormer_width_m", 1.80)))
+        self.sp_attic_dormer_height = QDoubleSpinBox(); self.sp_attic_dormer_height.setRange(0.3, 4.0); self.sp_attic_dormer_height.setDecimals(2); self.sp_attic_dormer_height.setValue(float(getattr(cfg.attic, "dormer_height_m", 1.20)))
+        self.sp_attic_dormer_offset = QDoubleSpinBox(); self.sp_attic_dormer_offset.setRange(-0.80, 0.80); self.sp_attic_dormer_offset.setDecimals(2); self.sp_attic_dormer_offset.setSingleStep(0.05); self.sp_attic_dormer_offset.setValue(float(getattr(cfg.attic, "dormer_offset_ratio", 0.0)))
+        self.sp_attic_roof_window_count = QDoubleSpinBox(); self.sp_attic_roof_window_count.setRange(0, 8); self.sp_attic_roof_window_count.setDecimals(0); self.sp_attic_roof_window_count.setValue(float(getattr(cfg.attic, "roof_window_count", 0)))
+        self.sp_attic_roof_window_width = QDoubleSpinBox(); self.sp_attic_roof_window_width.setRange(0.3, 2.5); self.sp_attic_roof_window_width.setDecimals(2); self.sp_attic_roof_window_width.setValue(float(getattr(cfg.attic, "roof_window_width_m", 0.78)))
+        self.sp_attic_roof_window_height = QDoubleSpinBox(); self.sp_attic_roof_window_height.setRange(0.4, 2.5); self.sp_attic_roof_window_height.setDecimals(2); self.sp_attic_roof_window_height.setValue(float(getattr(cfg.attic, "roof_window_height_m", 1.18)))
+        self.cb_attic_roof_window_side = QComboBox(); self.cb_attic_roof_window_side.addItems(["links", "rechts", "beidseitig"]); self.cb_attic_roof_window_side.setCurrentText({"left":"links","right":"rechts","both":"beidseitig"}.get(str(getattr(cfg.attic, "roof_window_side", "right") or "right").strip().lower(), "rechts"))
         self.sp_attic_pitch = QDoubleSpinBox(); self.sp_attic_pitch.setRange(0.0, 85.0); self.sp_attic_pitch.setDecimals(1); self.sp_attic_pitch.setValue(float(getattr(cfg.attic, "roof_pitch_deg", 35.0)))
         self.cb_attic_facade_material = QComboBox(); self.cb_attic_facade_material.addItems(["Klinker", "Putz", "Holz", "Beton"])
         self.cb_attic_roof_material = QComboBox(); self.cb_attic_roof_material.addItems(["Ziegel"])
@@ -230,7 +492,7 @@ class ProjectSettingsDialog(QDialog):
         self.sp_attic_u_roof = QDoubleSpinBox(); self.sp_attic_u_roof.setRange(0.0, 5.0); self.sp_attic_u_roof.setDecimals(3); self.sp_attic_u_roof.setValue(float(getattr(cfg.attic, "u_roof_w_m2k", 0.30)))
         self.sp_attic_u_gable = QDoubleSpinBox(); self.sp_attic_u_gable.setRange(0.0, 5.0); self.sp_attic_u_gable.setDecimals(3); self.sp_attic_u_gable.setValue(float(getattr(cfg.attic, "u_gable_w_m2k", 0.45)))
         self.lb_attic_hint = QLabel(
-            "Firstrichtung, Überstand, Firstversatz und Pult-Anstiegsrichtung wirken auf Auto-DG, Vorschau und 3D-Ansicht."
+            "Firstrichtung, getrennte Überstände, Firstversatz, Krüppelwalm, Gauben und Dachfenster wirken auf Auto-DG, Vorschau und 3D-Ansicht."
         )
         self.lb_attic_hint.setWordWrap(True)
         self.gb_attic_activation = self._group("Aktivierung", self._make_form([(None, self.cb_attic_enabled)]), "Schaltet die Ableitung für DG-/Dachflächen ein oder aus.")
@@ -240,11 +502,41 @@ class ProjectSettingsDialog(QDialog):
             ("Kniestockhöhe [m]", self.sp_attic_knee),
             ("Dachform", self.cb_attic_roof_type),
             ("Firstrichtung", self.cb_attic_ridge_orientation),
-            ("Dachüberstand [m]", self.sp_attic_overhang),
+            ("Dachüberstand gesamt [m]", self.sp_attic_overhang),
+            ("Traufüberstand [m]", self.sp_attic_eave_overhang),
+            ("Giebelüberstand [m]", self.sp_attic_gable_overhang),
             ("Asymmetrie / Firstversatz [-1..1]", self.sp_attic_ridge_offset),
             ("Pultdach Neigungsrichtung", self.cb_attic_pult_side),
+            ("Krüppelwalm-Anteil [0..1]", self.sp_attic_half_hip),
+            ("Gaubentyp (Legacy)", self.cb_attic_dormer_type),
+            ("Gaubenbreite (Legacy) [m]", self.sp_attic_dormer_width),
+            ("Gaubenhöhe (Legacy) [m]", self.sp_attic_dormer_height),
+            ("Gaubenlage (Legacy) [-1..1]", self.sp_attic_dormer_offset),
+            ("Dachfenster Anzahl", self.sp_attic_roof_window_count),
+            ("Dachfenster Breite [m]", self.sp_attic_roof_window_width),
+            ("Dachfenster Höhe [m]", self.sp_attic_roof_window_height),
+            ("Dachfenster Seite", self.cb_attic_roof_window_side),
             ("Dachneigung [°]", self.sp_attic_pitch),
         ]), "Geometrische Parameter für Vorschau, 3D-Modell und Auto-DG-Ableitung.")
+        self.lst_dormers = QListWidget(); self.lst_dormers.setObjectName("dormerListWidget")
+        self.btn_dormer_add = QPushButton("Hinzufügen")
+        self.btn_dormer_edit = QPushButton("Bearbeiten")
+        self.btn_dormer_delete = QPushButton("Löschen")
+        dormer_btns = QWidget(); dormer_btns_lay = QHBoxLayout(dormer_btns); dormer_btns_lay.setContentsMargins(0, 0, 0, 0); dormer_btns_lay.setSpacing(8); dormer_btns_lay.addWidget(self.btn_dormer_add); dormer_btns_lay.addWidget(self.btn_dormer_edit); dormer_btns_lay.addWidget(self.btn_dormer_delete); dormer_btns_lay.addStretch(1)
+        dormer_body = QWidget(); dormer_body_lay = QVBoxLayout(dormer_body); dormer_body_lay.setContentsMargins(6, 6, 6, 6); dormer_body_lay.setSpacing(8); dormer_body_lay.addWidget(self.lst_dormers); dormer_body_lay.addWidget(dormer_btns)
+        self.gb_attic_dormers = self._group("Gaubenliste", dormer_body, "Mehrere Gauben direkt im Projekt verwalten. Add/Edit/Delete öffnet einen parametrischen Gauben-Dialog.")
+        self.cb_roof_line_kind = QComboBox(); self.cb_roof_line_kind.addItems(["First", "Grat", "Kehle"])
+        self.roof_line_editor = RoofLineEditorWidget(self)
+        self.roof_line_editor.set_lines(self._roof_lines)
+        self.lst_roof_lines = QListWidget(); self.lst_roof_lines.setObjectName("roofLineListWidget")
+        self.btn_roof_line_delete = QPushButton("Ausgewählte Linie löschen")
+        self.btn_roof_line_clear = QPushButton("Alle Linien löschen")
+        roof_line_btns = QWidget(); roof_line_btns_lay = QHBoxLayout(roof_line_btns); roof_line_btns_lay.setContentsMargins(0, 0, 0, 0); roof_line_btns_lay.setSpacing(8); roof_line_btns_lay.addWidget(self.btn_roof_line_delete); roof_line_btns_lay.addWidget(self.btn_roof_line_clear); roof_line_btns_lay.addStretch(1)
+        roof_line_body = QWidget(); roof_line_body_lay = QVBoxLayout(roof_line_body); roof_line_body_lay.setContentsMargins(6, 6, 6, 6); roof_line_body_lay.setSpacing(8); roof_line_body_lay.addWidget(self._make_form([("Linientyp", self.cb_roof_line_kind)]))
+        roof_line_body_lay.addWidget(self.roof_line_editor)
+        roof_line_body_lay.addWidget(self.lst_roof_lines)
+        roof_line_body_lay.addWidget(roof_line_btns)
+        self.gb_attic_roof_lines = self._group("Dachlinien-Editor", roof_line_body, "First-, Grat- und Kehllinien per Klick direkt in der Draufsicht setzen. Klick 1 = Start, Klick 2 = Ende.")
         self.gb_attic_materials = self._group("Darstellung und Materialien", self._make_form([
             ("3D-Fassadenmaterial", self.cb_attic_facade_material),
             ("Dachmaterial", self.cb_attic_roof_material),
@@ -257,6 +549,8 @@ class ProjectSettingsDialog(QDialog):
         self._add_nav_page("DG Dach", self._build_tab([
             self.gb_attic_activation,
             self.gb_attic_geometry,
+            self.gb_attic_dormers,
+            self.gb_attic_roof_lines,
             self.gb_attic_materials,
             self.gb_attic_u,
         ]))
@@ -286,6 +580,18 @@ class ProjectSettingsDialog(QDialog):
         self.cb_ground_mode.currentTextChanged.connect(self._sync_ground_mode)
         self.cb_attic_enabled.toggled.connect(self._sync_attic_enabled)
         self.cb_attic_roof_type.currentTextChanged.connect(self._sync_attic_roof_type)
+        self.cb_attic_dormer_type.currentTextChanged.connect(self._sync_attic_roof_type)
+        self.cb_attic_ridge_orientation.currentTextChanged.connect(lambda _=None: (self._refresh_dormer_actions(), self._refresh_roof_line_actions()))
+        self.btn_dormer_add.clicked.connect(self._add_dormer)
+        self.btn_dormer_edit.clicked.connect(self._edit_selected_dormer)
+        self.btn_dormer_delete.clicked.connect(self._delete_selected_dormer)
+        self.lst_dormers.itemDoubleClicked.connect(lambda _item: self._edit_selected_dormer())
+        self.lst_dormers.currentRowChanged.connect(lambda _row: self._refresh_dormer_actions())
+        self.cb_roof_line_kind.currentTextChanged.connect(self._sync_roof_line_kind)
+        self.lst_roof_lines.currentRowChanged.connect(self._on_roof_line_list_row_changed)
+        self.btn_roof_line_delete.clicked.connect(self._delete_selected_roof_line)
+        self.btn_roof_line_clear.clicked.connect(self._clear_roof_lines)
+        self.roof_line_editor.on_lines_changed = self._on_roof_lines_changed
 
         if self.tabs.count():
             self.tabs.setCurrentRow(self.tabs.currentRow() if self.tabs.currentRow() >= 0 else 0)
@@ -293,6 +599,11 @@ class ProjectSettingsDialog(QDialog):
         self._sync_ground_mode(self.cb_ground_mode.currentText())
         self._sync_attic_enabled(bool(self.cb_attic_enabled.isChecked()))
         self._sync_attic_roof_type(self.cb_attic_roof_type.currentText())
+        self._reload_dormer_list()
+        self._sync_roof_line_kind(self.cb_roof_line_kind.currentText())
+        self._reload_roof_line_list()
+        self._refresh_dormer_actions()
+        self._refresh_roof_line_actions()
 
     def _apply_dialog_style(self) -> None:
         self.setStyleSheet(
@@ -449,6 +760,7 @@ class ProjectSettingsDialog(QDialog):
 
     def _sync_attic_enabled(self, enabled: bool) -> None:
         self.gb_attic_geometry.setEnabled(bool(enabled))
+        self.gb_attic_dormers.setEnabled(bool(enabled))
         self.gb_attic_materials.setEnabled(bool(enabled))
         self.gb_attic_u.setEnabled(bool(enabled))
         self._set_widgets_enabled([
@@ -458,8 +770,19 @@ class ProjectSettingsDialog(QDialog):
             self.cb_attic_roof_type,
             self.cb_attic_ridge_orientation,
             self.sp_attic_overhang,
+            self.sp_attic_eave_overhang,
+            self.sp_attic_gable_overhang,
             self.sp_attic_ridge_offset,
             self.cb_attic_pult_side,
+            self.sp_attic_half_hip,
+            self.cb_attic_dormer_type,
+            self.sp_attic_dormer_width,
+            self.sp_attic_dormer_height,
+            self.sp_attic_dormer_offset,
+            self.sp_attic_roof_window_count,
+            self.sp_attic_roof_window_width,
+            self.sp_attic_roof_window_height,
+            self.cb_attic_roof_window_side,
             self.sp_attic_pitch,
             self.cb_attic_facade_material,
             self.cb_attic_roof_material,
@@ -473,15 +796,159 @@ class ProjectSettingsDialog(QDialog):
         roof_type = str(roof_type_label or "Satteldach").strip()
         is_saddle = roof_type == "Satteldach"
         is_pult = roof_type == "Pultdach"
+        is_half_hip = roof_type == "Krüppelwalmdach"
         is_flat = roof_type == "Flachdach"
+        is_winkel = roof_type == "Winkel-/Kehldach"
+        dormer_enabled = enabled and not is_flat and self.cb_attic_dormer_type.currentText() != "keine"
+        roof_window_enabled = enabled and not is_flat
         self.cb_attic_ridge_orientation.setEnabled(enabled and roof_type != "Flachdach")
-        self.sp_attic_ridge_offset.setEnabled(enabled and is_saddle)
+        self.sp_attic_ridge_offset.setEnabled(enabled and (is_saddle or is_half_hip))
         self.cb_attic_pult_side.setEnabled(enabled and is_pult)
+        self.sp_attic_half_hip.setEnabled(enabled and is_half_hip)
         self.sp_attic_pitch.setEnabled(enabled and not is_flat)
+        self.sp_attic_dormer_width.setEnabled(dormer_enabled)
+        self.sp_attic_dormer_height.setEnabled(dormer_enabled)
+        self.sp_attic_dormer_offset.setEnabled(dormer_enabled)
+        self.sp_attic_roof_window_count.setEnabled(roof_window_enabled)
+        self.sp_attic_roof_window_width.setEnabled(roof_window_enabled)
+        self.sp_attic_roof_window_height.setEnabled(roof_window_enabled)
+        self.cb_attic_roof_window_side.setEnabled(roof_window_enabled)
+        self._refresh_dormer_actions()
+        self._refresh_roof_line_actions()
+
+    def _active_dormer_sides(self) -> tuple[str, ...]:
+        return ("front", "back") if self.cb_attic_ridge_orientation.currentText() == "quer" else ("left", "right")
+
+    def _friendly_dormer_label(self, dormer: DormerCfgDTO) -> str:
+        tmap = {"schleppgaube": "Schleppgaube", "satteldachgaube": "Satteldachgaube", "flachdachgaube": "Flachdachgaube"}
+        smap = {"left": "links", "right": "rechts", "front": "vorne", "back": "hinten"}
+        pitch = "auto" if dormer.roof_pitch_deg is None else f"{float(dormer.roof_pitch_deg):.1f}°"
+        return (
+            f"{dormer.id} · {tmap.get(str(dormer.dormer_type), str(dormer.dormer_type))} · {smap.get(str(dormer.roof_side), str(dormer.roof_side))} · "
+            f"Pos {float(dormer.center_along_m):.2f} m · B {float(dormer.width_m):.2f} m · T {float(dormer.depth_m):.2f} m · Dach {pitch}"
+        )
+
+    def _reload_dormer_list(self) -> None:
+        self.lst_dormers.clear()
+        for dormer in self._dormers:
+            self.lst_dormers.addItem(self._friendly_dormer_label(dormer))
+        if self._dormers and self.lst_dormers.currentRow() < 0:
+            self.lst_dormers.setCurrentRow(0)
+
+    def _refresh_dormer_actions(self) -> None:
+        enabled = bool(self.cb_attic_enabled.isChecked()) and self.cb_attic_roof_type.currentText() != "Flachdach"
+        self.gb_attic_dormers.setEnabled(enabled)
+        has_selection = self.lst_dormers.currentRow() >= 0
+        self.btn_dormer_add.setEnabled(enabled)
+        self.btn_dormer_edit.setEnabled(enabled and has_selection)
+        self.btn_dormer_delete.setEnabled(enabled and has_selection)
+
+    def _make_default_dormer(self) -> DormerCfgDTO:
+        idx = len(self._dormers) + 1
+        side = self._active_dormer_sides()[-1]
+        return DormerCfgDTO(
+            id=f"gaube_{idx}",
+            dormer_type={"Schleppgaube": "schleppgaube", "Satteldachgaube": "satteldachgaube", "Flachdachgaube": "flachdachgaube"}.get(self.cb_attic_dormer_type.currentText(), "schleppgaube"),
+            roof_side=side,
+            center_along_m=max(0.0, float(self.sp_attic_length.value()) / 2.0),
+            width_m=float(self.sp_attic_dormer_width.value()),
+            depth_m=1.40,
+            front_height_m=float(self.sp_attic_dormer_height.value()),
+            window_count=1,
+            window_width_m=1.20,
+            window_height_m=1.20,
+            sill_height_m=0.90,
+            roof_pitch_deg=float(self.sp_attic_pitch.value()),
+            min_edge_clearance_m=0.40,
+        )
+
+    def _add_dormer(self) -> None:
+        dlg = DormerEditDialog(self, self._make_default_dormer(), active_sides=self._active_dormer_sides())
+        if dlg.exec() == QDialog.Accepted:
+            self._dormers.append(dlg.to_dto())
+            self._reload_dormer_list()
+            self.lst_dormers.setCurrentRow(len(self._dormers) - 1)
+            self._refresh_dormer_actions()
+
+    def _edit_selected_dormer(self) -> None:
+        row = self.lst_dormers.currentRow()
+        if row < 0 or row >= len(self._dormers):
+            return
+        dlg = DormerEditDialog(self, self._dormers[row], active_sides=self._active_dormer_sides())
+        if dlg.exec() == QDialog.Accepted:
+            self._dormers[row] = dlg.to_dto()
+            self._reload_dormer_list()
+            self.lst_dormers.setCurrentRow(row)
+            self._refresh_dormer_actions()
+
+    def _delete_selected_dormer(self) -> None:
+        row = self.lst_dormers.currentRow()
+        if row < 0 or row >= len(self._dormers):
+            return
+        dormer = self._dormers[row]
+        if QMessageBox.question(self, "Gaube löschen", f"Soll die Gaube '{dormer.id}' gelöscht werden?") != QMessageBox.Yes:
+            return
+        del self._dormers[row]
+        self._reload_dormer_list()
+        if self._dormers:
+            self.lst_dormers.setCurrentRow(min(row, len(self._dormers) - 1))
+        self._refresh_dormer_actions()
+
+    def _friendly_roof_line_label(self, line: RoofLineCfgDTO) -> str:
+        kind = {"first": "First", "grat": "Grat", "kehle": "Kehle"}.get(str(getattr(line, "kind", "first") or "first").strip().lower(), str(getattr(line, "kind", "first")))
+        return f"{kind} · ({float(line.x1_ratio):.2f}, {float(line.y1_ratio):.2f}) → ({float(line.x2_ratio):.2f}, {float(line.y2_ratio):.2f})"
+
+    def _reload_roof_line_list(self) -> None:
+        self._roof_lines = self.roof_line_editor.current_lines()
+        self.lst_roof_lines.clear()
+        for line in self._roof_lines:
+            self.lst_roof_lines.addItem(self._friendly_roof_line_label(line))
+        current = self.roof_line_editor.selected_index()
+        if 0 <= current < self.lst_roof_lines.count():
+            self.lst_roof_lines.setCurrentRow(current)
+        elif self.lst_roof_lines.count() > 0 and self.lst_roof_lines.currentRow() < 0:
+            self.lst_roof_lines.setCurrentRow(self.lst_roof_lines.count() - 1)
+
+    def _refresh_roof_line_actions(self) -> None:
+        enabled = bool(self.cb_attic_enabled.isChecked()) and self.cb_attic_roof_type.currentText() == "Winkel-/Kehldach"
+        self.gb_attic_roof_lines.setEnabled(enabled)
+        has_selection = self.lst_roof_lines.currentRow() >= 0
+        self.btn_roof_line_delete.setEnabled(enabled and has_selection)
+        self.btn_roof_line_clear.setEnabled(enabled and self.lst_roof_lines.count() > 0)
+        self.cb_roof_line_kind.setEnabled(enabled)
+        self.roof_line_editor.setEnabled(enabled)
+
+    def _sync_roof_line_kind(self, label: str) -> None:
+        mapping = {"First": "first", "Grat": "grat", "Kehle": "kehle"}
+        self.roof_line_editor.set_current_kind(mapping.get(str(label), "first"))
+        self._refresh_roof_line_actions()
+
+    def _on_roof_lines_changed(self) -> None:
+        self._reload_roof_line_list()
+        self._refresh_roof_line_actions()
+
+    def _on_roof_line_list_row_changed(self, row: int) -> None:
+        self.roof_line_editor._selected_index = row
+        self.roof_line_editor.update()
+        self._refresh_roof_line_actions()
+
+    def _delete_selected_roof_line(self) -> None:
+        self.roof_line_editor.delete_selected_line()
+        self._reload_roof_line_list()
+        self._refresh_roof_line_actions()
+
+    def _clear_roof_lines(self) -> None:
+        if self.lst_roof_lines.count() <= 0:
+            return
+        if QMessageBox.question(self, "Dachlinien löschen", "Sollen alle Dachlinien gelöscht werden?") != QMessageBox.Yes:
+            return
+        self.roof_line_editor.clear_all()
+        self._reload_roof_line_list()
+        self._refresh_roof_line_actions()
 
     def apply_to_cfg(self, cfg: ProjectCfg) -> None:
         cfg.cfg_version = PROJECT_SCHEMA_VERSION
-        cfg.internal_project_version = self.ed_internal_project_version.text().strip() or "V22-intern-01"
+        cfg.internal_project_version = self.ed_internal_project_version.text().strip() or "V30-intern-01"
 
         cfg.t_out_c = float(self.sp_t_out.value())
         cfg.t_keller_c = float(self.sp_t_keller.value())
@@ -520,12 +987,33 @@ class ProjectSettingsDialog(QDialog):
         cfg.attic.building_width_m = float(self.sp_attic_width.value())
         cfg.attic.building_length_m = float(self.sp_attic_length.value())
         cfg.attic.knee_wall_height_m = float(self.sp_attic_knee.value())
-        _roof_rev = {"Satteldach": "satteldach", "Pultdach": "pultdach", "Walmdach": "walmdach", "Flachdach": "flachdach"}
+        _roof_rev = {"Satteldach": "satteldach", "Pultdach": "pultdach", "Walmdach": "walmdach", "Krüppelwalmdach": "krueppelwalmdach", "Flachdach": "flachdach", "Winkel-/Kehldach": "winkeldach"}
         cfg.attic.roof_type = _roof_rev.get(self.cb_attic_roof_type.currentText(), "satteldach")
         cfg.attic.ridge_orientation = "width" if self.cb_attic_ridge_orientation.currentText() == "quer" else "length"
         cfg.attic.roof_overhang_m = float(self.sp_attic_overhang.value())
+        cfg.attic.eave_overhang_m = float(self.sp_attic_eave_overhang.value())
+        cfg.attic.gable_overhang_m = float(self.sp_attic_gable_overhang.value())
         cfg.attic.ridge_offset_ratio = float(self.sp_attic_ridge_offset.value())
         cfg.attic.pult_rise_side = "left" if self.cb_attic_pult_side.currentText() == "links ansteigend" else "right"
+        cfg.attic.half_hip_ratio = float(self.sp_attic_half_hip.value())
+        _dormer_rev = {"keine": "none", "Schleppgaube": "schleppgaube", "Satteldachgaube": "satteldachgaube", "Flachdachgaube": "flachdachgaube"}
+        cfg.attic.dormer_type = _dormer_rev.get(self.cb_attic_dormer_type.currentText(), "none")
+        cfg.attic.dormer_width_m = float(self.sp_attic_dormer_width.value())
+        cfg.attic.dormer_height_m = float(self.sp_attic_dormer_height.value())
+        cfg.attic.dormer_offset_ratio = float(self.sp_attic_dormer_offset.value())
+        cfg.attic.dormers = [DormerCfgDTO(**{k: getattr(d, k) for k in DormerCfgDTO.__dataclass_fields__.keys()}) for d in self._dormers]
+        cfg.attic.roof_lines = [RoofLineCfgDTO(**{k: getattr(line, k) for k in RoofLineCfgDTO.__dataclass_fields__.keys()}) for line in self.roof_line_editor.current_lines()]
+        if cfg.attic.dormers:
+            first = cfg.attic.dormers[0]
+            cfg.attic.dormer_type = str(first.dormer_type)
+            cfg.attic.dormer_width_m = float(first.width_m)
+            cfg.attic.dormer_height_m = float(first.front_height_m)
+        elif cfg.attic.dormer_type != "none":
+            cfg.attic.dormer_type = _dormer_rev.get(self.cb_attic_dormer_type.currentText(), "none")
+        cfg.attic.roof_window_count = int(round(float(self.sp_attic_roof_window_count.value())))
+        cfg.attic.roof_window_width_m = float(self.sp_attic_roof_window_width.value())
+        cfg.attic.roof_window_height_m = float(self.sp_attic_roof_window_height.value())
+        cfg.attic.roof_window_side = {"links": "left", "rechts": "right", "beidseitig": "both"}.get(self.cb_attic_roof_window_side.currentText(), "right")
         cfg.attic.roof_pitch_deg = float(self.sp_attic_pitch.value())
         _facade_rev = {"Klinker": "klinker", "Putz": "putz", "Holz": "holz", "Beton": "beton"}
         cfg.attic.facade_material = _facade_rev.get(self.cb_attic_facade_material.currentText(), "klinker")

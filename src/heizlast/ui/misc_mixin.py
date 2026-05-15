@@ -1,11 +1,11 @@
 import json
-from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
 from ..domain.models import RoomModel
-from ..core.geometry import orthogonalize_points, room_polygon, merge_room_polygons, subtract_room_polygons, split_room_polygon
+from ..core.geometry import orthogonalize_points, room_polygon
 from ..domain.services.room_operation_service import RoomOperationRecord
 from ..domain.house_state import HouseState
 from ..core.polygon_ops import serialize_polygon_m, validate_orthogonal_polygon, simplify_orthogonal_polygon, snap_m
+from ..core.roof_mesh import build_winkeldach_mesh
+from ..core.roof_line_geometry import build_roof_facets, estimate_roof_line_extra_area_m2, roof_lines_to_plan_segments
 from PySide6.QtWidgets import QDialog
 from PySide6.QtWidgets import QVBoxLayout, QPushButton, QMessageBox, QMenu
 
@@ -23,7 +23,7 @@ except Exception:
     Poly3DCollection = None
 from .graphics import PX_PER_M
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor,QPen,QBrush
+from PySide6.QtGui import QPen,QBrush
 from PySide6.QtCore import QPointF
 
 from ..domain.models import ElementModel
@@ -31,6 +31,8 @@ from .. import APP_NAME, __version__, __internal_version__, PROJECT_SCHEMA_VERSI
 from .dialogs.info_dialog import InfoDialog
 from .dialogs.wall_elevation_dialog import WallElevationDialog, WallOpeningViewModel
 from ..core.wall_openings import wall_openings_for_element
+from .gl_3d_shell_dialog import Shell3DDialog
+from .shell_2d_dialog import Shell2DDialog
 
 class MainWindowMiscMixin:
 
@@ -217,16 +219,20 @@ class MainWindowMiscMixin:
         auch dann nicht abstürzt, wenn keine spezialisierte Kontur-Funktion vorhanden ist.
         Format: {"EG": [[(x,y), ...]], ...}
         """
+        room_polys = self._collect_room_polygons_by_floor()
+        if not room_polys:
+            return {}
         poly_by_floor: dict = {}
-        rooms = getattr(self, "rooms", {}) or {}
-        for floor in ("KG", "EG", "DG"):
-            rs = [r for r in rooms.values() if getattr(r, "floor", None) == floor]
-            if not rs:
+        for floor, polys in room_polys.items():
+            all_pts = [pt for poly in polys for pt in poly]
+            if len(all_pts) < 3:
                 continue
-            min_x = min(float(r.x_m) for r in rs)
-            min_y = min(float(r.y_m) for r in rs)
-            max_x = max(float(r.x_m) + float(r.w_m) for r in rs)
-            max_y = max(float(r.y_m) + float(r.h_m) for r in rs)
+            xs = [float(p[0]) for p in all_pts]
+            ys = [float(p[1]) for p in all_pts]
+            min_x = min(xs)
+            min_y = min(ys)
+            max_x = max(xs)
+            max_y = max(ys)
             poly_by_floor[floor] = [[
                 (min_x, min_y),
                 (max_x, min_y),
@@ -317,7 +323,9 @@ class MainWindowMiscMixin:
             "satteldach": "Satteldach",
             "pultdach": "Pultdach",
             "walmdach": "Walmdach",
+            "krueppelwalmdach": "Krüppelwalmdach",
             "flachdach": "Flachdach",
+            "winkeldach": "Winkel-/Kehldach",
         }
         return mapping.get(str(roof_type or "").lower(), "Satteldach")
 
@@ -341,8 +349,11 @@ class MainWindowMiscMixin:
             "roof_type": self._current_roof_type(),
             "ridge_orientation": str(getattr(attic, "ridge_orientation", "length") or "length").strip().lower(),
             "roof_overhang_m": max(0.0, float(getattr(attic, "roof_overhang_m", 0.30) or 0.0)),
+            "eave_overhang_m": max(0.0, float(getattr(attic, "eave_overhang_m", getattr(attic, "roof_overhang_m", 0.30)) or 0.0)),
+            "gable_overhang_m": max(0.0, float(getattr(attic, "gable_overhang_m", getattr(attic, "roof_overhang_m", 0.30)) or 0.0)),
             "ridge_offset_ratio": float(getattr(attic, "ridge_offset_ratio", 0.0) or 0.0),
             "pult_rise_side": str(getattr(attic, "pult_rise_side", "right") or "right").strip().lower(),
+            "half_hip_ratio": float(getattr(attic, "half_hip_ratio", 0.45) or 0.45),
         }
 
     def _add_surface_texture_lines(self, ax, p0, p1, z0: float, z1: float, material: str = "klinker", rows: int = 10) -> None:
@@ -404,17 +415,26 @@ class MainWindowMiscMixin:
         roof_type = params["roof_type"]
         ridge_orientation = params["ridge_orientation"]
         overhang = float(params["roof_overhang_m"])
+        eave_overhang = float(params.get("eave_overhang_m", overhang))
+        gable_overhang = float(params.get("gable_overhang_m", overhang))
         ridge_offset_ratio = max(-0.8, min(0.8, float(params["ridge_offset_ratio"])))
         pult_side = params["pult_rise_side"]
 
         core_dx = max(1e-9, max_x - min_x)
         core_dy = max(1e-9, max_y - min_y)
-        ex0, ex1 = min_x - overhang, max_x + overhang
-        ey0, ey1 = min_y - overhang, max_y + overhang
+        if ridge_orientation == "length":
+            ex0, ex1 = min_x - eave_overhang, max_x + eave_overhang
+            ey0, ey1 = min_y - gable_overhang, max_y + gable_overhang
+        else:
+            ex0, ex1 = min_x - gable_overhang, max_x + gable_overhang
+            ey0, ey1 = min_y - eave_overhang, max_y + eave_overhang
         peak = z_top + self._roof_peak_height()
 
         if roof_type == "flachdach":
             return [[(ex0, ey0, z_top + 0.05), (ex1, ey0, z_top + 0.05), (ex1, ey1, z_top + 0.05), (ex0, ey1, z_top + 0.05)]], []
+
+        if roof_type == "winkeldach":
+            return build_winkeldach_mesh(pts, z_top=z_top, peak_height_m=self._roof_peak_height(), target_cells=26)
 
         cross_span = core_dx if ridge_orientation == "length" else core_dy
         along_span = core_dy if ridge_orientation == "length" else core_dx
@@ -422,7 +442,9 @@ class MainWindowMiscMixin:
         ridge_pos = max(0.10 * cross_span, min(0.90 * cross_span, ridge_pos))
         left_run = max(1e-9, ridge_pos)
         right_run = max(1e-9, cross_span - ridge_pos)
-        hip_run = max(1e-9, min(left_run, right_run, 0.5 * along_span)) if roof_type == "walmdach" else 0.0
+        hip_run = max(1e-9, min(left_run, right_run, 0.5 * along_span)) if roof_type in {"walmdach", "krueppelwalmdach"} else 0.0
+        if roof_type == "krueppelwalmdach":
+            hip_run *= max(0.05, min(0.95, float(params.get("half_hip_ratio", 0.45))))
 
         if roof_type == "pultdach":
             if ridge_orientation == "width":
@@ -433,7 +455,7 @@ class MainWindowMiscMixin:
 
         if ridge_orientation == "width":
             ridge_y = min_y + ridge_pos
-            if roof_type == "walmdach":
+            if roof_type in {"walmdach", "krueppelwalmdach"}:
                 ridge_x0 = min_x + hip_run
                 ridge_x1 = max_x - hip_run
                 ridge = [(ridge_x0, ridge_y, peak), (ridge_x1, ridge_y, peak)]
@@ -452,7 +474,7 @@ class MainWindowMiscMixin:
             return faces, ridge
 
         ridge_x = min_x + ridge_pos
-        if roof_type == "walmdach":
+        if roof_type in {"walmdach", "krueppelwalmdach"}:
             ridge_y0 = min_y + hip_run
             ridge_y1 = max_y - hip_run
             ridge = [(ridge_x, ridge_y0, peak), (ridge_x, ridge_y1, peak)]
@@ -488,6 +510,123 @@ class MainWindowMiscMixin:
             z[floor] = current
             current += float(heights.get(floor, 2.5) or 2.5)
         return z
+
+    def _roof_line_cfg_items(self):
+        cfg = getattr(getattr(self, "project_cfg", None), "attic", None)
+        return list(getattr(cfg, "roof_lines", []) or [])
+
+    def _roof_line_segments_for_polygon(self, pts: list[tuple[float, float]]):
+        lines = self._roof_line_cfg_items()
+        if not lines or not pts:
+            return []
+        xs = [float(p[0]) for p in pts]
+        ys = [float(p[1]) for p in pts]
+        min_x, max_x = min(xs), max(xs)
+        min_y, max_y = min(ys), max(ys)
+        return roof_lines_to_plan_segments(lines, x0_m=min_x, y0_m=min_y, width_m=max(1e-9, max_x - min_x), length_m=max(1e-9, max_y - min_y))
+
+    def _roof_bbox_context(self, pts: list[tuple[float, float]]):
+        xs = [float(p[0]) for p in pts]
+        ys = [float(p[1]) for p in pts]
+        min_x, max_x = min(xs), max(xs)
+        min_y, max_y = min(ys), max(ys)
+        return min_x, min_y, max_x, max_y, max(1e-9, max_x - min_x), max(1e-9, max_y - min_y)
+
+    def _roof_plan_segments_for_polygon(self, pts: list[tuple[float, float]]):
+        segs = []
+        min_x, min_y, max_x, max_y, dx, dy = self._roof_bbox_context(pts)
+        params = self._roof_profile_params()
+        roof_type = self._current_roof_type()
+        ridge_orientation = str(params.get("ridge_orientation", "length") or "length").strip().lower()
+        ridge_offset_ratio = max(-0.8, min(0.8, float(params.get("ridge_offset_ratio", 0.0) or 0.0)))
+        ridge_pos = 0.5 * (dx if ridge_orientation == "length" else dy) * (1.0 + ridge_offset_ratio)
+        hip_run = 0.0
+        if roof_type in {"walmdach", "krueppelwalmdach"}:
+            cross_span = dx if ridge_orientation == "length" else dy
+            along_span = dy if ridge_orientation == "length" else dx
+            ridge_pos = max(0.10 * cross_span, min(0.90 * cross_span, ridge_pos))
+            left_run = max(1e-9, ridge_pos)
+            right_run = max(1e-9, cross_span - ridge_pos)
+            hip_run = max(1e-9, min(left_run, right_run, 0.5 * along_span))
+            if roof_type == "krueppelwalmdach":
+                hip_run *= max(0.05, min(0.95, float(params.get("half_hip_ratio", 0.45) or 0.45)))
+        if roof_type != "flachdach":
+            if ridge_orientation == "width":
+                y = min_y + max(0.10 * dy, min(0.90 * dy, ridge_pos))
+                p1 = (min_x + hip_run, y)
+                p2 = (max_x - hip_run, y)
+            else:
+                x = min_x + max(0.10 * dx, min(0.90 * dx, ridge_pos))
+                p1 = (x, min_y + hip_run)
+                p2 = (x, max_y - hip_run)
+            segs.append(("first", p1, p2))
+        if roof_type in {"walmdach", "krueppelwalmdach"}:
+            if ridge_orientation == "width":
+                left_ridge, right_ridge = segs[0][1], segs[0][2]
+                segs.extend([("grat", (min_x, min_y), left_ridge), ("grat", (max_x, min_y), right_ridge), ("grat", (min_x, max_y), left_ridge), ("grat", (max_x, max_y), right_ridge)])
+            else:
+                top_ridge, bottom_ridge = segs[0][1], segs[0][2]
+                segs.extend([("grat", (min_x, min_y), top_ridge), ("grat", (max_x, min_y), top_ridge), ("grat", (min_x, max_y), bottom_ridge), ("grat", (max_x, max_y), bottom_ridge)])
+        segs.extend(self._roof_line_segments_for_polygon(pts))
+        return segs
+
+    def _roof_height_for_polygon_point(self, pts: list[tuple[float, float]], x: float, y: float) -> float:
+        min_x, min_y, max_x, max_y, dx, dy = self._roof_bbox_context(pts)
+        params = self._roof_profile_params()
+        roof_type = self._current_roof_type()
+        ridge_orientation = str(params.get("ridge_orientation", "length") or "length").strip().lower()
+        ridge_offset_ratio = max(-0.8, min(0.8, float(params.get("ridge_offset_ratio", 0.0) or 0.0)))
+        pult_side = str(params.get("pult_rise_side", "right") or "right").strip().lower()
+        peak = self._roof_peak_height()
+        x = max(min_x, min(max_x, float(x)))
+        y = max(min_y, min(max_y, float(y)))
+        if roof_type == "flachdach":
+            return 0.05
+        if ridge_orientation == "width":
+            cross = dy; along = dx; c = y - min_y; a = x - min_x
+        else:
+            cross = dx; along = dy; c = x - min_x; a = y - min_y
+        ridge_pos = 0.5 * cross * (1.0 + ridge_offset_ratio)
+        ridge_pos = max(0.10 * cross, min(0.90 * cross, ridge_pos))
+        left_run = max(1e-9, ridge_pos)
+        right_run = max(1e-9, cross - ridge_pos)
+        if roof_type == "pultdach":
+            frac = c / max(1e-9, cross)
+            if pult_side == "left":
+                frac = 1.0 - frac
+            return max(0.0, min(1.0, frac)) * peak
+        if roof_type in {"walmdach", "krueppelwalmdach"}:
+            hip = max(1e-9, min(left_run, right_run, 0.5 * along))
+            if roof_type == "krueppelwalmdach":
+                hip *= max(0.05, min(0.95, float(params.get("half_hip_ratio", 0.45) or 0.45)))
+            along_factor = 1.0
+            if a < hip:
+                along_factor = max(0.0, min(1.0, a / hip))
+            elif a > along - hip:
+                along_factor = max(0.0, min(1.0, (along - a) / hip))
+            cross_factor = c / left_run if c <= ridge_pos else (cross - c) / right_run
+            return max(0.0, min(1.0, min(cross_factor, along_factor))) * peak
+        frac = c / left_run if c <= ridge_pos else (cross - c) / right_run
+        return max(0.0, min(1.0, frac)) * peak
+
+    def _build_roof_facets_for_polygon(self, pts: list[tuple[float, float]], z_top: float):
+        segs = self._roof_plan_segments_for_polygon(pts)
+        if not segs:
+            return []
+        lines = self._roof_line_cfg_items()
+        min_x, min_y, max_x, max_y, dx, dy = self._roof_bbox_context(pts)
+        extra = estimate_roof_line_extra_area_m2(lines, width_m=dx, length_m=dy, rise_m=self._roof_peak_height()) if lines else 0.0
+        height_fn = lambda x, y: self._roof_height_for_polygon_point(pts, x, y)
+        return build_roof_facets(pts, segs, height_fn, extra_area_total_m2=extra, label_prefix="RF")
+
+    def _roof_line_z_pair(self, kind: str, p1: tuple[float, float], p2: tuple[float, float], z_top: float, peak: float):
+        kind = str(kind or "first").strip().lower()
+        if kind == "first":
+            z = z_top + peak
+            return z, z
+        if kind == "grat":
+            return z_top + 0.76 * peak, z_top + 0.92 * peak
+        return z_top + 0.38 * peak, z_top + 0.62 * peak
 
     def _plot_3d_skin_and_lines(self, ax, poly_by_floor: dict, heights: dict, z_base: dict) -> None:
         if Poly3DCollection is None:
@@ -529,17 +668,37 @@ class MainWindowMiscMixin:
                     ax.plot([x0, x0], [y0, y0], [z0, z1], linewidth=0.9)
 
                 if is_top_floor:
-                    roof_faces, ridge = self._build_roof_faces(pts, z1)
-                    for face in roof_faces:
-                        pc = Poly3DCollection([face], alpha=0.86)
-                        pc.set_facecolor(roof_style["roof_face"])
-                        pc.set_edgecolor(roof_style["roof_edge"])
-                        ax.add_collection3d(pc)
-                        self._add_roof_texture_lines(ax, face, roof_style)
-                    for i in range(len(ridge) - 1):
-                        a = ridge[i]
-                        b = ridge[i + 1]
-                        ax.plot([a[0], b[0]], [a[1], b[1]], [a[2], b[2]], linewidth=1.6)
+                    roof_facets = self._build_roof_facets_for_polygon(pts, z1)
+                    if roof_facets:
+                        for facet in roof_facets:
+                            face = [(x, y, z1 + self._roof_height_for_polygon_point(pts, x, y)) for x, y in facet.polygon_m]
+                            pc = Poly3DCollection([face], alpha=0.86)
+                            pc.set_facecolor(roof_style["roof_face"])
+                            pc.set_edgecolor(roof_style["roof_edge"])
+                            ax.add_collection3d(pc)
+                            self._add_roof_texture_lines(ax, face, roof_style)
+                            cx = sum(v[0] for v in face) / len(face)
+                            cy = sum(v[1] for v in face) / len(face)
+                            cz = sum(v[2] for v in face) / len(face)
+                            ax.text(cx, cy, cz + 0.08, facet.label, fontsize=8)
+                            all_z.extend([v[2] for v in face])
+                    else:
+                        roof_faces, ridge = self._build_roof_faces(pts, z1)
+                        for face in roof_faces:
+                            pc = Poly3DCollection([face], alpha=0.86)
+                            pc.set_facecolor(roof_style["roof_face"])
+                            pc.set_edgecolor(roof_style["roof_edge"])
+                            ax.add_collection3d(pc)
+                            self._add_roof_texture_lines(ax, face, roof_style)
+                        for i in range(len(ridge) - 1):
+                            a = ridge[i]
+                            b = ridge[i + 1]
+                            ax.plot([a[0], b[0]], [a[1], b[1]], [a[2], b[2]], linewidth=1.6)
+                    for kind, p1, p2 in self._roof_plan_segments_for_polygon(pts):
+                        z_a = z1 + self._roof_height_for_polygon_point(pts, p1[0], p1[1])
+                        z_b = z1 + self._roof_height_for_polygon_point(pts, p2[0], p2[1])
+                        ax.plot([p1[0], p2[0]], [p1[1], p2[1]], [z_a, z_b], linewidth=2.2 if kind == "first" else 1.6, linestyle="--" if kind != "kehle" else ":")
+                        all_z.extend([z_a, z_b])
                     all_z.extend([z1 + self._roof_peak_height()])
                 else:
                     roof = [(x, y, z1) for x, y in pts]
@@ -565,6 +724,410 @@ class MainWindowMiscMixin:
         ax.set_zlabel("z [m]")
         params = self._roof_profile_params()
         ax.set_title(f"3D Hausansicht · {roof_name} · Fassade: {material_style['material_name']} · Dach: {roof_style['material_name']} · First: {params['ridge_orientation']} · Überstand: {params['roof_overhang_m']:.2f} m")
+    def _collect_room_polygons_by_floor(self) -> dict:
+        """Liefert je Geschoss alle verfügbaren Raum-Polygone für eine detailreiche 3D-Ansicht."""
+        poly_by_floor: dict = {}
+        rooms = getattr(self, "rooms", {}) or {}
+        for floor in ("KG", "EG", "DG"):
+            polys = []
+            for room in rooms.values():
+                if getattr(room, "floor", None) != floor:
+                    continue
+                try:
+                    room.ensure_polygon()
+                    pts = [(float(x), float(y)) for x, y in (room.polygon_points() or [])]
+                except Exception:
+                    pts = []
+                if len(pts) >= 3:
+                    polys.append(pts)
+                    continue
+                try:
+                    x0 = float(getattr(room, "x_m", 0.0) or 0.0)
+                    y0 = float(getattr(room, "y_m", 0.0) or 0.0)
+                    x1 = x0 + float(getattr(room, "w_m", 0.0) or 0.0)
+                    y1 = y0 + float(getattr(room, "h_m", 0.0) or 0.0)
+                    if x1 > x0 and y1 > y0:
+                        polys.append([(x0, y0), (x1, y0), (x1, y1), (x0, y1)])
+                except Exception:
+                    pass
+            if polys:
+                poly_by_floor[floor] = polys
+        return poly_by_floor
+
+    def _current_floor_key(self) -> str:
+        view = self._current_plan_view() if hasattr(self, "_current_plan_view") else None
+        if view is getattr(self, "view_KG", None):
+            return "KG"
+        if view is getattr(self, "view_DG", None):
+            return "DG"
+        return "EG"
+
+    def _current_floor_title(self) -> str:
+        return {"KG": "Keller", "EG": "Erdgeschoss", "DG": "Dachgeschoss"}.get(self._current_floor_key(), "Geschoss")
+
+    def _wall_segment_key(self, p0, p1, ndigits: int = 6) -> tuple:
+        a = (round(float(p0[0]), ndigits), round(float(p0[1]), ndigits))
+        b = (round(float(p1[0]), ndigits), round(float(p1[1]), ndigits))
+        return (a, b) if a <= b else (b, a)
+
+    def _wall_elements_for_floor(self, floor: str) -> dict:
+        walls_by_segment: dict = {}
+        for e in list(getattr(self, "elements", []) or []):
+            if getattr(e, "floor", None) != floor or not self._is_wall_like_element(e):
+                continue
+            if None in (getattr(e, "x0_m", None), getattr(e, "y0_m", None), getattr(e, "x1_m", None), getattr(e, "y1_m", None)):
+                continue
+            key = self._wall_segment_key((float(e.x0_m), float(e.y0_m)), (float(e.x1_m), float(e.y1_m)))
+            walls_by_segment.setdefault(key, []).append(e)
+        return walls_by_segment
+
+    def _polygon_signed_area(self, pts: list[tuple[float, float]]) -> float:
+        if len(pts) < 3:
+            return 0.0
+        s = 0.0
+        for (x0, y0), (x1, y1) in zip(pts, pts[1:] + pts[:1]):
+            s += float(x0) * float(y1) - float(x1) * float(y0)
+        return 0.5 * s
+
+    def _shell_wall_thickness_m(self) -> float:
+        cfg = getattr(self, "project_cfg", None)
+        return max(0.05, float(getattr(cfg, "wall_thickness_outer_m", 0.455) or 0.455))
+
+    def _wall_openings_compact(self, walls: list, wall_length_m: float) -> list[dict]:
+        return self._combined_wall_openings(walls, wall_length_m)
+
+    def _collect_shell_3d_scene_data(self) -> dict:
+        import math
+        poly_by_floor = self._collect_outer_polygons_by_floor()
+        if not poly_by_floor:
+            return {}
+        heights = self._collect_floor_heights()
+        z_base = self._floor_z_offsets(heights)
+        material_style = self._facade_material_style()
+        roof_style = self._roof_material_style()
+        walls: list[dict] = []
+        roof_faces: list[dict] = []
+        roof_lines: list[dict] = []
+        all_pts: list[tuple[float, float, float]] = []
+        top_floor = max(poly_by_floor.keys(), key=lambda f: float(z_base.get(f, 0.0) or 0.0))
+        for floor, polys in poly_by_floor.items():
+            z0 = float(z_base.get(floor, 0.0) or 0.0)
+            z1 = z0 + float(heights.get(floor, 2.5) or 2.5)
+            wall_segments = self._wall_elements_for_floor(floor)
+            for poly in list(polys or []):
+                pts = [(float(x), float(y)) for x, y in list(poly or [])]
+                if len(pts) < 3:
+                    continue
+                sign = self._polygon_signed_area(pts)
+                for i in range(len(pts)):
+                    p0 = pts[i]
+                    p1 = pts[(i + 1) % len(pts)]
+                    seg_len = math.hypot(float(p1[0]) - float(p0[0]), float(p1[1]) - float(p0[1]))
+                    if seg_len <= 1e-9:
+                        continue
+                    wall_entry = {"walls": wall_segments.get(self._wall_segment_key(p0, p1), [])}
+                    openings = self._wall_openings_compact(list(wall_entry.get("walls", []) or []), seg_len)
+                    walls.append({
+                        "p0": p0, "p1": p1, "z0": z0, "z1": z1, "poly_sign": sign,
+                        "thickness_m": self._shell_wall_thickness_m(),
+                        "openings": openings,
+                        "color": material_style["wall_face"],
+                        "edge": material_style["wall_edge"],
+                        "floor": floor,
+                    })
+                    all_pts.extend([(p0[0], p0[1], z0), (p1[0], p1[1], z1)])
+                if floor == top_floor:
+                    facets = self._build_roof_facets_for_polygon(pts, z1)
+                    for facet in list(facets or []):
+                        face_pts = [(x, y, z1 + self._roof_height_for_polygon_point(pts, x, y)) for x, y in facet.polygon_m]
+                        if len(face_pts) >= 3:
+                            roof_faces.append({"points": face_pts, "color": roof_style["roof_face"], "edge": roof_style["roof_edge"], "label": facet.label})
+                            all_pts.extend(face_pts)
+                    for kind, rp1, rp2 in self._roof_plan_segments_for_polygon(pts):
+                        za = z1 + self._roof_height_for_polygon_point(pts, rp1[0], rp1[1])
+                        zb = z1 + self._roof_height_for_polygon_point(pts, rp2[0], rp2[1])
+                        roof_lines.append({
+                            "kind": kind,
+                            "p1": (float(rp1[0]), float(rp1[1]), float(za)),
+                            "p2": (float(rp2[0]), float(rp2[1]), float(zb)),
+                            "width": 3.0 if kind == "first" else 2.0,
+                            "color": (0.18, 0.18, 0.18, 1.0) if kind == "first" else ((0.40, 0.22, 0.12, 1.0) if kind == "grat" else (0.18, 0.30, 0.48, 1.0)),
+                        })
+                        all_pts.extend([(float(rp1[0]), float(rp1[1]), float(za)), (float(rp2[0]), float(rp2[1]), float(zb))])
+        xs = [p[0] for p in all_pts] if all_pts else [0.0, 10.0]
+        ys = [p[1] for p in all_pts] if all_pts else [0.0, 10.0]
+        zs = [p[2] for p in all_pts] if all_pts else [0.0, 6.0]
+        span = max(max(xs) - min(xs), max(ys) - min(ys), max(zs) - min(zs), 1.0)
+        return {
+            "title": f"3D Gebäudehülle+ · {self._roof_display_name(self._current_roof_type())}",
+            "walls": walls,
+            "roof_faces": roof_faces,
+            "roof_lines": roof_lines,
+            "camera_distance": span * 2.3,
+        }
+
+    def _collect_shell_2d_scene_data(self) -> dict:
+        scene_data = dict(self._collect_shell_3d_scene_data() or {})
+        if not scene_data:
+            return {}
+        roof_plan_lines: list[dict] = []
+        for line in list(scene_data.get("roof_lines", []) or []):
+            p1 = line.get("p1")
+            p2 = line.get("p2")
+            if not p1 or not p2:
+                continue
+            roof_plan_lines.append({
+                "kind": str(line.get("kind", "line") or "line"),
+                "p1": (float(p1[0]), float(p1[1])),
+                "p2": (float(p2[0]), float(p2[1])),
+            })
+        scene_data["title"] = str(scene_data.get("title", "3D Gebäudehülle+")).replace("3D", "2D", 1)
+        scene_data["roof_plan_lines"] = roof_plan_lines
+        scene_data["px_per_m"] = 140.0
+        return scene_data
+
+    def _on_show_2d_shell(self) -> None:
+        scene_data = self._collect_shell_2d_scene_data()
+        if not scene_data:
+            QMessageBox.warning(self, "2D Gebäudehülle+", "Keine Außenkontur gefunden. Bitte zuerst Räume anlegen oder Auto-Wände erzeugen.")
+            return
+        dlg = Shell2DDialog(scene_data, parent=self)
+        try:
+            self.statusBar().showMessage("2D Gebäudehülle+ geöffnet: Wanddicke, Öffnungen und Dachlinien in der Draufsicht.", 7000)
+        except Exception:
+            pass
+        dlg.exec()
+
+    def _on_show_3d_shell_gl(self) -> None:
+        scene_data = self._collect_shell_3d_scene_data()
+        if not scene_data:
+            QMessageBox.warning(self, "3D Gebäudehülle+", "Keine Außenkontur gefunden. Bitte zuerst Räume anlegen oder Auto-Wände erzeugen.")
+            return
+        if not Shell3DDialog.is_available():
+            QMessageBox.information(self, "3D Gebäudehülle+", "pyqtgraph.opengl ist nicht verfügbar. Es wird die bestehende 3D-Hausansicht geöffnet.")
+            self._on_show_3d_house()
+            return
+        dlg = Shell3DDialog(scene_data, parent=self)
+        try:
+            self.statusBar().showMessage("3D Gebäudehülle+ geöffnet: OpenGL-Renderer mit Wanddicke, Laibungen und Dachlinien.", 7000)
+        except Exception:
+            pass
+        dlg.exec()
+
+    def _combined_wall_openings(self, walls: list, wall_length_m: float) -> list[dict]:
+        merged = []
+        for wall in list(walls or []):
+            wall_height_m = float(getattr(wall, "height_m", 0.0) or 0.0)
+            for op in self._wall_openings_for_element(wall):
+                start = max(0.0, float(getattr(op, "offset_m", 0.0) or 0.0))
+                end = min(float(wall_length_m), start + max(0.0, float(getattr(op, "width_m", 0.0) or 0.0)))
+                if end <= start + 1e-9:
+                    continue
+                sill = max(0.0, float(getattr(op, "sill_m", 0.0) or 0.0))
+                top = max(sill, sill + max(0.0, float(getattr(op, "height_m", 0.0) or 0.0)))
+                if wall_height_m > 1e-9:
+                    top = min(top, wall_height_m)
+                merged.append({
+                    "start": start,
+                    "end": end,
+                    "sill": sill,
+                    "top": top,
+                    "type": str(getattr(op, "opening_type", "window") or "window").lower(),
+                    "label": str(getattr(op, "label", "Öffnung") or "Öffnung"),
+                })
+        merged.sort(key=lambda o: (o["start"], o["end"], o["type"]))
+        return merged
+
+    def _point_on_segment(self, p0, p1, s_m: float, seg_len_m: float):
+        if seg_len_m <= 1e-12:
+            return (float(p0[0]), float(p0[1]))
+        t = max(0.0, min(1.0, float(s_m) / float(seg_len_m)))
+        return (float(p0[0]) + (float(p1[0]) - float(p0[0])) * t, float(p0[1]) + (float(p1[1]) - float(p0[1])) * t)
+
+    def _add_wall_quad(self, ax, p0, p1, z_bottom: float, z_top: float, *, facecolor, edgecolor, alpha: float = 0.78, linewidth: float = 0.9) -> None:
+        if Poly3DCollection is None or z_top <= z_bottom + 1e-9:
+            return
+        wall = [[(float(p0[0]), float(p0[1]), z_bottom), (float(p1[0]), float(p1[1]), z_bottom), (float(p1[0]), float(p1[1]), z_top), (float(p0[0]), float(p0[1]), z_top)]]
+        pc = Poly3DCollection(wall, alpha=alpha)
+        pc.set_facecolor(facecolor)
+        pc.set_edgecolor(edgecolor)
+        try:
+            pc.set_linewidth(linewidth)
+        except Exception:
+            pass
+        ax.add_collection3d(pc)
+
+    def _add_opening_panel(self, ax, p0, p1, z_bottom: float, z_top: float, opening_type: str = "window") -> None:
+        if Poly3DCollection is None or z_top <= z_bottom + 1e-9:
+            return
+        opening_type = str(opening_type or "window").lower()
+        if opening_type == "door":
+            face = (0.74, 0.56, 0.35, 0.92)
+            edge = (0.33, 0.20, 0.10, 0.95)
+            alpha = 0.88
+        else:
+            face = (0.63, 0.82, 0.98, 0.55)
+            edge = (0.10, 0.36, 0.72, 0.85)
+            alpha = 0.52
+        self._add_wall_quad(ax, p0, p1, z_bottom, z_top, facecolor=face, edgecolor=edge, alpha=alpha, linewidth=1.2)
+
+    def _render_wall_with_openings(self, ax, p0, p1, z0: float, z1: float, wall_entry: dict, material_style: dict) -> tuple[int, int]:
+        import math
+        seg_len = math.hypot(float(p1[0]) - float(p0[0]), float(p1[1]) - float(p0[1]))
+        if seg_len <= 1e-9:
+            return (0, 0)
+        openings = self._combined_wall_openings(list((wall_entry or {}).get("walls", []) or []), seg_len)
+        if not openings:
+            self._add_wall_quad(ax, p0, p1, z0, z1, facecolor=material_style["wall_face"], edgecolor=material_style["wall_edge"], alpha=0.78)
+            self._add_surface_texture_lines(ax, p0, p1, z0, z1, material=material_style["material"], rows=max(6, int(material_style["texture_rows"])))
+            return (0, 0)
+
+        cuts = [0.0, seg_len]
+        for op in openings:
+            cuts.extend([max(0.0, min(seg_len, float(op["start"]))), max(0.0, min(seg_len, float(op["end"])) )])
+        cuts = sorted({round(c, 6) for c in cuts})
+        intervals = [(cuts[i], cuts[i+1]) for i in range(len(cuts)-1) if cuts[i+1] - cuts[i] > 1e-6]
+        n_windows = 0
+        n_doors = 0
+        for a, b in intervals:
+            mid = 0.5 * (a + b)
+            op_here = None
+            for op in openings:
+                if float(op["start"]) - 1e-6 <= mid <= float(op["end"]) + 1e-6:
+                    op_here = op
+                    break
+            pa = self._point_on_segment(p0, p1, a, seg_len)
+            pb = self._point_on_segment(p0, p1, b, seg_len)
+            if op_here is None:
+                self._add_wall_quad(ax, pa, pb, z0, z1, facecolor=material_style["wall_face"], edgecolor=material_style["wall_edge"], alpha=0.78)
+                self._add_surface_texture_lines(ax, pa, pb, z0, z1, material=material_style["material"], rows=max(6, int(material_style["texture_rows"])))
+                continue
+            sill = max(z0, min(z1, float(op_here["sill"])))
+            top = max(z0, min(z1, float(op_here["top"])))
+            if sill > z0 + 1e-6:
+                self._add_wall_quad(ax, pa, pb, z0, sill, facecolor=material_style["wall_face"], edgecolor=material_style["wall_edge"], alpha=0.78)
+                self._add_surface_texture_lines(ax, pa, pb, z0, sill, material=material_style["material"], rows=max(4, int(material_style["texture_rows"])))
+            if top < z1 - 1e-6:
+                self._add_wall_quad(ax, pa, pb, top, z1, facecolor=material_style["wall_face"], edgecolor=material_style["wall_edge"], alpha=0.78)
+                self._add_surface_texture_lines(ax, pa, pb, top, z1, material=material_style["material"], rows=max(4, int(material_style["texture_rows"])))
+            self._add_opening_panel(ax, pa, pb, sill, top, opening_type=op_here["type"])
+            if op_here["type"] == "door":
+                n_doors += 1
+            else:
+                n_windows += 1
+        return (n_windows, n_doors)
+
+    def _plot_3d_floor_detail(self, ax, floor: str, poly_by_floor: dict, heights: dict) -> None:
+        if Poly3DCollection is None:
+            return
+        polys = list(poly_by_floor.get(floor, []) or [])
+        if not polys:
+            return
+
+        z0 = 0.0
+        z1 = z0 + float(heights.get(floor, 2.5) or 2.5)
+        material_style = self._facade_material_style()
+        wall_segments = self._wall_elements_for_floor(floor)
+        all_x = []
+        all_y = []
+        all_z = [z0, z1]
+        total_windows = 0
+        total_doors = 0
+
+        for poly in polys:
+            if len(poly) < 3:
+                continue
+            pts = [(float(x), float(y)) for x, y in poly]
+            floor_face = [(x, y, z0) for x, y in pts]
+            ceil_face = [(x, y, z1) for x, y in pts]
+            slab = Poly3DCollection([floor_face], alpha=0.10)
+            slab.set_facecolor((0.76, 0.79, 0.82, 1.0))
+            slab.set_edgecolor((0.40, 0.43, 0.46, 0.55))
+            ax.add_collection3d(slab)
+            ceiling = Poly3DCollection([ceil_face], alpha=0.05)
+            ceiling.set_facecolor((0.90, 0.91, 0.92, 1.0))
+            ceiling.set_edgecolor((0.55, 0.57, 0.60, 0.25))
+            ax.add_collection3d(ceiling)
+
+            for i in range(len(pts)):
+                x0, y0 = pts[i]
+                x1, y1 = pts[(i + 1) % len(pts)]
+                p0 = (x0, y0)
+                p1 = (x1, y1)
+                key = self._wall_segment_key(p0, p1)
+                wall_entry = {"walls": wall_segments.get(key, [])}
+                nw, nd = self._render_wall_with_openings(ax, p0, p1, z0, z1, wall_entry, material_style)
+                total_windows += nw
+                total_doors += nd
+                ax.plot([x0, x1], [y0, y1], [z0, z0], linewidth=1.0)
+                ax.plot([x0, x1], [y0, y1], [z1, z1], linewidth=1.0)
+                ax.plot([x0, x0], [y0, y0], [z0, z1], linewidth=0.8)
+
+            all_x.extend([p[0] for p in pts])
+            all_y.extend([p[1] for p in pts])
+
+        if all_x and all_y:
+            dx = max(all_x) - min(all_x)
+            dy = max(all_y) - min(all_y)
+            dz = max(all_z) - min(all_z)
+            pad_x = max(0.4, 0.06 * max(dx, 1.0))
+            pad_y = max(0.4, 0.06 * max(dy, 1.0))
+            ax.set_xlim(min(all_x) - pad_x, max(all_x) + pad_x)
+            ax.set_ylim(max(all_y) + pad_y, min(all_y) - pad_y)
+            ax.set_zlim(z0, z1 + max(0.3, 0.08 * max(dx, dy, 1.0)))
+            ax.set_box_aspect((max(dx, 1.0), max(dy, 1.0), max(dz, 1.0)))
+
+        ax.set_xlabel("x [m]")
+        ax.set_ylabel("y [m]")
+        ax.set_zlabel("z [m]")
+        ax.set_title(f"3D-Geschossansicht · {self._current_floor_title()} · Fassade: {material_style['material_name']} · Fenster: {total_windows} · Türen: {total_doors}")
+
+    def _on_show_3d_floor(self) -> None:
+        if plt is None or FigureCanvas is None or Poly3DCollection is None:
+            QMessageBox.warning(self, "3D Geschossansicht", "matplotlib/QtAgg ist nicht verfügbar.")
+            return
+
+        floor = self._current_floor_key()
+        poly_by_floor = self._collect_room_polygons_by_floor()
+        polys = list(poly_by_floor.get(floor, []) or [])
+        if not polys:
+            QMessageBox.warning(self, "3D Geschossansicht", f"Für {self._current_floor_title()} wurden noch keine Räume gefunden.")
+            return
+
+        heights = self._collect_floor_heights()
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle(f"3D-Geschossansicht – {self._current_floor_title()}")
+        lay = QVBoxLayout(dlg)
+
+        fig = Figure(figsize=(10, 6))
+        canvas = FigureCanvas(fig)
+        if NavigationToolbar is not None:
+            lay.addWidget(NavigationToolbar(canvas, dlg))
+        lay.addWidget(canvas)
+
+        ax = fig.add_subplot(111, projection="3d")
+        self._plot_3d_floor_detail(ax, floor, poly_by_floor, heights)
+        try:
+            ax.view_init(elev=26, azim=-52)
+        except Exception:
+            pass
+
+        fig.tight_layout()
+        canvas.draw()
+
+        btn = QPushButton("Schließen")
+        btn.clicked.connect(dlg.accept)
+        lay.addWidget(btn)
+
+        try:
+            self.statusBar().showMessage(f"3D-Geschossansicht geöffnet: {self._current_floor_title()}.", 5000)
+        except Exception:
+            pass
+
+        dlg.resize(1120, 780)
+        dlg.exec()
+
     def _on_show_3d_house(self) -> None:
         if plt is None or FigureCanvas is None or Poly3DCollection is None:
             QMessageBox.warning(self, "3D Ansicht", "matplotlib/QtAgg ist nicht verfügbar.")
@@ -1028,7 +1591,6 @@ class MainWindowMiscMixin:
             if event.button() == Qt.LeftButton and (self._draw_tool == 'rect' or (event.modifiers() & Qt.ShiftModifier)):
                 p0 = self._snap_scene_point_for_drawing(floor, view.mapToScene(event.position().toPoint()))
                 self._start_pos_scene = (floor, p0)
-                from PySide6.QtWidgets import QGraphicsRectItem
                 self._preview_room = scene.addRect(0, 0, 1, 1, QPen(Qt.darkGray, 1, Qt.DashLine), QBrush(Qt.transparent))
                 self._preview_room.setZValue(100)
                 return True

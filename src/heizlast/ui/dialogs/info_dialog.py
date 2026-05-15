@@ -65,7 +65,7 @@ class InfoDialog(QDialog):
 
         for label, value in (
             ("Anwendungsversion", app_version),
-            ("Interne Anwendungsversion", internal_app_version),
+            ("Interne Versionsnummer", internal_app_version),
             ("Projekt-Schema", str(project_schema_version)),
             ("Interne Projektversion", internal_project_version),
         ):
@@ -91,7 +91,7 @@ class InfoDialog(QDialog):
         right_lay.setContentsMargins(14, 14, 14, 14)
         right_lay.setSpacing(10)
 
-        features_title = QLabel("Main Features")
+        features_title = QLabel("Hauptfunktionen")
         features_title.setObjectName("infoSectionTitle")
         right_lay.addWidget(features_title)
 

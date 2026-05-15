@@ -1,17 +1,18 @@
 from __future__ import annotations
 import math
-from typing import Callable, List, Optional, Tuple
+from typing import Callable, Optional, Tuple
 from ..domain.models import ElementModel
 
-from PySide6.QtCore import Qt, QPointF, QRectF
+from PySide6.QtCore import Qt, QPointF
 from PySide6.QtGui import QPen, QBrush, QPainter, QColor, QPainterPath
 from PySide6.QtWidgets import (
     QGraphicsView, QGraphicsScene,
-    QGraphicsItem, QGraphicsRectItem, QGraphicsLineItem, QGraphicsSimpleTextItem, QGraphicsPathItem
+    QGraphicsItem, QGraphicsRectItem, QGraphicsLineItem, QGraphicsSimpleTextItem, QGraphicsPathItem, QGraphicsEllipseItem
 )
 
+from ..core.attic_auto import is_auto_attic_element, parse_attic_meta
 from ..core.config import PX_PER_M, GRID_M, HANDLE_SZ_PX, ELEMENT_STYLES, HEATMAP_CAP_W_PER_M2
-from ..domain.models import RoomModel, ElementModel
+from ..domain.models import RoomModel
 from ..core.polygon_ops import (
     polygon_bbox,
     simplify_orthogonal_polygon,

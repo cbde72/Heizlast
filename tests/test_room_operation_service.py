@@ -10,7 +10,6 @@ if str(SRC) not in sys.path:
 
 from heizlast.configs.project_config import ProjectCfg
 from heizlast.core.anchors import parse_edge_anchor
-from heizlast.core.polygon_ops import serialize_polygon_m
 from heizlast.domain.house_state import HouseState
 from heizlast.domain.models import ElementModel, RoomModel
 from heizlast.domain.services.house_domain_service import HouseDomainService

@@ -8,12 +8,9 @@ except Exception:
             return obj is not None
     shiboken6 = _ShibokenFallback()
 
-from typing import Any, Dict, Optional
+from typing import Dict, Optional
 from ..domain.models import ElementModel
 
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor
-from PySide6.QtWidgets import QGraphicsRectItem
 
 class MainWindowOverlayMixin:
     def _apply_element_label_visibility(self):

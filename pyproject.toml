@@ -1,0 +1,57 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "heizlast-tool"
+version = "2.5.0"
+description = "Desktop tool for room-based heating load calculations."
+requires-python = ">=3.11"
+dependencies = [
+    "PySide6>=6.6",
+    "matplotlib>=3.8",
+    "numpy>=1.26",
+    "reportlab>=4.0",
+    "shapely>=2.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "pytest-qt>=4.4",
+    "ruff>=0.5",
+]
+
+[project.scripts]
+heizlast-cli = "heizlast.cli:main"
+heizlast-gui = "heizlast.main:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.ruff]
+line-length = 160
+target-version = "py311"
+exclude = [
+    ".git",
+    ".pytest_cache",
+    "__pycache__",
+    "build",
+    "dist",
+    "*.bak",
+]
+
+[tool.ruff.lint]
+select = [
+    "F401", # unused imports
+    "F541", # f-string without placeholders
+    "F601", # repeated dictionary keys
+    "F811", # redefined names
+    "F821", # undefined names
+]
+ignore = [
+]

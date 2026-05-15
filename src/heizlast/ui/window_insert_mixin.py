@@ -1,12 +1,10 @@
 import uuid
-import math
-from typing import List, Optional, Tuple
 from .graphics import WindowLineItem
 from ..core.config import DEFAULT_FACTOR, DEFAULT_U
 from .graphics import PX_PER_M
 from PySide6.QtWidgets import QDialog
 
-from PySide6.QtCore import QPointF, Qt
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QMessageBox
 
 from ..domain.models import ElementModel

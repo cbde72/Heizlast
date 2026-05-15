@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from pathlib import Path
 
 from heizlast.configs.project_config import ProjectCfg
 from heizlast.core.anchors import parse_edge_anchor
@@ -49,6 +48,7 @@ def test_load_rooms_migrates_missing_polygon_field_via_roommodel(tmp_path):
 
 
 def test_project_cfg_roundtrip_preserves_attic_u_values(tmp_path):
+    from heizlast import PROJECT_SCHEMA_VERSION
     from heizlast.configs.project_config import ProjectCfg, save_project_cfg, load_project_cfg
 
     path = tmp_path / 'project.json'
@@ -60,7 +60,7 @@ def test_project_cfg_roundtrip_preserves_attic_u_values(tmp_path):
     save_project_cfg(path, cfg)
     loaded = load_project_cfg(path)
 
-    assert loaded.cfg_version == 5
+    assert loaded.cfg_version == PROJECT_SCHEMA_VERSION
     assert loaded.attic.enabled is True
     assert loaded.attic.u_roof_w_m2k == 0.19
     assert loaded.attic.u_gable_w_m2k == 0.23

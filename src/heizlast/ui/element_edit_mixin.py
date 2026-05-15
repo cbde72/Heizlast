@@ -1,4 +1,3 @@
-import math
 from typing import List, Optional
 import json
 from PySide6.QtWidgets import (
@@ -13,14 +12,12 @@ from PySide6.QtWidgets import (
     QMessageBox,
 )
 
-from PySide6.QtCore import QPointF, Qt
 
 from ..core.anchors import dump_meta, parse_edge_anchor, parse_line_token, parse_meta, update_edge_anchor_meta
 from ..core.element_access import get_room_elements
 from ..core.geometry import classify_floor_edge_spans, nearest_edge_span_for_point
 from ..domain.models import ElementModel
 from ..core.polygon_ops import snap_m
-from .dialogs.window_dialog import WindowDialog
 
 class MainWindowElementEditMixin:
     def _edit_element_dialog(self, e) -> bool:

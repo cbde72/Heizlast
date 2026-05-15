@@ -13,9 +13,9 @@ def _bootstrap_when_run_directly() -> None:
 
 if __package__ in (None, ""):
     _bootstrap_when_run_directly()
-    from heizlast_v5_16.runtime_bootstrap import bootstrap
+    from heizlast.runtime_bootstrap import bootstrap
     bootstrap()
-    from heizlast_v5_16.ui.main_window import MainWindow
+    from heizlast.ui.main_window import MainWindow
 else:
     from .runtime_bootstrap import bootstrap
     bootstrap()

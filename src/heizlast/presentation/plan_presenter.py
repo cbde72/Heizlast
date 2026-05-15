@@ -17,7 +17,7 @@ from PySide6.QtCore import Qt, QRectF
 from PySide6.QtGui import QPen, QColor
 from PySide6.QtWidgets import QGraphicsScene, QGraphicsRectItem, QGraphicsItem
 
-from ..domain.models import RoomModel, ElementModel
+from ..domain.models import RoomModel
 from ..core.element_metrics import ElementMetricsService
 from ..ui.graphics import RoomPolygonItem, ElementLineItem, WindowLineItem, PX_PER_M
 

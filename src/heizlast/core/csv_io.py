@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import List, Optional
 from ..domain.models import ElementModel
 from .config import CSV_DELIMITER, CSV_ENCODING ,  DEFAULT_U, usage_defaults
-from ..domain.models import RoomModel, ElementModel
+from ..domain.models import RoomModel
 
 def _f(x: str) -> float:
     return float(str(x).strip().replace(",", "."))

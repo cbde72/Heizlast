@@ -1,10 +1,9 @@
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QSize, QPointF
+from PySide6.QtCore import Qt, QSize, QPointF, QTimer, Signal
 from PySide6.QtGui import QAction, QActionGroup, QKeySequence, QShortcut, QIcon, QPainter, QPen, QBrush, QColor, QPolygonF, QPainterPath, QPixmap
-from .graphics import PlanView, PX_PER_M, ElementLineItem, WindowLineItem
 from .attic_sketch import AtticSketchPanel
-from ..core.polygon_ops import snap_m
+from .dialogs.project_settings_dialog import RoofLineEditorWidget
 
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -14,12 +13,15 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox,
     QFrame,
     QFormLayout,
-    QGraphicsScene,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QListWidget,
     QPushButton,
+    QDialog,
+    QSplitter,
+    QGridLayout,
+    QScrollArea,
     QSizePolicy,
     QStatusBar,
     QStyle,
@@ -29,6 +31,16 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+
+
+class RoofExampleCard(QFrame):
+    clicked = Signal()
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self.clicked.emit()
+        super().mousePressEvent(event)
+
 
 class MainWindowBuildMixin:
     def _build_ui(self):
@@ -270,13 +282,13 @@ class MainWindowBuildMixin:
         m_roof = mbar.addMenu("&Dach")
         self._create_roof_menu(m_roof)
 
-        # Info-Menü
-        m_info = mbar.addMenu("&Info")
-        self._create_info_menu(m_info)
+        # Hilfe-Menü
+        m_help = mbar.addMenu("&Hilfe")
+        self._create_help_menu(m_help)
 
 
-    def _create_info_menu(self, menu):
-        """Erstellt das Info-Menü."""
+    def _create_help_menu(self, menu):
+        """Erstellt das Hilfe-Menü."""
         self.act_info_dialog = self._make_action(
             "Info…",
             slot=self._on_show_info_dialog,
@@ -284,6 +296,9 @@ class MainWindowBuildMixin:
             tip="Versionen, Hauptfunktionen und DIN-Konformität anzeigen",
         )
         menu.addAction(self.act_info_dialog)
+
+    def _create_info_menu(self, menu):
+        self._create_help_menu(menu)
 
     def _create_file_menu(self, menu):
         """Erstellt das Datei-Menü."""
@@ -380,10 +395,31 @@ class MainWindowBuildMixin:
             icon=self._toolbar_icon("view_3d"),
             tip="3D-Darstellung des Hauses anzeigen",
         )
+        self.act_show_3d_floor = self._make_action(
+            "3D Geschoss",
+            slot=self._on_show_3d_floor,
+            icon=self._toolbar_icon("view_3d"),
+            tip="3D-Darstellung des aktuell gewählten Geschosses anzeigen",
+        )
+        self.act_show_2d_shell = self._make_action(
+            "2D Gebäudehülle+",
+            slot=self._on_show_2d_shell,
+            icon=self._toolbar_icon("view_3d"),
+            tip="2D-Darstellung der Gebäudehülle mit echter Wanddicke, Öffnungen und Dachlinien in der Draufsicht",
+        )
+        self.act_show_3d_shell_gl = self._make_action(
+            "3D Gebäudehülle+",
+            slot=self._on_show_3d_shell_gl,
+            icon=self._toolbar_icon("view_3d"),
+            tip="OpenGL-Darstellung der Gebäudehülle mit echter Wanddicke, Fensterlaibungen und Dach aus Firstlinien",
+        )
         menu.addAction(self.act_project_settings)
         menu.addSeparator()
         menu.addAction(self.act_autowalls)
         menu.addAction(self.act_auto_keller)
+        menu.addAction(self.act_show_3d_floor)
+        menu.addAction(self.act_show_2d_shell)
+        menu.addAction(self.act_show_3d_shell_gl)
         menu.addAction(self.act_show_3d)
 
     def _create_edit_menu(self, menu):
@@ -614,6 +650,12 @@ class MainWindowBuildMixin:
             icon=self._toolbar_icon("roof_settings"),
             tip="Öffnet die Projektparameter direkt auf dem Tab DG Dach",
         )
+        self.act_open_roof_editor = self._make_action(
+            "Dach-Editor…",
+            slot=self._open_roof_editor_dialog,
+            icon=self._toolbar_icon("roof_settings"),
+            tip="Öffnet den separaten Dialog zum Bearbeiten von Dachform, Geometrie und Dachlinien",
+        )
         self.act_switch_to_dg = self._make_action(
             "Zum Dachgeschoss wechseln",
             slot=self._on_switch_to_dg_view,
@@ -637,7 +679,7 @@ class MainWindowBuildMixin:
         self.act_auto_attic_markers.setIcon(self._toolbar_icon("attic_markers"))
 
         roof_menu = menu.addMenu("Dachprofil wählen")
-        for label, key in (("Satteldach", "satteldach"), ("Pultdach", "pultdach"), ("Walmdach", "walmdach"), ("Flachdach", "flachdach")):
+        for label, key in (("Satteldach", "satteldach"), ("Pultdach", "pultdach"), ("Walmdach", "walmdach"), ("Krüppelwalmdach", "krueppelwalmdach"), ("Flachdach", "flachdach"), ("Winkel-/Kehldach", "winkeldach")):
             act = self._make_action(
                 label,
                 slot=lambda checked=False, rt=key: self._set_attic_roof_type(rt),
@@ -683,6 +725,8 @@ class MainWindowBuildMixin:
             facade_menu.addAction(act)
             self._facade_material_actions[key] = act
 
+        menu.addAction(self.act_open_roof_editor)
+        menu.addSeparator()
         menu.addAction(self.act_attic_settings)
         menu.addAction(self.act_switch_to_dg)
         menu.addAction(self.act_refresh_attic_preview)
@@ -713,6 +757,8 @@ class MainWindowBuildMixin:
             ("Projekt", [
                 self.act_project_settings,
                 self.act_auto_keller,
+                self.act_show_3d_floor,
+                self.act_show_3d_shell_gl,
                 self.act_show_3d,
                 self.act_regen,
                 self.act_fit_current_view,
@@ -764,7 +810,7 @@ class MainWindowBuildMixin:
 
         self.tb_roof.addWidget(QLabel("Dachprofil:"))
         self.cb_roof_profile_quick = QComboBox()
-        self.cb_roof_profile_quick.addItems(["Satteldach", "Pultdach", "Walmdach", "Flachdach"])
+        self.cb_roof_profile_quick.addItems(["Satteldach", "Pultdach", "Walmdach", "Krüppelwalmdach", "Flachdach"])
         self.cb_roof_profile_quick.setToolTip("Schnellauswahl des Dachprofils")
         self.cb_roof_profile_quick.currentTextChanged.connect(self._on_roof_profile_changed)
         self.tb_roof.addWidget(self.cb_roof_profile_quick)
@@ -860,9 +906,885 @@ class MainWindowBuildMixin:
         self.btn_fit_current_view.clicked.connect(self._fit_current_plan_view)
         control_lay.addWidget(self.btn_fit_current_view)
 
+        self.btn_show_current_floor_3d = QPushButton("3D Geschoss")
+        self.btn_show_current_floor_3d.setObjectName("showCurrentFloor3DButton")
+        self.btn_show_current_floor_3d.setIcon(self._toolbar_icon("view_3d"))
+        self.btn_show_current_floor_3d.setToolTip("Öffnet eine 3D-Darstellung der Wände und des Grundrisses des aktiven Geschosses")
+        self.btn_show_current_floor_3d.clicked.connect(self._on_show_3d_floor)
+        control_lay.addWidget(self.btn_show_current_floor_3d)
+
+        self.btn_show_shell_2d = QPushButton("2D Hülle+")
+        self.btn_show_shell_2d.setObjectName("showShell2DButton")
+        self.btn_show_shell_2d.setIcon(self._toolbar_icon("view_3d"))
+        self.btn_show_shell_2d.setToolTip("2D-Draufsicht der Gebäudehülle mit Wanddicke, Öffnungen und Dachlinien")
+        self.btn_show_shell_2d.clicked.connect(self._on_show_2d_shell)
+        control_lay.addWidget(self.btn_show_shell_2d)
+
+        self.btn_show_shell_3d_gl = QPushButton("3D Hülle+")
+        self.btn_show_shell_3d_gl.setObjectName("showShell3DOpenGLButton")
+        self.btn_show_shell_3d_gl.setIcon(self._toolbar_icon("view_3d"))
+        self.btn_show_shell_3d_gl.setToolTip("OpenGL-3D der Gebäudehülle mit Wanddicke, Fensterlaibungen und Dach aus Firstlinien")
+        self.btn_show_shell_3d_gl.clicked.connect(self._on_show_3d_shell_gl)
+        control_lay.addWidget(self.btn_show_shell_3d_gl)
+
         left.addWidget(control_bar)
 
         return left
+
+    def _create_roof_editor_panel(self, parent=None):
+        page = QWidget(parent)
+        root = QVBoxLayout(page)
+        root.setContentsMargins(14, 14, 14, 14)
+        root.setSpacing(12)
+
+        hero = QFrame()
+        hero.setObjectName("roofEditorHero")
+        hero_lay = QVBoxLayout(hero)
+        hero_lay.setContentsMargins(14, 12, 14, 12)
+        hero_lay.setSpacing(8)
+        hero_head = QHBoxLayout()
+        hero_head.setSpacing(8)
+        hero_title = QLabel("Dach-Editor")
+        hero_title.setObjectName("roofEditorTitle")
+        hero_head.addWidget(hero_title)
+        hero_head.addStretch(1)
+        self.btn_roof_tab_help = QPushButton("Hilfe")
+        self.btn_roof_tab_help.setObjectName("roofEditorHelpButton")
+        self.btn_roof_tab_help.setToolTip("Öffnet eine ausführliche Hilfe zu Dachformen, Parametern, Dachlinien und Vorschau")
+        self.btn_roof_tab_help.clicked.connect(self._open_roof_help_dialog)
+        hero_head.addWidget(self.btn_roof_tab_help)
+        hero_lay.addLayout(hero_head)
+        hero_sub = QLabel("Linke Parameter-Spalte für Geometrie und Aktionen, rechte Seite mit Live-Dachvorschau und Linieneditor.")
+        hero_sub.setWordWrap(True)
+        hero_sub.setObjectName("roofEditorText")
+        hero_lay.addWidget(hero_sub)
+        root.addWidget(hero)
+
+        summary_wrap = QFrame()
+        summary_wrap.setObjectName("roofEditorSummaryWrap")
+        summary_grid = QGridLayout(summary_wrap)
+        summary_grid.setContentsMargins(0, 0, 0, 0)
+        summary_grid.setHorizontalSpacing(12)
+        summary_grid.setVerticalSpacing(12)
+        self.lbl_roof_metric_area = QLabel("–")
+        self.lbl_roof_metric_facets = QLabel("–")
+        self.lbl_roof_metric_lines = QLabel("–")
+        self.lbl_roof_metric_height = QLabel("–")
+        summary_grid.addWidget(self._create_roof_editor_metric_card("Dachfläche", self.lbl_roof_metric_area, "roofMetricAreaCard"), 0, 0)
+        summary_grid.addWidget(self._create_roof_editor_metric_card("Facetten", self.lbl_roof_metric_facets, "roofMetricFacetCard"), 0, 1)
+        summary_grid.addWidget(self._create_roof_editor_metric_card("Dachlinien", self.lbl_roof_metric_lines, "roofMetricLineCard"), 0, 2)
+        summary_grid.addWidget(self._create_roof_editor_metric_card("Gesamthöhe", self.lbl_roof_metric_height, "roofMetricHeightCard"), 0, 3)
+        root.addWidget(summary_wrap)
+
+        content_splitter = QSplitter(Qt.Horizontal, page)
+        content_splitter.setObjectName("roofEditorSplitter")
+        content_splitter.setChildrenCollapsible(False)
+        root.addWidget(content_splitter, 1)
+
+        left_wrap = QFrame()
+        left_wrap.setObjectName("roofEditorParamWrap")
+        left_wrap.setMinimumWidth(320)
+        left_wrap.setMaximumWidth(380)
+        left_lay = QVBoxLayout(left_wrap)
+        left_lay.setContentsMargins(0, 0, 0, 0)
+        left_lay.setSpacing(12)
+        content_splitter.addWidget(left_wrap)
+
+        form_wrap = QFrame()
+        form_wrap.setObjectName("roofEditorFormWrap")
+        form_lay = QVBoxLayout(form_wrap)
+        form_lay.setContentsMargins(12, 12, 12, 12)
+        form_lay.setSpacing(8)
+        form_title = QLabel("Parameter")
+        form_title.setObjectName("roofEditorSectionTitle")
+        form_lay.addWidget(form_title)
+        form_hint = QLabel("Dachprofil und Grundparameter wirken sofort auf die Vorschau und die DG-Geometrie.")
+        form_hint.setWordWrap(True)
+        form_hint.setObjectName("roofEditorText")
+        form_lay.addWidget(form_hint)
+
+        form = QFormLayout()
+        form.setContentsMargins(0, 8, 0, 0)
+        form.setHorizontalSpacing(18)
+        form.setVerticalSpacing(10)
+
+        self.cb_roof_tab_profile = QComboBox()
+        self.cb_roof_tab_profile.addItems(["Satteldach", "Pultdach", "Walmdach", "Krüppelwalmdach", "Flachdach", "Winkel-/Kehldach"])
+        self.cb_roof_tab_profile.currentTextChanged.connect(self._on_roof_editor_profile_changed)
+
+        self.cb_roof_tab_ridge = QComboBox()
+        self.cb_roof_tab_ridge.addItems(["First längs", "First quer"])
+        self.cb_roof_tab_ridge.currentTextChanged.connect(self._on_roof_editor_ridge_changed)
+
+        self.sp_roof_tab_pitch = QDoubleSpinBox()
+        self.sp_roof_tab_pitch.setRange(0.0, 85.0)
+        self.sp_roof_tab_pitch.setDecimals(1)
+        self.sp_roof_tab_pitch.setSuffix(" °")
+        self.sp_roof_tab_pitch.valueChanged.connect(self._on_roof_editor_numeric_changed)
+
+        self.sp_roof_tab_knee = QDoubleSpinBox()
+        self.sp_roof_tab_knee.setRange(0.0, 5.0)
+        self.sp_roof_tab_knee.setDecimals(2)
+        self.sp_roof_tab_knee.setSuffix(" m")
+        self.sp_roof_tab_knee.valueChanged.connect(self._on_roof_editor_numeric_changed)
+
+        self.sp_roof_tab_overhang = QDoubleSpinBox()
+        self.sp_roof_tab_overhang.setRange(0.0, 3.0)
+        self.sp_roof_tab_overhang.setDecimals(2)
+        self.sp_roof_tab_overhang.setSuffix(" m")
+        self.sp_roof_tab_overhang.valueChanged.connect(self._on_roof_editor_numeric_changed)
+
+        form.addRow("Dachform", self._wrap_roof_editor_field_with_help(self.cb_roof_tab_profile, "roof_types", "Erklärung der Dachformen und Mini-Renderings öffnen"))
+        form.addRow("Firstausrichtung", self._wrap_roof_editor_field_with_help(self.cb_roof_tab_ridge, "ridge", "Hilfe zur Firstausrichtung öffnen"))
+        form.addRow("Dachneigung", self._wrap_roof_editor_field_with_help(self.sp_roof_tab_pitch, "pitch", "Hilfe zur Dachneigung öffnen"))
+        form.addRow("Kniestock", self._wrap_roof_editor_field_with_help(self.sp_roof_tab_knee, "knee", "Hilfe zum Kniestock öffnen"))
+        form.addRow("Dachüberstand", self._wrap_roof_editor_field_with_help(self.sp_roof_tab_overhang, "overhang", "Hilfe zum Dachüberstand öffnen"))
+        form_lay.addLayout(form)
+        left_lay.addWidget(form_wrap)
+
+        dormer_wrap = QFrame()
+        dormer_wrap.setObjectName("roofEditorDormerWrap")
+        dormer_lay = QVBoxLayout(dormer_wrap)
+        dormer_lay.setContentsMargins(12, 12, 12, 12)
+        dormer_lay.setSpacing(8)
+        dormer_head = QHBoxLayout()
+        dormer_head.setSpacing(8)
+        dormer_title = QLabel("Gauben")
+        dormer_title.setObjectName("roofEditorSectionTitle")
+        dormer_head.addWidget(dormer_title)
+        dormer_head.addStretch(1)
+        self.lbl_roof_dormer_count = QLabel("0 Gauben")
+        self.lbl_roof_dormer_count.setObjectName("roofEditorBadge")
+        dormer_head.addWidget(self.lbl_roof_dormer_count)
+        dormer_lay.addLayout(dormer_head)
+        dormer_desc = QLabel("Hier können Sie einzelne Gauben direkt im Dach-Dialog anlegen, bearbeiten und löschen. Die Vorschau und die DG-Geometrie werden nach jeder Änderung aktualisiert.")
+        dormer_desc.setWordWrap(True)
+        dormer_desc.setObjectName("roofEditorText")
+        dormer_lay.addWidget(dormer_desc)
+        self.lst_roof_tab_dormers = QListWidget()
+        self.lst_roof_tab_dormers.setObjectName("roofTabDormerList")
+        self.lst_roof_tab_dormers.currentRowChanged.connect(self._on_roof_editor_dormer_selected)
+        dormer_lay.addWidget(self.lst_roof_tab_dormers, 1)
+        dormer_btn_row = QHBoxLayout()
+        dormer_btn_row.setSpacing(8)
+        self.btn_roof_tab_add_dormer = QPushButton("Gaube hinzufügen")
+        self.btn_roof_tab_add_dormer.clicked.connect(self._add_roof_editor_dormer)
+        dormer_btn_row.addWidget(self.btn_roof_tab_add_dormer)
+        self.btn_roof_tab_edit_dormer = QPushButton("Bearbeiten")
+        self.btn_roof_tab_edit_dormer.clicked.connect(self._edit_selected_roof_editor_dormer)
+        dormer_btn_row.addWidget(self.btn_roof_tab_edit_dormer)
+        self.btn_roof_tab_delete_dormer = QPushButton("Löschen")
+        self.btn_roof_tab_delete_dormer.clicked.connect(self._delete_selected_roof_editor_dormer)
+        dormer_btn_row.addWidget(self.btn_roof_tab_delete_dormer)
+        dormer_lay.addLayout(dormer_btn_row)
+        mode_row = QHBoxLayout()
+        mode_row.setSpacing(8)
+        self.btn_roof_tab_place_dormer = QPushButton("Grafisch platzieren")
+        self.btn_roof_tab_place_dormer.setCheckable(True)
+        self.btn_roof_tab_place_dormer.setToolTip("Aktiviert die Platzierung in der Dachvorschau. Ohne Auswahl wird per Klick eine neue Gaube eingefügt. Mit Auswahl kann die markierte Gaube per Drag&Drop verschoben oder über Resize-Griffe in Breite und Tiefe angepasst werden.")
+        self.btn_roof_tab_place_dormer.toggled.connect(self._on_toggle_roof_editor_dormer_place_mode)
+        mode_row.addWidget(self.btn_roof_tab_place_dormer)
+        self.btn_roof_tab_draw_dormer = QPushButton("Gaube zeichnen")
+        self.btn_roof_tab_draw_dormer.setCheckable(True)
+        self.btn_roof_tab_draw_dormer.setToolTip("CAD-Modus: Im Dachplan klicken und ziehen, um die Breite einer neuen Gaube direkt grafisch aufzuziehen.")
+        self.btn_roof_tab_draw_dormer.toggled.connect(self._on_toggle_roof_editor_dormer_draw_mode)
+        mode_row.addWidget(self.btn_roof_tab_draw_dormer)
+        dormer_lay.addLayout(mode_row)
+        self.lbl_roof_dormer_place_hint = QLabel("Tipp: 'Gaube zeichnen' für Click+Drag-Erzeugung verwenden oder 'Grafisch platzieren' für Klickplatzierung, Verschieben und Resize der markierten Gaube.")
+        self.lbl_roof_dormer_place_hint.setWordWrap(True)
+        self.lbl_roof_dormer_place_hint.setObjectName("roofEditorText")
+        dormer_lay.addWidget(self.lbl_roof_dormer_place_hint)
+        left_lay.addWidget(dormer_wrap)
+
+        actions_wrap = QFrame()
+        actions_wrap.setObjectName("roofEditorActionsWrap")
+        actions_lay = QVBoxLayout(actions_wrap)
+        actions_lay.setContentsMargins(12, 12, 12, 12)
+        actions_lay.setSpacing(8)
+        actions_title = QLabel("Aktionen")
+        actions_title.setObjectName("roofEditorSectionTitle")
+        actions_lay.addWidget(actions_title)
+        self.btn_roof_tab_open_settings = QPushButton("Projektparameter")
+        self.btn_roof_tab_open_settings.clicked.connect(self._on_attic_project_settings)
+        actions_lay.addWidget(self.btn_roof_tab_open_settings)
+        self.btn_roof_tab_to_dg = QPushButton("Zum DG")
+        self.btn_roof_tab_to_dg.clicked.connect(self._on_switch_to_dg_view)
+        actions_lay.addWidget(self.btn_roof_tab_to_dg)
+        self.btn_roof_tab_refresh = QPushButton("Vorschau aktualisieren")
+        self.btn_roof_tab_refresh.clicked.connect(self._refresh_attic_preview)
+        actions_lay.addWidget(self.btn_roof_tab_refresh)
+        self.btn_roof_tab_help_secondary = QPushButton("Ausführliche Hilfe")
+        self.btn_roof_tab_help_secondary.clicked.connect(self._open_roof_help_dialog)
+        actions_lay.addWidget(self.btn_roof_tab_help_secondary)
+        actions_hint = QLabel("Änderungen werden direkt in project_cfg.attic übernommen. Dachlinien und Geometrie bleiben synchron.")
+        actions_hint.setWordWrap(True)
+        actions_hint.setObjectName("roofEditorText")
+        actions_lay.addWidget(actions_hint)
+        left_lay.addWidget(actions_wrap)
+        left_lay.addStretch(1)
+
+        right_wrap = QWidget()
+        right_col = QVBoxLayout(right_wrap)
+        right_col.setContentsMargins(0, 0, 0, 0)
+        right_col.setSpacing(12)
+        content_splitter.addWidget(right_wrap)
+        content_splitter.setStretchFactor(0, 0)
+        content_splitter.setStretchFactor(1, 1)
+        content_splitter.setSizes([340, 760])
+
+        preview_wrap = QFrame()
+        preview_wrap.setObjectName("roofEditorPreviewWrap")
+        preview_lay = QVBoxLayout(preview_wrap)
+        preview_lay.setContentsMargins(12, 12, 12, 12)
+        preview_lay.setSpacing(8)
+        preview_title = QLabel("Live-Dachvorschau")
+        preview_title.setObjectName("roofEditorSectionTitle")
+        preview_lay.addWidget(preview_title)
+        preview_desc = QLabel("Querschnitt und Dachplan werden aus den aktuellen Projektdaten berechnet. Bei aktivierter Gauben-Platzierung kann im Dachplan direkt per Mausklick eingefügt werden. Ausgewählte Gauben lassen sich per Drag&Drop verschieben und über Resize-Griffe direkt grafisch in Breite und Tiefe anpassen.")
+        preview_desc.setWordWrap(True)
+        preview_desc.setObjectName("roofEditorText")
+        preview_lay.addWidget(preview_desc)
+        self.roof_editor_preview_panel = AtticSketchPanel(self)
+        self.roof_editor_preview_panel.planClicked.connect(self._on_roof_editor_preview_plan_clicked)
+        self.roof_editor_preview_panel.dormerDrawFinished.connect(self._on_roof_editor_dormer_draw_finished)
+        self.roof_editor_preview_panel.dormerDragStarted.connect(self._on_roof_editor_dormer_drag_started)
+        self.roof_editor_preview_panel.dormerDragMoved.connect(self._on_roof_editor_dormer_drag_moved)
+        self.roof_editor_preview_panel.dormerDragFinished.connect(self._on_roof_editor_dormer_drag_finished)
+        self.roof_editor_preview_panel.dormerResizeStarted.connect(self._on_roof_editor_dormer_resize_started)
+        self.roof_editor_preview_panel.dormerResizeMoved.connect(self._on_roof_editor_dormer_resize_moved)
+        self.roof_editor_preview_panel.dormerResizeFinished.connect(self._on_roof_editor_dormer_resize_finished)
+        preview_lay.addWidget(self.roof_editor_preview_panel, 1)
+        right_col.addWidget(preview_wrap, 2)
+
+        facet_wrap = QFrame()
+        facet_wrap.setObjectName("roofEditorFacetWrap")
+        facet_lay = QVBoxLayout(facet_wrap)
+        facet_lay.setContentsMargins(12, 12, 12, 12)
+        facet_lay.setSpacing(8)
+        facet_header = QHBoxLayout()
+        facet_header.setSpacing(8)
+        facet_title = QLabel("Dachflächen / Facetten")
+        facet_title.setObjectName("roofEditorSectionTitle")
+        facet_header.addWidget(facet_title)
+        facet_header.addStretch(1)
+        self.lbl_roof_facet_count = QLabel("0 Facetten")
+        self.lbl_roof_facet_count.setObjectName("roofEditorBadge")
+        facet_header.addWidget(self.lbl_roof_facet_count)
+        facet_lay.addLayout(facet_header)
+        facet_desc = QLabel("Automatisch berechnete Dachflächen aus Grundform, Firstlage und zusätzlichen Dachlinien.")
+        facet_desc.setWordWrap(True)
+        facet_desc.setObjectName("roofEditorText")
+        facet_lay.addWidget(facet_desc)
+        self.lst_roof_tab_facets = QListWidget()
+        self.lst_roof_tab_facets.setObjectName("roofTabFacetList")
+        facet_lay.addWidget(self.lst_roof_tab_facets, 1)
+        right_col.addWidget(facet_wrap, 1)
+
+        line_wrap = QFrame()
+        line_wrap.setObjectName("roofEditorLineWrap")
+        line_lay = QVBoxLayout(line_wrap)
+        line_lay.setContentsMargins(12, 12, 12, 12)
+        line_lay.setSpacing(8)
+
+        line_header = QHBoxLayout()
+        line_header.setSpacing(8)
+        line_title = QLabel("Dachlinien-Editor")
+        line_title.setObjectName("roofEditorSectionTitle")
+        line_header.addWidget(line_title)
+        line_header.addStretch(1)
+        line_header.addWidget(QLabel("Linientyp:"))
+        self.cb_roof_tab_line_kind = QComboBox()
+        self.cb_roof_tab_line_kind.addItems(["First", "Grat", "Kehle"])
+        self.cb_roof_tab_line_kind.currentTextChanged.connect(self._on_roof_editor_line_kind_changed)
+        line_header.addWidget(self.cb_roof_tab_line_kind)
+        line_lay.addLayout(line_header)
+
+        self.roof_line_editor_tab = RoofLineEditorWidget(self)
+        self.roof_line_editor_tab.on_lines_changed = self._on_roof_editor_lines_changed
+        line_lay.addWidget(self.roof_line_editor_tab, 1)
+
+        line_hint = QLabel("Draufsicht: erster Klick = Start, zweiter Klick = Ende. Bestehende Linien können direkt ausgewählt und gelöscht werden.")
+        line_hint.setWordWrap(True)
+        line_hint.setObjectName("roofEditorText")
+        line_lay.addWidget(line_hint)
+
+        self.lbl_roof_line_count = QLabel("0 Linien")
+        self.lbl_roof_line_count.setObjectName("roofEditorBadge")
+        line_lay.addWidget(self.lbl_roof_line_count, 0, Qt.AlignRight)
+
+        list_row = QHBoxLayout()
+        list_row.setSpacing(10)
+        self.lst_roof_tab_lines = QListWidget()
+        self.lst_roof_tab_lines.setObjectName("roofTabLineList")
+        self.lst_roof_tab_lines.currentRowChanged.connect(self._on_roof_editor_line_selected)
+        list_row.addWidget(self.lst_roof_tab_lines, 1)
+
+        btn_col = QVBoxLayout()
+        btn_col.setSpacing(8)
+        self.btn_roof_tab_delete_line = QPushButton("Linie löschen")
+        self.btn_roof_tab_delete_line.clicked.connect(self._delete_selected_roof_editor_line)
+        btn_col.addWidget(self.btn_roof_tab_delete_line)
+        self.btn_roof_tab_clear_lines = QPushButton("Alle löschen")
+        self.btn_roof_tab_clear_lines.clicked.connect(self._clear_roof_editor_lines)
+        btn_col.addWidget(self.btn_roof_tab_clear_lines)
+        btn_col.addStretch(1)
+        list_row.addLayout(btn_col)
+        line_lay.addLayout(list_row)
+        right_col.addWidget(line_wrap, 1)
+
+        if hasattr(self, "_sync_roof_editor_tab_widgets"):
+            self._sync_roof_editor_tab_widgets()
+        return page
+
+    def _create_roof_editor_metric_card(self, title: str, value_label: QLabel, object_name: str) -> QFrame:
+        card = QFrame()
+        card.setObjectName(object_name)
+        lay = QVBoxLayout(card)
+        lay.setContentsMargins(12, 10, 12, 10)
+        lay.setSpacing(2)
+        title_lbl = QLabel(title)
+        title_lbl.setObjectName("roofEditorMetricTitle")
+        value_label.setObjectName("roofEditorMetricValue")
+        lay.addWidget(title_lbl)
+        lay.addWidget(value_label)
+        return card
+
+    def _open_roof_editor_dialog(self):
+        dlg = getattr(self, "_roof_editor_dialog", None)
+        if dlg is None:
+            dlg = QDialog(self)
+            dlg.setWindowTitle("Dach-Editor")
+            dlg.setModal(False)
+            dlg.resize(1200, 860)
+            dlg.setMinimumSize(900, 640)
+            lay = QVBoxLayout(dlg)
+            lay.setContentsMargins(0, 0, 0, 0)
+
+            scroll = QScrollArea(dlg)
+            scroll.setObjectName("roofEditorDialogScrollArea")
+            scroll.setWidgetResizable(True)
+            scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+            scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+            scroll.setFrameShape(QFrame.NoFrame)
+
+            container = QWidget(scroll)
+            container_lay = QVBoxLayout(container)
+            container_lay.setContentsMargins(0, 0, 0, 0)
+            container_lay.setSpacing(0)
+
+            self.roof_editor_panel = self._create_roof_editor_panel(container)
+            self.roof_editor_panel.setMinimumSize(1080, 980)
+            container_lay.addWidget(self.roof_editor_panel)
+            container_lay.addStretch(1)
+            scroll.setWidget(container)
+
+            lay.addWidget(scroll)
+            self._roof_editor_dialog_scroll = scroll
+            self._roof_editor_dialog = dlg
+        if hasattr(self, "_sync_roof_editor_tab_widgets"):
+            self._sync_roof_editor_tab_widgets()
+        try:
+            self._roof_editor_dialog.show()
+            self._roof_editor_dialog.raise_()
+            self._roof_editor_dialog.activateWindow()
+        except Exception:
+            pass
+
+    def _wrap_roof_editor_field_with_help(self, widget, section_key: str, tooltip: str) -> QWidget:
+        wrap = QWidget()
+        lay = QHBoxLayout(wrap)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(6)
+        lay.addWidget(widget, 1)
+        btn = QToolButton(wrap)
+        btn.setText("?")
+        btn.setAutoRaise(True)
+        btn.setToolTip(tooltip)
+        btn.clicked.connect(lambda _=False, key=section_key: self._open_roof_help_dialog(key))
+        lay.addWidget(btn, 0, Qt.AlignTop)
+        return wrap
+
+    def _create_roof_type_mini_card(self, title: str, kind: str, caption: str, example_key: str | None = None) -> QFrame:
+        box = RoofExampleCard()
+        box.setObjectName("roofHelpMiniCard")
+        box.setCursor(Qt.PointingHandCursor if example_key else Qt.ArrowCursor)
+        lay = QVBoxLayout(box)
+        lay.setContentsMargins(8, 8, 8, 8)
+        lay.setSpacing(6)
+        lbl_title = QLabel(title)
+        lbl_title.setObjectName("roofEditorSectionTitle")
+        lbl_title.setWordWrap(True)
+        lay.addWidget(lbl_title)
+        img = QLabel()
+        img.setAlignment(Qt.AlignCenter)
+        img.setPixmap(self._make_roof_help_pixmap(kind, QSize(180, 92)))
+        lay.addWidget(img)
+        lbl_caption = QLabel(caption)
+        lbl_caption.setObjectName("roofEditorText")
+        lbl_caption.setWordWrap(True)
+        lay.addWidget(lbl_caption)
+        if example_key:
+            hint = QLabel("Klick oder Button lädt ein Beispiel direkt in den Dach-Editor.")
+            hint.setObjectName("roofEditorText")
+            hint.setWordWrap(True)
+            lay.addWidget(hint)
+            btn = QPushButton("Beispiel laden")
+            btn.clicked.connect(lambda _=False, key=example_key: self._apply_roof_example(key))
+            lay.addWidget(btn)
+            box.clicked.connect(lambda key=example_key: self._apply_roof_example(key))
+        return box
+
+    def _roof_example_presets(self) -> dict[str, dict]:
+        return {
+            "gable_standard": {
+                "title": "Satteldach – Standard",
+                "roof_type": "satteldach",
+                "ridge_orientation": "length",
+                "roof_pitch_deg": 38.0,
+                "knee_wall_height_m": 1.00,
+                "roof_overhang_m": 0.35,
+                "help_section": "roof_types",
+                "description": "Klassisches Satteldach mit mittlerer Neigung und moderatem Überstand.",
+            },
+            "shed_compact": {
+                "title": "Pultdach – Kompakt",
+                "roof_type": "pultdach",
+                "ridge_orientation": "length",
+                "roof_pitch_deg": 18.0,
+                "knee_wall_height_m": 0.80,
+                "roof_overhang_m": 0.25,
+                "help_section": "roof_types",
+                "description": "Einfaches Pultdach mit klarer Entwässerungsrichtung und geringer Dachhöhe.",
+            },
+            "hip_balanced": {
+                "title": "Walmdach – Ausgewogen",
+                "roof_type": "walmdach",
+                "ridge_orientation": "length",
+                "roof_pitch_deg": 30.0,
+                "knee_wall_height_m": 0.70,
+                "roof_overhang_m": 0.40,
+                "help_section": "roof_types",
+                "description": "Ausgewogenes Walmdach mit ruhiger Dachsilhouette und vier geneigten Seiten.",
+            },
+            "halfhip_family": {
+                "title": "Krüppelwalmdach – Wohnhaus",
+                "roof_type": "krueppelwalmdach",
+                "ridge_orientation": "length",
+                "roof_pitch_deg": 42.0,
+                "knee_wall_height_m": 1.10,
+                "roof_overhang_m": 0.38,
+                "help_section": "roof_types",
+                "description": "Typisches Wohnhausdach mit teilweiser Abwalmung an den Stirnseiten.",
+            },
+            "flat_modern": {
+                "title": "Flachdach – Modern",
+                "roof_type": "flachdach",
+                "ridge_orientation": "length",
+                "roof_pitch_deg": 2.0,
+                "knee_wall_height_m": 0.00,
+                "roof_overhang_m": 0.12,
+                "help_section": "roof_types",
+                "description": "Sehr flaches Dach für moderne Baukörper und kompakte Dachaufbauten.",
+            },
+            "valley_lshape": {
+                "title": "Winkel-/Kehldach – L-Form",
+                "roof_type": "winkeldach",
+                "ridge_orientation": "length",
+                "roof_pitch_deg": 35.0,
+                "knee_wall_height_m": 0.95,
+                "roof_overhang_m": 0.32,
+                "help_section": "lines",
+                "description": "Ausgangspunkt für L-förmige Baukörper mit Kehlen oder zusammengesetzten Teilflächen.",
+            },
+        }
+
+    def _apply_roof_example(self, example_key: str) -> None:
+        example = self._roof_example_presets().get(str(example_key))
+        if not example:
+            return
+        attic = getattr(getattr(self, "project_cfg", None), "attic", None)
+        if attic is None:
+            return
+
+        attic.roof_type = str(example.get("roof_type", getattr(attic, "roof_type", "satteldach")))
+        attic.ridge_orientation = str(example.get("ridge_orientation", getattr(attic, "ridge_orientation", "length")))
+        attic.roof_pitch_deg = float(example.get("roof_pitch_deg", getattr(attic, "roof_pitch_deg", 35.0) or 0.0))
+        attic.knee_wall_height_m = float(example.get("knee_wall_height_m", getattr(attic, "knee_wall_height_m", 1.0) or 0.0))
+        overhang = float(example.get("roof_overhang_m", getattr(attic, "roof_overhang_m", 0.30) or 0.0))
+        attic.roof_overhang_m = overhang
+        attic.eave_overhang_m = overhang
+        attic.gable_overhang_m = overhang
+
+        if hasattr(self, "_persist_project_cfg_if_possible"):
+            self._persist_project_cfg_if_possible()
+        if hasattr(self, "_recompute_and_redraw"):
+            self._recompute_and_redraw()
+        if hasattr(self, "_refresh_attic_preview"):
+            self._refresh_attic_preview()
+        if hasattr(self, "_sync_roof_editor_tab_widgets"):
+            self._sync_roof_editor_tab_widgets()
+
+        try:
+            self._open_roof_editor_dialog()
+        except Exception:
+            pass
+        try:
+            self._open_roof_help_dialog(str(example.get("help_section") or "roof_types"))
+        except Exception:
+            pass
+        try:
+            self.statusBar().showMessage(f"Beispiel geladen: {example.get('title', 'Dachbeispiel')}", 3200)
+        except Exception:
+            pass
+
+    def _scroll_roof_help_to_section(self, section_key: str | None) -> None:
+        dlg = getattr(self, "_roof_help_dialog", None)
+        scroll = getattr(dlg, "_roof_help_scroll", None) if dlg is not None else None
+        sections = getattr(dlg, "_roof_help_sections", None) if dlg is not None else None
+        if not scroll or not sections or not section_key or section_key not in sections:
+            return
+        target = sections[section_key]
+        scroll.ensureWidgetVisible(target, 0, 24)
+        target.setProperty("roofHelpFocus", True)
+        target.style().unpolish(target)
+        target.style().polish(target)
+        def _clear_focus():
+            try:
+                target.setProperty("roofHelpFocus", False)
+                target.style().unpolish(target)
+                target.style().polish(target)
+            except Exception:
+                pass
+        QTimer.singleShot(1600, _clear_focus)
+
+    def _open_roof_help_dialog(self, section_key: str | None = None):
+        dlg = getattr(self, "_roof_help_dialog", None)
+        if dlg is None:
+            dlg = self._create_roof_help_dialog()
+            self._roof_help_dialog = dlg
+        try:
+            dlg.show()
+            dlg.raise_()
+            dlg.activateWindow()
+            QTimer.singleShot(0, lambda key=section_key: self._scroll_roof_help_to_section(key))
+        except Exception:
+            pass
+
+    def _create_roof_help_dialog(self) -> QDialog:
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Hilfe – Dach-Editor")
+        dlg.setModal(False)
+        dlg.resize(1120, 860)
+
+        root = QVBoxLayout(dlg)
+        root.setContentsMargins(12, 12, 12, 12)
+        root.setSpacing(10)
+
+        intro = QFrame()
+        intro.setObjectName("roofHelpHero")
+        intro_lay = QVBoxLayout(intro)
+        intro_lay.setContentsMargins(14, 12, 14, 12)
+        intro_lay.setSpacing(4)
+        title = QLabel("Ausführliche Hilfe zum Dach-Editor")
+        title.setObjectName("roofEditorTitle")
+        subtitle = QLabel(
+            "Diese Hilfe erklärt alle Parameter und Optionen des Dach-Dialogs. "
+            "Die Skizzen sind bewusst schematisch gehalten und zeigen, wie sich Eingaben auf Geometrie, Vorschau und DG-Ableitung auswirken."
+        )
+        subtitle.setWordWrap(True)
+        subtitle.setObjectName("roofEditorText")
+        intro_lay.addWidget(title)
+        intro_lay.addWidget(subtitle)
+        root.addWidget(intro)
+
+        scroll = QScrollArea(dlg)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        dlg._roof_help_scroll = scroll
+        dlg._roof_help_sections = {}
+        root.addWidget(scroll, 1)
+
+        content = QWidget(scroll)
+        scroll.setWidget(content)
+        lay = QVBoxLayout(content)
+        lay.setContentsMargins(4, 4, 4, 4)
+        lay.setSpacing(12)
+
+        sections = [
+            (
+                "1. Grundidee des Dach-Editors",
+                "Der Dialog ist in drei Arbeitsbereiche gegliedert: links die Parameter, rechts oben die Live-Vorschau und darunter automatische Listen für Facetten und Dachlinien. "
+                "Sie ändern also nicht nur numerische Werte, sondern sehen sofort die geometrische Wirkung. Die Vorschau basiert auf project_cfg.attic und bleibt mit dem DG synchron.\n\n"
+                "Typischer Ablauf: Dachform wählen → Firstausrichtung prüfen → Dachneigung, Kniestock und Dachüberstand einstellen → zusätzliche First-/Grat-/Kehllinien setzen → Ergebnis in Facettenliste und Vorschau kontrollieren.",
+                "overview",
+            ),
+            (
+                "2. Dachform",
+                "Mit der Dachform definieren Sie das Grundmodell des Daches. Satteldach erzeugt zwei geneigte Hauptflächen. Pultdach besitzt nur eine geneigte Hauptfläche. Walmdach zieht die Stirnseiten ebenfalls in die Dachschrägen hinein. "
+                "Krüppelwalmdach ist eine Zwischenform mit teilweise abgewalmten Stirnseiten. Flachdach reduziert die Neigung praktisch auf eine horizontale Dachfläche. Winkel-/Kehldach ist für komplexere Grundrisse gedacht und wird oft zusammen mit zusätzlichen Dachlinien verwendet.\n\n"
+                "Die Dachform ist der stärkste Strukturparameter: sie bestimmt, welche Flächen grundsätzlich entstehen können. Zusätzliche Dachlinien verfeinern das Ergebnis anschließend.",
+                "roof_types",
+            ),
+            (
+                "3. Firstausrichtung",
+                "Die Firstausrichtung entscheidet, ob der Hauptfirst längs oder quer zum Gebäude verläuft. 'First längs' bedeutet: der First folgt der längeren Gebäuderichtung. 'First quer' dreht die Dachlogik um 90°.\n\n"
+                "Das ist wichtig, weil sich damit die Fallrichtung der Dachflächen ändert. In der Vorschau sehen Sie sofort, welche Traufseiten höher bzw. niedriger ausgebildet werden. Bei Sattel- und Walmdächern ist diese Einstellung besonders relevant, weil sie die Lage des Hauptfirstes und damit auch die Facettenaufteilung beeinflusst.",
+                "ridge",
+            ),
+            (
+                "4. Dachneigung",
+                "Die Dachneigung wird in Grad eingegeben. Größere Winkel machen die Dachflächen steiler und erhöhen in der Regel sowohl die Gesamthöhe als auch die geneigte Dachfläche. Kleine Winkel nähern sich einem flachen Dach an.\n\n"
+                "Praktisch bedeutet das: Schon wenige Grad Unterschied verändern die Höhe des Dachaufbaus deutlich. Prüfen Sie daher nach einer Änderung immer die Kennzahlen 'Gesamthöhe' und 'Dachfläche' sowie den Querschnitt in der Vorschau. Bei sehr kleinen Winkeln sollte die gewählte Dachform weiterhin plausibel zum Baukörper passen.",
+                "pitch",
+            ),
+            (
+                "5. Kniestock",
+                "Der Kniestock beschreibt die senkrechte Wandhöhe im DG, bevor die Dachschräge beginnt. Ein höherer Kniestock verschiebt den Beginn der Schräge nach oben und vergrößert meist die besser nutzbare Fläche im Dachgeschoss.\n\n"
+                "Im Querschnitt erkennen Sie das daran, dass die senkrechten Außenwände höher werden, bevor die Dachfläche ansetzt. Für die Modellierung ist dieser Parameter wichtig, weil er die nutzbare Innenhöhe beeinflusst und die spätere DG-Geometrie verändert.",
+                "knee",
+            ),
+            (
+                "6. Dachüberstand",
+                "Der Dachüberstand verlängert die Dachfläche über die Außenkante des Baukörpers hinaus. Ein größerer Wert vergrößert die projizierte Dachkontur und wirkt sich sichtbar auf die Dachaußenkante in der Vorschau aus.\n\n"
+                "Der Überstand ist konstruktiv relevant, weil er die Hüllgeometrie verändert. In der Dachansicht sehen Sie, wie die äußere Linie über die Grundfläche hinausrückt. Bei Vergleichen der Dachfläche sollten Sie beachten, dass größere Überstände die geneigte Fläche erhöhen können.",
+                "overhang",
+            ),
+            (
+                "7. Dachlinien: First, Grat, Kehle",
+                "Mit zusätzlichen Dachlinien verfeinern Sie komplexe Dächer. 'First' steht für eine obere Schnittlinie zweier Dachflächen. 'Grat' ist eine nach außen laufende Kante, typischerweise bei abgewalmten oder zusammengesetzten Dachflächen. 'Kehle' ist die nach innen laufende Einmündung zweier Dachflächen, also die typische Entwässerungslinie bei Winkeln oder Anbauten.\n\n"
+                "Im Editor setzen Sie eine Linie mit zwei Klicks: Startpunkt und Endpunkt in der Draufsicht. Wählen Sie zuerst den Linientyp und platzieren Sie dann die Linie. Die Linienliste darunter dient der Kontrolle und dem gezielten Löschen. Bestehende Linien sollten nur gesetzt werden, wenn sie geometrisch sinnvoll sind, da sie direkt in die Facettenbildung eingehen.",
+                "lines",
+            ),
+            (
+                "8. Live-Vorschau, Kennzahlen und Facettenliste",
+                "Die Live-Vorschau zeigt Querschnitt und Dachplan aus den aktuellen Projektdaten. Damit kontrollieren Sie sofort, ob die Dachlogik Ihrer Eingabe entspricht. Darüber hinaus liefern die Kennzahlen oben einen schnellen Plausibilitätscheck: Dachfläche, Facettenanzahl, Dachlinienanzahl und Gesamthöhe.\n\n"
+                "Die Facettenliste zerlegt das Dach in einzelne Flächen. Das ist besonders hilfreich bei komplexen Dächern mit Kehlen, Graten und Teilfirsten. Wenn sich nach einer Linienänderung die Facettenanzahl sprunghaft verändert, ist das oft ein Hinweis auf eine starke topologische Änderung oder auf eine ungünstig platzierte Linie.",
+                "preview",
+            ),
+            (
+                "9. Projektparameter, Synchronisation und empfohlener Workflow",
+                "Die Schaltflächen im Aktionsbereich unterstützen den Arbeitsablauf: 'Projektparameter' springt in die projektweite Konfiguration, 'Zum DG' wechselt direkt in die Dachgeschossansicht und 'Vorschau aktualisieren' erzwingt eine Neuberechnung.\n\n"
+                "Empfehlung für sauberes Arbeiten: zuerst den Grundkörper im Projekt sauber definieren, dann im Dach-Editor die globale Dachform festlegen, erst danach Sonderlinien einzeichnen. Kontrollieren Sie komplexe Dächer immer über Vorschau und Facettenliste. Wenn etwas unplausibel wirkt, reduzieren Sie zunächst die Zusatzlinien und bauen die Geometrie schrittweise wieder auf.",
+                "workflow",
+            ),
+        ]
+
+        for section_title, section_text, image_kind in sections:
+            section_widget = self._create_roof_help_section(section_title, section_text, image_kind)
+            dlg._roof_help_sections[image_kind] = section_widget
+            lay.addWidget(section_widget)
+            if image_kind == "roof_types":
+                lay.addWidget(self._create_roof_type_gallery())
+
+        lay.addStretch(1)
+        return dlg
+
+    def _create_roof_type_gallery(self) -> QFrame:
+        box = QFrame()
+        box.setObjectName("roofHelpTypeGallery")
+        lay = QVBoxLayout(box)
+        lay.setContentsMargins(8, 0, 8, 4)
+        lay.setSpacing(8)
+        title = QLabel("Dach-Mini-Renderings je Dachtyp")
+        title.setObjectName("roofEditorSectionTitle")
+        lay.addWidget(title)
+        subtitle = QLabel("Die Skizzen zeigen die typische Grundwirkung der verfügbaren Dachtypen im Editor. Sie dienen als schnelle Orientierung direkt in der Hilfe.")
+        subtitle.setObjectName("roofEditorText")
+        subtitle.setWordWrap(True)
+        lay.addWidget(subtitle)
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(10)
+        grid.setVerticalSpacing(10)
+        items = [
+            ("Satteldach", "roof_type_gable", "Zwei geneigte Hauptflächen mit mittigem Hauptfirst.", "gable_standard"),
+            ("Pultdach", "roof_type_shed", "Eine geneigte Hauptfläche mit eindeutiger Entwässerungsrichtung.", "shed_compact"),
+            ("Walmdach", "roof_type_hip", "Alle Gebäudeseiten laufen in geneigte Dachflächen über.", "hip_balanced"),
+            ("Krüppelwalmdach", "roof_type_halfhip", "Giebel bleibt teilweise erhalten, Stirnseiten sind nur teilweise abgewalmt.", "halfhip_family"),
+            ("Flachdach", "roof_type_flat", "Nahezu horizontale Dachfläche mit geringer oder keiner sichtbaren Firstbildung.", "flat_modern"),
+            ("Winkel-/Kehldach", "roof_type_valley", "Komplexer Dachtyp mit Einschnitt, Kehlen oder zusammengesetzten Teilflächen.", "valley_lshape"),
+        ]
+        for idx, item in enumerate(items):
+            grid.addWidget(self._create_roof_type_mini_card(*item), idx // 2, idx % 2)
+        lay.addLayout(grid)
+        return box
+
+    def _create_roof_help_section(self, title: str, text: str, image_kind: str) -> QFrame:
+        box = QFrame()
+        box.setObjectName("roofHelpSection")
+        grid = QGridLayout(box)
+        grid.setContentsMargins(12, 12, 12, 12)
+        grid.setHorizontalSpacing(14)
+        grid.setVerticalSpacing(8)
+
+        title_lbl = QLabel(title)
+        title_lbl.setObjectName("roofEditorSectionTitle")
+        title_lbl.setWordWrap(True)
+        grid.addWidget(title_lbl, 0, 0, 1, 2)
+
+        image_lbl = QLabel()
+        image_lbl.setObjectName("roofHelpImage")
+        image_lbl.setPixmap(self._make_roof_help_pixmap(image_kind))
+        image_lbl.setAlignment(Qt.AlignCenter)
+        image_lbl.setMinimumHeight(180)
+        grid.addWidget(image_lbl, 1, 0)
+
+        text_lbl = QLabel(text)
+        text_lbl.setObjectName("roofEditorText")
+        text_lbl.setWordWrap(True)
+        text_lbl.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        text_lbl.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+        grid.addWidget(text_lbl, 1, 1)
+        grid.setColumnStretch(0, 0)
+        grid.setColumnStretch(1, 1)
+        return box
+
+    def _make_roof_help_pixmap(self, kind: str, size: QSize | None = None) -> QPixmap:
+        size = size or QSize(420, 190)
+        pm = QPixmap(size)
+        base = self.palette().base().color()
+        alt = self.palette().alternateBase().color()
+        text = self.palette().text().color()
+        accent = self.palette().highlight().color()
+        pm.fill(base)
+
+        p = QPainter(pm)
+        p.setRenderHint(QPainter.Antialiasing, True)
+        p.fillRect(pm.rect(), alt)
+        p.setPen(QPen(text, 1.4))
+
+        margin = 18
+        w = size.width() - 2 * margin
+        h = size.height() - 2 * margin
+        x0 = margin
+        y0 = margin
+
+        def roof_outline(points):
+            poly = QPolygonF([QPointF(x0 + px * w, y0 + py * h) for px, py in points])
+            p.drawPolyline(poly)
+
+        def fill_poly(points, alpha=45):
+            poly = QPolygonF([QPointF(x0 + px * w, y0 + py * h) for px, py in points])
+            c = QColor(accent)
+            c.setAlpha(alpha)
+            p.setBrush(QBrush(c))
+            p.drawPolygon(poly)
+            p.setBrush(Qt.NoBrush)
+
+        grid_pen = QPen(text, 1.0)
+        grid_pen.setColor(QColor(text.red(), text.green(), text.blue(), 70))
+        p.setPen(grid_pen)
+        for frac in (0.25, 0.5, 0.75):
+            p.drawLine(x0 + int(w * frac), y0, x0 + int(w * frac), y0 + h)
+            p.drawLine(x0, y0 + int(h * frac), x0 + w, y0 + int(h * frac))
+
+        p.setPen(QPen(text, 2.0, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+
+        if kind == "overview":
+            p.drawRoundedRect(x0 + 6, y0 + 20, int(w * 0.24), int(h * 0.68), 8, 8)
+            p.drawRoundedRect(x0 + int(w * 0.34), y0 + 20, int(w * 0.62), int(h * 0.68), 8, 8)
+            p.setPen(QPen(accent, 2.4))
+            p.drawLine(x0 + int(w * 0.30), y0 + int(h * 0.50), x0 + int(w * 0.34), y0 + int(h * 0.50))
+            p.drawLine(x0 + int(w * 0.36), y0 + int(h * 0.32), x0 + int(w * 0.82), y0 + int(h * 0.32))
+            p.drawLine(x0 + int(w * 0.36), y0 + int(h * 0.56), x0 + int(w * 0.82), y0 + int(h * 0.56))
+        elif kind == "roof_types":
+            fill_poly([(0.05,0.72),(0.20,0.40),(0.35,0.72)])
+            roof_outline([(0.05,0.72),(0.20,0.40),(0.35,0.72)])
+            fill_poly([(0.42,0.72),(0.63,0.45),(0.63,0.72)])
+            roof_outline([(0.42,0.72),(0.63,0.45),(0.63,0.72)])
+            fill_poly([(0.70,0.72),(0.78,0.53),(0.88,0.53),(0.95,0.72)])
+            roof_outline([(0.70,0.72),(0.78,0.53),(0.88,0.53),(0.95,0.72)])
+        elif kind == "roof_type_gable":
+            fill_poly([(0.08,0.76),(0.32,0.28),(0.56,0.76)])
+            roof_outline([(0.08,0.76),(0.32,0.28),(0.56,0.76)])
+            p.setPen(QPen(accent, 2.8))
+            p.drawLine(x0 + int(w*0.24), y0 + int(h*0.28), x0 + int(w*0.40), y0 + int(h*0.28))
+        elif kind == "roof_type_shed":
+            fill_poly([(0.10,0.76),(0.54,0.30),(0.54,0.76)])
+            roof_outline([(0.10,0.76),(0.54,0.30),(0.54,0.76)])
+            p.setPen(QPen(accent, 2.8))
+            p.drawLine(x0 + int(w*0.12), y0 + int(h*0.76), x0 + int(w*0.54), y0 + int(h*0.30))
+        elif kind == "roof_type_hip":
+            fill_poly([(0.10,0.74),(0.22,0.48),(0.44,0.48),(0.56,0.74),(0.33,0.24)])
+            roof_outline([(0.10,0.74),(0.22,0.48),(0.44,0.48),(0.56,0.74),(0.33,0.24),(0.10,0.74)])
+            p.setPen(QPen(accent, 2.8))
+            p.drawLine(x0 + int(w*0.22), y0 + int(h*0.48), x0 + int(w*0.44), y0 + int(h*0.48))
+        elif kind == "roof_type_halfhip":
+            fill_poly([(0.08,0.74),(0.18,0.54),(0.25,0.38),(0.40,0.38),(0.48,0.54),(0.58,0.74)])
+            roof_outline([(0.08,0.74),(0.18,0.54),(0.25,0.38),(0.40,0.38),(0.48,0.54),(0.58,0.74)])
+            p.setPen(QPen(accent, 2.8))
+            p.drawLine(x0 + int(w*0.25), y0 + int(h*0.38), x0 + int(w*0.40), y0 + int(h*0.38))
+        elif kind == "roof_type_flat":
+            fill_poly([(0.10,0.62),(0.58,0.62),(0.58,0.74),(0.10,0.74)], 30)
+            roof_outline([(0.10,0.62),(0.58,0.62),(0.58,0.74),(0.10,0.74),(0.10,0.62)])
+            p.setPen(QPen(accent, 2.8, Qt.DashLine))
+            p.drawLine(x0 + int(w*0.10), y0 + int(h*0.62), x0 + int(w*0.58), y0 + int(h*0.62))
+        elif kind == "roof_type_valley":
+            fill_poly([(0.08,0.72),(0.22,0.42),(0.36,0.72),(0.50,0.46),(0.64,0.72)], 40)
+            roof_outline([(0.08,0.72),(0.22,0.42),(0.36,0.72),(0.50,0.46),(0.64,0.72)])
+            p.setPen(QPen(QColor(180, 90, 20), 2.8))
+            p.drawLine(x0 + int(w*0.36), y0 + int(h*0.72), x0 + int(w*0.50), y0 + int(h*0.46))
+        elif kind == "ridge":
+            fill_poly([(0.10,0.70),(0.28,0.42),(0.46,0.70)])
+            roof_outline([(0.10,0.70),(0.28,0.42),(0.46,0.70)])
+            p.setPen(QPen(accent, 3.0))
+            p.drawLine(x0 + int(w*0.20), y0 + int(h*0.36), x0 + int(w*0.36), y0 + int(h*0.36))
+            p.setPen(QPen(text, 2.0))
+            p.drawRect(x0 + int(w*0.58), y0 + int(h*0.28), int(w*0.24), int(h*0.44))
+            p.setPen(QPen(accent, 3.0))
+            p.drawLine(x0 + int(w*0.70), y0 + int(h*0.30), x0 + int(w*0.70), y0 + int(h*0.72))
+        elif kind == "pitch":
+            p.drawLine(x0 + int(w*0.08), y0 + int(h*0.74), x0 + int(w*0.42), y0 + int(h*0.74))
+            p.drawLine(x0 + int(w*0.42), y0 + int(h*0.74), x0 + int(w*0.42), y0 + int(h*0.30))
+            p.setPen(QPen(accent, 3.0))
+            p.drawLine(x0 + int(w*0.14), y0 + int(h*0.74), x0 + int(w*0.42), y0 + int(h*0.42))
+            p.drawArc(x0 + int(w*0.29), y0 + int(h*0.60), 44, 44, 80 * 16, 42 * 16)
+        elif kind == "knee":
+            p.drawRect(x0 + int(w*0.10), y0 + int(h*0.30), int(w*0.42), int(h*0.44))
+            p.setPen(QPen(accent, 3.0))
+            p.drawLine(x0 + int(w*0.10), y0 + int(h*0.30), x0 + int(w*0.10), y0 + int(h*0.74))
+            p.drawLine(x0 + int(w*0.10), y0 + int(h*0.30), x0 + int(w*0.26), y0 + int(h*0.14))
+            p.drawLine(x0 + int(w*0.52), y0 + int(h*0.30), x0 + int(w*0.36), y0 + int(h*0.14))
+        elif kind == "overhang":
+            p.drawRect(x0 + int(w*0.20), y0 + int(h*0.38), int(w*0.28), int(h*0.30))
+            p.setPen(QPen(accent, 3.0))
+            p.drawLine(x0 + int(w*0.12), y0 + int(h*0.34), x0 + int(w*0.34), y0 + int(h*0.12))
+            p.drawLine(x0 + int(w*0.56), y0 + int(h*0.34), x0 + int(w*0.34), y0 + int(h*0.12))
+            p.drawLine(x0 + int(w*0.05), y0 + int(h*0.34), x0 + int(w*0.12), y0 + int(h*0.34))
+            p.drawLine(x0 + int(w*0.56), y0 + int(h*0.34), x0 + int(w*0.64), y0 + int(h*0.34))
+        elif kind == "lines":
+            p.drawRect(x0 + int(w*0.12), y0 + int(h*0.18), int(w*0.64), int(h*0.56))
+            p.setPen(QPen(QColor(30, 120, 200), 3.0))
+            p.drawLine(x0 + int(w*0.18), y0 + int(h*0.32), x0 + int(w*0.70), y0 + int(h*0.32))
+            p.setPen(QPen(QColor(0, 150, 90), 3.0))
+            p.drawLine(x0 + int(w*0.44), y0 + int(h*0.32), x0 + int(w*0.66), y0 + int(h*0.56))
+            p.setPen(QPen(QColor(180, 90, 20), 3.0))
+            p.drawLine(x0 + int(w*0.30), y0 + int(h*0.56), x0 + int(w*0.44), y0 + int(h*0.32))
+        elif kind == "preview":
+            p.drawRoundedRect(x0 + int(w*0.04), y0 + int(h*0.14), int(w*0.42), int(h*0.62), 8, 8)
+            p.drawRoundedRect(x0 + int(w*0.54), y0 + int(h*0.14), int(w*0.36), int(h*0.62), 8, 8)
+            p.setPen(QPen(accent, 2.6))
+            p.drawLine(x0 + int(w*0.10), y0 + int(h*0.58), x0 + int(w*0.25), y0 + int(h*0.28))
+            p.drawLine(x0 + int(w*0.25), y0 + int(h*0.28), x0 + int(w*0.40), y0 + int(h*0.58))
+            for i in range(4):
+                yy = y0 + int(h*(0.24 + i*0.12))
+                p.drawLine(x0 + int(w*0.58), yy, x0 + int(w*0.84), yy)
+        elif kind == "workflow":
+            p.setPen(QPen(accent, 2.8))
+            xs = [0.10, 0.30, 0.50, 0.70, 0.88]
+            labels_y = [0.55, 0.35, 0.55, 0.35, 0.55]
+            prev = None
+            for xf, yf in zip(xs, labels_y):
+                cx = x0 + int(w*xf)
+                cy = y0 + int(h*yf)
+                p.drawEllipse(QPointF(cx, cy), 18, 18)
+                if prev is not None:
+                    p.drawLine(prev[0] + 18, prev[1], cx - 18, cy)
+                prev = (cx, cy)
+        else:
+            p.drawRoundedRect(x0 + 8, y0 + 8, w - 16, h - 16, 10, 10)
+
+        p.end()
+        return pm
 
     def _create_docks(self):
         """Erstellt echte DockWidgets für Eigenschaften und Elemente."""
@@ -870,6 +1792,9 @@ class MainWindowBuildMixin:
         self.dock_properties = QDockWidget("Eigenschaften", self)
         self.dock_properties.setObjectName("dock_properties")
         self.dock_properties.setAllowedAreas(Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea)
+        prop_scroll = QScrollArea()
+        prop_scroll.setWidgetResizable(True)
+        prop_scroll.setFrameShape(QFrame.NoFrame)
         prop_widget = QWidget()
         prop_layout = QVBoxLayout(prop_widget)
         prop_layout.setContentsMargins(8, 8, 8, 8)
@@ -892,7 +1817,8 @@ class MainWindowBuildMixin:
         self.btn_apply.setIcon(self._std_icon(QStyle.SP_DialogApplyButton))
         prop_layout.addWidget(self.btn_apply)
         prop_layout.addStretch(1)
-        self.dock_properties.setWidget(prop_widget)
+        prop_scroll.setWidget(prop_widget)
+        self.dock_properties.setWidget(prop_scroll)
         self.addDockWidget(Qt.RightDockWidgetArea, self.dock_properties)
 
         # Elemente
@@ -1322,5 +2248,60 @@ class MainWindowBuildMixin:
             font-size: 16px;
             font-weight: 700;
             color: #243447;
+        }
+        QFrame#roofEditorHero,
+        QFrame#roofEditorFormWrap,
+        QFrame#roofEditorActionsWrap,
+        QFrame#roofEditorPreviewWrap,
+        QFrame#roofEditorLineWrap,
+        QFrame#roofEditorFacetWrap,
+        QFrame#roofMetricAreaCard,
+        QFrame#roofMetricFacetCard,
+        QFrame#roofMetricLineCard,
+        QFrame#roofMetricHeightCard {
+            background: #ffffff;
+            border: 1px solid #d7dbe0;
+            border-radius: 12px;
+        }
+        QLabel#roofEditorTitle {
+            font-size: 18px;
+            font-weight: 700;
+            color: #243447;
+        }
+        QLabel#roofEditorSectionTitle {
+            font-size: 13px;
+            font-weight: 700;
+            color: #243447;
+        }
+        QLabel#roofEditorText, QLabel#roofEditorMetricTitle {
+            color: #607080;
+        }
+        QLabel#roofEditorMetricValue {
+            font-size: 18px;
+            font-weight: 700;
+            color: #1f3b5b;
+        }
+        QLabel#roofEditorBadge {
+            background: #edf3fb;
+            border: 1px solid #c9d8ea;
+            border-radius: 10px;
+            padding: 3px 8px;
+            color: #32506f;
+            font-weight: 600;
+        }
+        QSplitter#roofEditorSplitter::handle {
+            background: #e6ebf1;
+            width: 8px;
+        }
+        QListWidget#roofTabFacetList, QListWidget#roofTabLineList {
+            min-height: 120px;
+        }
+        QFrame#roofHelpSection, QFrame#roofHelpMiniCard {
+            background: #ffffff;
+            border: 1px solid #d7dbe0;
+            border-radius: 12px;
+        }
+        QFrame#roofHelpSection[roofHelpFocus="true"] {
+            border: 2px solid #4f87c2;
         }
         """)

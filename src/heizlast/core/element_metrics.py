@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Dict, List
 from ..domain.models import ElementModel
 
-from ..domain.models import RoomModel, ElementModel
+from ..domain.models import RoomModel
 from .element_access import element_belongs_to_room, element_axis_length_from_geometry
 
 

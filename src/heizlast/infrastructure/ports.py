@@ -3,7 +3,7 @@ from pathlib import Path
 from typing import List, Protocol, Tuple
 from ..domain.models import ElementModel
 
-from ..domain.models import RoomModel, ElementModel
+from ..domain.models import RoomModel
 from ..configs.project_config import ProjectCfg
 
 

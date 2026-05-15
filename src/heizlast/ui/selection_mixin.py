@@ -11,7 +11,7 @@ from PySide6.QtGui import QPen
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QListWidgetItem
 
-from ..domain.models import ElementModel, RoomModel
+from ..domain.models import ElementModel
 
 class MainWindowSelectionMixin:
     def _on_scene_selection_changed(self, floor: str):

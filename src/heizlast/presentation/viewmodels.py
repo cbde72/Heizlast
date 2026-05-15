@@ -2,13 +2,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Iterable, List, Optional
+
+from ..core.element_metrics import ElementMetricsService
 from ..domain.models import ElementModel
-
-from PySide6.QtCore import Qt
-
-from ..models import ElementModel
-from ..element_metrics import ElementMetricsService
-
 
 @dataclass(frozen=True)
 class ElementListRow:

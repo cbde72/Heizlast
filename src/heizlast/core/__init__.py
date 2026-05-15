@@ -42,6 +42,11 @@ try:
 except Exception:  # pragma: no cover
     pass
 
+try:
+    from .dormer_geometry import DormerGeometry, DormerInput, DormerResult, RoofContext
+except Exception:  # pragma: no cover
+    pass
+
 from .polygon_ops import snap_m, parse_polygon_m, serialize_polygon_m
 
 
@@ -62,6 +67,10 @@ __all__ = [
     "calc_heatloads",
     "ensure_auto_decks",
     "AtticGeometry",
+    "DormerGeometry",
+    "DormerInput",
+    "DormerResult",
+    "RoofContext",
     "snap_m",
     "parse_polygon_m",
     "serialize_polygon_m",

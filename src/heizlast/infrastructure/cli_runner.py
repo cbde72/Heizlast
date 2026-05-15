@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
-import sys
 
 from ..core.config import CSV_DELIMITER, VentilationCfg
 from ..core.csv_io import load_rooms, load_elements

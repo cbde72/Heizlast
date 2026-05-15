@@ -25,7 +25,7 @@ from reportlab.platypus.tableofcontents import TableOfContents
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.enums import TA_LEFT
 
-from ..domain.models import RoomModel, ElementModel
+from ..domain.models import RoomModel
 from ..core.config import (
     CSV_DELIMITER, HEATMAP_CAP_W_PER_M2, ELEMENT_STYLES,
     VentilationCfg, ProjectCfg, resolve_t_out_c

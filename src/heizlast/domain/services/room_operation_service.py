@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import dataclass
-from typing import Callable, Dict, Iterable, List, Optional, Sequence
+from typing import Dict, Iterable, List, Optional, Sequence
 
 from ...core.geometry import merge_room_polygons, room_polygon, split_room_polygon, subtract_room_polygons
 from ...core.room_ops import reassign_elements_after_room_operation, stable_split_room_id
-from ...core.polygon_ops import polygon_area, polygon_bbox, rect_to_polygon, serialize_polygon_m, validate_orthogonal_polygon
+from ...core.polygon_ops import polygon_bbox, rect_to_polygon, serialize_polygon_m, validate_orthogonal_polygon
 from ..house_state import HouseState
 from ..models import ElementModel, RoomModel
 from .house_domain_service import BuildAutoWallsFn, HouseDomainService

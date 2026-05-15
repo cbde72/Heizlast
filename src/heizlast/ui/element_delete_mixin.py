@@ -1,4 +1,3 @@
-from typing import List, Optional
 from PySide6.QtCore import Qt
 from ..core.element_metrics import ElementMetricsService
 from ..core.element_access import meta_rooms

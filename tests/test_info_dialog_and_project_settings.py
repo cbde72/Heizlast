@@ -3,10 +3,11 @@ from pathlib import Path
 
 def test_help_menu_contains_info_action_and_dialog():
     root = Path(__file__).resolve().parents[1]
-    src = (root / "src" / "heizlast" / "ui" / "build_mixin.py").read_text(encoding="utf-8")
-    assert 'm_help = mbar.addMenu("&Hilfe")' in src
-    assert '"Info…"' in src
-    assert 'InfoDialog(self)' in src
+    build_src = (root / "src" / "heizlast" / "ui" / "build_mixin.py").read_text(encoding="utf-8")
+    misc_src = (root / "src" / "heizlast" / "ui" / "misc_mixin.py").read_text(encoding="utf-8")
+    assert 'm_help = mbar.addMenu("&Hilfe")' in build_src
+    assert '"Info…"' in build_src
+    assert 'InfoDialog(' in misc_src
 
 
 def test_info_dialog_mentions_features_and_din_reference():

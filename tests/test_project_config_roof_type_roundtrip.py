@@ -1,3 +1,4 @@
+from heizlast import PROJECT_SCHEMA_VERSION
 from heizlast.configs.project_config import ProjectCfg
 
 
@@ -13,7 +14,7 @@ def test_project_config_roof_type_roundtrip_and_upgrade():
         },
     }
     cfg = ProjectCfg.from_json_dict(legacy)
-    assert cfg.cfg_version == 10
+    assert cfg.cfg_version == PROJECT_SCHEMA_VERSION
     assert cfg.attic.roof_type == "satteldach"
 
     cfg.attic.roof_type = "walmdach"

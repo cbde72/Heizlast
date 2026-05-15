@@ -30,12 +30,18 @@ normative Detailmodellierung (ψ-Katalog, Anschlussdetails) ohne passende Eingab
 """
 
 from dataclasses import dataclass
+import os
 import re
 from typing import Dict, List, Literal, Optional, Tuple
 
 from .config import VentilationCfg, DEFAULT_U
 from .ground_model import GroundModelCfg, _effective_ground_temp, _is_ground_element
 from ..domain.models import ElementModel, RoomModel
+
+try:
+    import matplotlib.pyplot as _plt
+except Exception:  # pragma: no cover - optional plotting dependency
+    _plt = None
 
 
 # ---------------------------------------------------------------------------
@@ -1230,7 +1236,6 @@ def calc_heatloads(
             "L_env_out_m": L_env_out,
             "L_env_keller_m": L_env_keller,
             "L_env_oben_m": L_env_oben,
-            "L_env_sum_m": (L_env_out + L_env_keller + L_env_oben),
             "L_env_interzone_m": L_env_interzone,
             "L_env_dachraum_m": L_env_dachraum,
             "L_env_ground_m": L_env_ground,
@@ -1241,8 +1246,6 @@ def calc_heatloads(
             "ground_f_slab": float(ground.f_slab),
             "ground_f_wall": float(ground.f_wall),
             "ground_psi_perimeter_w_mk": float(ground.psi_perimeter_w_mk),
-
-            "w_in_m": geom_in.w_in_m,
         }
 
     # --- Gebäude-Hüllflächen: Summen & Details für Reporting ---

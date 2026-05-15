@@ -1,6 +1,5 @@
 from typing import Any, Dict, List, Optional, Tuple
 from pathlib import Path
-from ..domain.models import RoomModel
 from ..configs.project_config import ProjectCfg
 from ..core.attic_geometry import AtticGeometry
 
@@ -9,8 +8,7 @@ from PySide6.QtWidgets import QGraphicsScene, QMainWindow
 
 from ..core.element_metrics import ElementMetricsService
 from ..domain.models import ElementModel, RoomModel
-from .graphics import PlanView, PX_PER_M, RoomPolygonItem, ElementLineItem, WindowLineItem
-from ..core.polygon_ops import snap_m
+from .graphics import PlanView, RoomPolygonItem, ElementLineItem
 from .build_mixin import MainWindowBuildMixin
 from .load_save_mixin import MainWindowLoadSaveMixin
 from .export_mixin import MainWindowExportMixin
@@ -138,15 +136,23 @@ class MainWindow(
                 roof_overhang_m=float(getattr(attic_cfg, "roof_overhang_m", 0.30) or 0.0),
                 ridge_offset_ratio=float(getattr(attic_cfg, "ridge_offset_ratio", 0.0) or 0.0),
                 pult_rise_side=str(getattr(attic_cfg, "pult_rise_side", "right") or "right").strip().lower(),
+                roof_lines=tuple((str(getattr(line, "kind", "first") or "first"), float(getattr(line, "x1_ratio", 0.0) or 0.0), float(getattr(line, "y1_ratio", 0.0) or 0.0), float(getattr(line, "x2_ratio", 0.0) or 0.0), float(getattr(line, "y2_ratio", 0.0) or 0.0)) for line in list(getattr(attic_cfg, "roof_lines", []) or [])),
             )
         except Exception:
             return None
 
     def _refresh_attic_preview(self) -> None:
+        geom = self._current_attic_geometry()
         panel = getattr(self, "attic_sketch_panel", None)
-        if panel is None:
-            return
-        panel.set_geometry(self._current_attic_geometry())
+        if panel is not None:
+            panel.set_geometry(geom)
+        roof_editor_panel = getattr(self, "roof_editor_preview_panel", None)
+        if roof_editor_panel is not None:
+            roof_editor_panel.set_geometry(geom)
+        if hasattr(self, "_sync_roof_editor_summary"):
+            self._sync_roof_editor_summary()
+        if hasattr(self, "_sync_roof_editor_facet_list"):
+            self._sync_roof_editor_facet_list()
 
     def _export_attic_svg_to(self, path: Path) -> bool:
         geom = self._current_attic_geometry()

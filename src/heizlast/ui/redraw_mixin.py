@@ -13,17 +13,15 @@ except Exception:
             return obj is not None
     shiboken6 = _ShibokenFallback()
 
-from typing import Any, Dict, Optional
 from ..domain.models import RoomModel
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor,QPen
+from PySide6.QtGui import QPen
 
 from ..core.config import VentilationCfg
 from ..core.heatload import calc_heatloads, ensure_auto_decks
 from ..core.attic_auto import rebuild_auto_attic_elements
-from ..domain.models import ElementModel, RoomModel
-from ..presentation.plan_presenter import PlanPresenter
+from ..domain.models import ElementModel
 
 class MainWindowRedrawMixin:
     def _on_room_geometry_changed(self, room: RoomModel):

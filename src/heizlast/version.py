@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 APP_NAME = "Heizlast Tool"
-APP_INTERNAL_VERSION = "25.0.0"
+APP_INTERNAL_VERSION = "32.0.0"
 APP_VERSION_LABEL = f"Version {APP_INTERNAL_VERSION}"
 
 MAIN_FEATURES = [
@@ -11,6 +11,9 @@ MAIN_FEATURES = [
     "Projektparameter für Randbedingungen, Geometrie, Erdreich und Wärmebrücken",
     "PDF-/CSV-/Grundriss-Export und integriertes Reporting",
     "3D-Hausansicht mit drehbarer Darstellung, Materialumschaltung, Dachmaterial und Dach-Profilparametern",
+    "Winkel-/Kehldach für L-förmige Gebäudegrundrisse in der 3D-Ansicht",
+    "Dachlinien-Editor für First-, Grat- und Kehllinien direkt in der Draufsicht",
+    "Echte Dachfacetten-Zerlegung: Dachflächen zwischen First, Grat und Kehle werden als einzelne Polygone berechnet und in Vorschau/3D separat ausgewiesen",
 ]
 
 DIN_CONFORMITY = [

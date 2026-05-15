@@ -1,18 +1,14 @@
-import math
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
 from ..domain.models import RoomModel
 from ..core.polygon_ops import snap_m
 
 from PySide6.QtWidgets import QFileDialog, QMessageBox
 from .dialogs.new_project_dialog import NewProjectDialog
 
-from ..core.config import CSV_DELIMITER, DEFAULT_FACTOR, DEFAULT_U
+from ..core.config import CSV_DELIMITER
 from ..core.csv_io import load_elements, load_rooms, save_elements, save_rooms
 from ..core.element_metrics import ElementMetricsService
-from ..core.geometry import build_auto_walls_shared_merge
 from ..core.heatload import ensure_auto_decks
-from ..domain.models import ElementModel, RoomModel
 from ..configs.project_config import ProjectCfg, load_project_cfg, save_project_cfg
 
 class MainWindowLoadSaveMixin:

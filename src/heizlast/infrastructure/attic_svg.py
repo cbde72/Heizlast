@@ -77,7 +77,7 @@ class AtticSvgRenderer:
             ("Kniestock", f"{geom.knee_wall_height_m:.2f} m"),
             ("Dachneigung", f"{geom.roof_pitch_deg:.1f} °"),
             ("Firstrichtung", "quer" if str(getattr(geom, "ridge_orientation", "length") or "length").strip().lower() == "width" else "längs"),
-            ("Dachüberstand", f"{float(getattr(geom, "roof_overhang_m", 0.0) or 0.0):.2f} m"),
+            ("Dachüberstand", f"{float(getattr(geom, 'roof_overhang_m', 0.0) or 0.0):.2f} m"),
             ("Firsthöhe", f"{geom.total_height_m:.2f} m"),
             ("Dachfläche", f"{geom.roof_area_total_m2:.2f} m²"),
             ("Giebel je Stirnseite", f"{geom.gable_area_total_m2:.2f} m²"),

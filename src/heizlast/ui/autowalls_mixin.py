@@ -7,7 +7,7 @@ except Exception:
             return obj is not None
     shiboken6 = _ShibokenFallback()
 
-from typing import Any, List
+from typing import List
 from ..domain.models import ElementModel
 
 from ..core.geometry import build_auto_walls_shared_merge
