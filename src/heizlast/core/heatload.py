@@ -29,287 +29,51 @@ Das ist *konformitätsnah* als Rechenmodell, ersetzt aber nicht automatisch die
 normative Detailmodellierung (ψ-Katalog, Anschlussdetails) ohne passende Eingabedaten.
 """
 
-from dataclasses import dataclass
-import os
 import re
-from typing import Dict, List, Literal, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
-from .config import VentilationCfg, DEFAULT_U
+from .auto_decks import (
+    DEFAULT_U_DG_GESCHOSSDECKE_W_M2K,
+    DEFAULT_U_EG_GESCHOSSDECKE_W_M2K,
+    DEFAULT_U_KELLERDECKE_W_M2K,
+    ensure_auto_decks,
+)
+from .config import DEFAULT_U, VentilationCfg
+from .floor_area import calc_floor_living_area_by_floor, render_floor_living_area_plot_png
 from .ground_model import GroundModelCfg, _effective_ground_temp, _is_ground_element
+from .heatload_types import (
+    EPS,
+    INNER_WALL_TYPES,
+    OUTER_WALL_TYPES,
+    WALL_THICKNESS_INNER_M,
+    WALL_THICKNESS_OUTER_M,
+    WINDOW_TYPES,
+    FloorAreaMode,
+    RoomInnerGeometry,
+    ThermalBridgeCfg,
+    ThicknessMode,
+    meta_get_float as _meta_get_float,
+)
 from ..domain.models import ElementModel, RoomModel
 
-try:
-    import matplotlib.pyplot as _plt
-except Exception:  # pragma: no cover - optional plotting dependency
-    _plt = None
+__all__ = [
+    "DEFAULT_U_DG_GESCHOSSDECKE_W_M2K",
+    "DEFAULT_U_EG_GESCHOSSDECKE_W_M2K",
+    "DEFAULT_U_KELLERDECKE_W_M2K",
+    "FloorAreaMode",
+    "ThermalBridgeCfg",
+    "ThicknessMode",
+    "calc_floor_living_area_by_floor",
+    "calc_heatloads",
+    "ensure_auto_decks",
+    "render_floor_living_area_plot_png",
+]
 
 
 # ---------------------------------------------------------------------------
-# Grundkonstanten / Typen
+# Public constants/types are imported from heatload_types and auto_decks.
 # ---------------------------------------------------------------------------
 
-EPS = 1e-6
-
-FloorAreaMode = Literal["inner", "outer"]
-ThicknessMode = Literal["half", "full"]
-
-OUTER_WALL_TYPES = {"Aussenwand", "Außenwand"}
-INNER_WALL_TYPES = {"Innenwand"}
-WINDOW_TYPES = {"Fenster"}
-
-# Wanddicken [m] für Innenmaßbestimmung
-WALL_THICKNESS_OUTER_M = 0.455   # 45.5 cm Außenwand
-WALL_THICKNESS_INNER_M = 0.1150  # 11.5 cm Innenwand
-
-# Default-U-Werte für Auto-Decken (kannst du später in GUI parametrieren)
-DEFAULT_U_KELLERDECKE_W_M2K = 0.45
-DEFAULT_U_EG_GESCHOSSDECKE_W_M2K = 0.30   # EG↔DG Zwischendecke
-DEFAULT_U_DG_GESCHOSSDECKE_W_M2K = 0.25   # DG→oben (Dachraum)
-
-
-@dataclass(frozen=True)
-class ThermalBridgeCfg:
-    """
-    Wärmebrücken-Zuschlag (vereinfachtes Modell).
-
-    mode:
-      - "none"    : keine Wärmebrücken
-      - "delta_u" : ΔU-WB Zuschlag auf Hüllfläche: Φ_WB = ΔU · A · ΔT
-      - "psi"     : lineare Wärmebrücken: Φ_WB = Σ ψ·L·ΔT
-      - "percent" : prozentualer Zuschlag: Φ_WB = p · Φ_trans
-
-    delta_u_w_m2k:
-      Typischer grober Ansatz (projektabhängig!). In vielen Praxisfällen wird z.B.
-      0.05 W/(m²K) verwendet — das ist KEIN universeller Normwert, sondern ein
-      vereinfachter Zuschlag, den du projekt-/detailabhängig festlegen musst.
-
-    psi_default_w_mk:
-      Default ψ für ψ-Modus, wenn kein ψ pro Element vorliegt.
-
-    use_element_meta_psi:
-      Wenn True, wird versucht, aus e.meta "psi_w_mk=<...>" zu lesen.
-      Optional kann "psi_L_m=<...>" angegeben werden (sonst compute_length()).
-
-    include_*:
-      Zuschlag auch für Keller/oben (unbeheizt) anwenden.
-    """
-    mode: Literal["none", "delta_u", "psi", "percent"] = "none"
-    delta_u_w_m2k: float = 0.05
-    psi_default_w_mk: float = 0.0
-    percent_of_trans: float = 0.0
-    use_element_meta_psi: bool = True
-    include_out: bool = True
-    include_keller: bool = True
-    include_oben: bool = True
-
-
-@dataclass(frozen=True)
-class RoomInnerGeometry:
-    w_in_m: float
-    h_in_m: float
-    a_in_m2: float
-    v_in_m3: float
-
-
-
-
-# ---------------------------------------------------------------------------
-# Meta parsing (dein bestehendes Format: 'a=b|c=d|...')
-# ---------------------------------------------------------------------------
-
-def _meta_get_float(meta: Optional[str], key: str) -> Optional[float]:
-    if not meta:
-        return None
-    try:
-        parts: Dict[str, str] = {}
-        for kv in str(meta).split("|"):
-            if "=" in kv:
-                k, v = kv.split("=", 1)
-                parts[k.strip()] = v.strip()
-        if key not in parts:
-            return None
-        return float(parts[key])
-    except Exception:
-        return None
-
-
-# ---------------------------------------------------------------------------
-# Auto-Decken-Erzeugung (Schnittstelle bleibt)
-# ---------------------------------------------------------------------------
-
-def ensure_auto_decks(
-    rooms: List[RoomModel],
-    elements: List[ElementModel],
-    *,
-    u_kellerdecke_w_m2k: float = DEFAULT_U_KELLERDECKE_W_M2K,
-    u_eg_geschossdecke_w_m2k: float = DEFAULT_U_EG_GESCHOSSDECKE_W_M2K,
-    u_dg_geschossdecke_w_m2k: float = DEFAULT_U_DG_GESCHOSSDECKE_W_M2K,
-    factor: float = 1.0,
-    update_existing: bool = True,
-) -> None:
-    """
-    Erzeugt Decken-Elemente automatisch, wenn keine elements.csv gepflegt wird.
-
-    Regeln:
-      - EG: Kellerdecke (gegen unbeh. Keller t_keller_c) + Geschossdecke (gegen DG-Temperatur via meta t_adj_c)
-      - DG: Geschossdecke (gegen t_oben_c)
-      - KG: keine automatische Decke
-
-    Duplikatschutz über stabile UID: deck_<roomid>_<KG|DG|OBEN>
-    """
-    # DG-Mitteltemperatur (für EG->DG)
-    dg_temps: List[float] = []
-    for r in rooms:
-        if (getattr(r, "floor", "") or "").strip().upper() == "DG" and getattr(r, "t_inside_c", None) is not None:
-            try:
-                dg_temps.append(float(r.t_inside_c))
-            except Exception:
-                pass
-    t_dg_mean = (sum(dg_temps) / len(dg_temps)) if dg_temps else None
-
-    #existing = {str(getattr(e, "uid", "") or "") for e in elements}
-    by_uid: Dict[str, ElementModel] = {str(getattr(e, "uid", "") or ""): e for e in elements if getattr(e, "uid", None)}
-
-    def _is_auto_deck(e: ElementModel) -> bool:
-        m = (getattr(e, "meta", "") or "")
-        return ("auto_deck=1" in m) or (str(getattr(e, "uid", "") or "").startswith("deck_"))
-
-    def _set_meta_kv(meta: str, key: str, value: Optional[str]) -> str:
-        parts = [p for p in (meta or "").split("|") if p.strip()]
-        out = []
-        found = False
-        for p in parts:
-            if p.startswith(key + "="):
-                found = True
-                if value is not None:
-                    out.append(f"{key}={value}")
-            else:
-                out.append(p)
-        if not found and value is not None:
-            out.append(f"{key}={value}")
-        return "|".join(out)
-
-
-
-    def _add(room: RoomModel, *, uid: str, etype: str, U: float, adj_floor: str, t_adj_c: Optional[float]) -> None:
-#        if uid in existing:
-#            return
-        #
-        if uid in by_uid:
-            if update_existing:
-                e = by_uid[uid]
-                # nur Auto-Decken anfassen, nie manuell angelegte Bauteile überschreiben
-                if _is_auto_deck(e):
-                    e.element_type = etype
-                    e.u_w_m2k = float(U)
-                    e.factor = float(factor)
-                    meta = (getattr(e, "meta", "") or "")
-                    meta = _set_meta_kv(meta, "auto_deck", "1")
-                    meta = _set_meta_kv(meta, "adj_floor", adj_floor)
-                    if t_adj_c is not None:
-                        meta = _set_meta_kv(meta, "t_adj_c", f"{float(t_adj_c):.3f}")
-                    e.meta = meta
-            return
-
-        #
-        A = max(0.0, float(room.w_m or 0.0) * float(room.h_m or 0.0))
-        meta_parts = ["auto_deck=1", f"adj_floor={adj_floor}"]
-        if t_adj_c is not None:
-            meta_parts.append(f"t_adj_c={float(t_adj_c):.3f}")
-        meta = "|".join(meta_parts)
-
-        elements.append(ElementModel(
-            room_id=room.id,
-            element_type=etype,
-            area_m2=A,
-            u_w_m2k=float(U),
-            factor=float(factor),
-            floor=getattr(room, "floor", None),
-            x0_m=None, y0_m=None, x1_m=None, y1_m=None,
-            length_m=None, height_m=None,
-            uid=uid,
-            meta=meta,
-        ))
-
-        by_uid[uid] = elements[-1]
-    #
-    # --- Mehrgeschoss-Kopplung EG -> DG über Grundriss-Überlappung ---
-    #dg_rooms: List[RoomModel] = [
-    #    rr for rr in rooms
-    #    if (getattr(rr, "floor", "") or "").strip().upper() == "DG"
-    #]
-    # neu
-    for r in rooms:
-        fl = (getattr(r, "floor", "") or "").strip().upper()
-        if fl == "EG":
-            _add(r, uid=f"deck_{r.id}_KG", etype="Kellerdecke", U=u_kellerdecke_w_m2k, adj_floor="KG", t_adj_c=None)
-            t_adj = t_dg_mean if t_dg_mean is not None else float(getattr(r, "t_inside_c", 0.0) or 0.0)
-            _add(r, uid=f"deck_{r.id}_DG", etype="Geschossdecke", U=u_eg_geschossdecke_w_m2k, adj_floor="DG", t_adj_c=t_adj)
-        elif fl == "DG":
-            _add(r, uid=f"deck_{r.id}_OBEN", etype="Speicherdecke", U=u_dg_geschossdecke_w_m2k, adj_floor="OBEN", t_adj_c=None)
-            e_top = by_uid.get(f"deck_{r.id}_OBEN")
-            if e_top is not None:
-                meta = (getattr(e_top, "meta", "") or "")
-                meta = _set_meta_kv(meta, "deck_kind", "speicher")
-                e_top.meta = meta
-    # ende neu
-    '''
-    def _rect_intersection_area(a: RoomModel, b: RoomModel) -> float:
-        ax0, ay0 = float(a.x_m), float(a.y_m)
-        ax1, ay1 = ax0 + float(a.w_m), ay0 + float(a.h_m)
-        bx0, by0 = float(b.x_m), float(b.y_m)
-        bx1, by1 = bx0 + float(b.w_m), by0 + float(b.h_m)
-        ix0, iy0 = max(ax0, bx0), max(ay0, by0)
-        ix1, iy1 = min(ax1, bx1), min(ay1, by1)
-        w = ix1 - ix0
-        h = iy1 - iy0
-        return (w * h) if (w > 0 and h > 0) else 0.0
-    def _best_overlapping_dg_room(eg_room: RoomModel) -> Optional[RoomModel]:
-        if not dg_rooms:
-            return None
-        best = None
-        best_a = 0.0
-        a_eg = max(0.0, float(eg_room.w_m) * float(eg_room.h_m))
-        for dg in dg_rooms:
-            a = _rect_intersection_area(eg_room, dg)
-            if a > best_a:
-                best_a = a
-                best = dg
-        # Mindestüberdeckung: 25% der EG-Fläche (konservativ)
-        if a_eg > 1e-9 and (best_a / a_eg) < 0.25:
-            return None
-        return best
-
-    for r in rooms:
-        fl = (getattr(r, "floor", "") or "").strip().upper()
-        if fl == "EG":
-            _add(r, uid=f"deck_{r.id}_KG", etype="Kellerdecke", U=u_kellerdecke_w_m2k, adj_floor="KG", t_adj_c=None)
-            #t_adj = t_dg_mean if t_dg_mean is not None else float(getattr(r, "t_inside_c", 0.0) or 0.0)
-            #_add(r, uid=f"deck_{r.id}_DG", etype="Geschossdecke", U=u_eg_geschossdecke_w_m2k, adj_floor="DG", t_adj_c=t_adj)
-            #
-            dg = _best_overlapping_dg_room(r)
-            if dg is not None and getattr(dg, "t_inside_c", None) is not None:
-                t_adj = float(dg.t_inside_c)
-                _add(r, uid=f"deck_{r.id}_DG", etype="Geschossdecke", U=u_eg_geschossdecke_w_m2k,
-                     adj_floor="DG", t_adj_c=t_adj)
-                # Meta: adj_room_id zusätzlich setzen (nur für Auto-Decken)
-                # -> wir hängen es nach dem _add an, indem wir by_uid updaten
-                try:
-                    e_d = by_uid.get(f"deck_{r.id}_DG")
-                    if e_d is not None:
-                        meta = (getattr(e_d, "meta", "") or "")
-                        meta = _set_meta_kv(meta, "adj_room_id", str(dg.id))
-                        e_d.meta = meta
-                except Exception:
-                    pass
-            else:
-                t_adj = t_dg_mean if t_dg_mean is not None else float(getattr(r, "t_inside_c", 0.0) or 0.0)
-                _add(r, uid=f"deck_{r.id}_DG", etype="Geschossdecke", U=u_eg_geschossdecke_w_m2k, adj_floor="DG", t_adj_c=t_adj)
-            #
-        elif fl == "DG":
-            _add(r, uid=f"deck_{r.id}_OBEN", etype="Geschossdecke", U=u_dg_geschossdecke_w_m2k, adj_floor="OBEN", t_adj_c=None)
-
-'''
 # ---------------------------------------------------------------------------
 # Geometrie-Helfer
 # ---------------------------------------------------------------------------
@@ -1323,160 +1087,3 @@ def calc_heatloads(
         }
 
     return out
-
-
-# ---------------------------------------------------------------------------
-# Public API: Wohnfläche & Volumen je Geschoss (für GUI/Report)
-# ---------------------------------------------------------------------------
-
-def calc_floor_living_area_by_floor(
-    *,
-    rooms: List[RoomModel],
-    results_by_room: Dict[str, dict],
-    thickness_mode: ThicknessMode = "full",
-    area_shrink_factor: float = 1.0,
-) -> Dict[str, object]:
-    """Berechnet Wohnfläche *und* Volumen je Geschoss.
-
-    Wohnfläche je Geschoss = Σ A_in_m2 je Raum des Geschosses.
-    Volumen je Geschoss     = Σ V_in_m3 je Raum des Geschosses.
-
-    A_in_m2 / V_in_m3 werden im Tool pro Raum berechnet und im results_by_room gespeichert.
-    Falls Werte fehlen, wird pauschal über Raum-Außenmaß minus Wandabzug (Außenwanddicke) gefallbackt.
-    """
-    by_floor_A: Dict[str, float] = {}
-    by_floor_V: Dict[str, float] = {}
-    by_room: List[Dict[str, object]] = []
-
-    for r in rooms:
-        fl = str(getattr(r, "floor", "") or "").strip().upper() or "?"
-        rr = results_by_room.get(r.id, {}) if isinstance(results_by_room, dict) else {}
-
-        A_in = None
-        V_in = None
-        try:
-            if isinstance(rr, dict):
-                if rr.get("A_in_m2") is not None:
-                    A_in = float(rr.get("A_in_m2"))
-                if rr.get("V_in_m3") is not None:
-                    V_in = float(rr.get("V_in_m3"))
-        except Exception:
-            A_in = None
-            V_in = None
-
-        if (A_in is None) or (V_in is None):
-            try:
-                w = max(0.0, float(getattr(r, "w_m", 0.0) or 0.0))
-                h = max(0.0, float(getattr(r, "h_m", 0.0) or 0.0))
-                k = 2.0 if str(thickness_mode) == "full" else 1.0
-                w_in = max(0.0, w - k * WALL_THICKNESS_OUTER_M)
-                h_in = max(0.0, h - k * WALL_THICKNESS_OUTER_M)
-                A_fb = (w_in * h_in) * float(area_shrink_factor)
-                if A_in is None:
-                    A_in = A_fb
-                if V_in is None:
-                    hh = max(0.0, float(getattr(r, "height_m", 0.0) or 0.0))
-                    V_in = A_fb * hh
-            except Exception:
-                if A_in is None:
-                    A_in = 0.0
-                if V_in is None:
-                    V_in = 0.0
-
-        by_floor_A[fl] = by_floor_A.get(fl, 0.0) + float(A_in)
-        by_floor_V[fl] = by_floor_V.get(fl, 0.0) + float(V_in)
-
-        by_room.append({
-            "room_id": str(getattr(r, "id", "")),
-            "room": str(getattr(r, "name", "")),
-            "floor": fl,
-            "A_in_m2": float(A_in),
-            "V_in_m3": float(V_in),
-        })
-
-    def _floor_key(f: str):
-        f = (f or "").upper().strip()
-        pri = {"KG": 0, "UG": 0, "EG": 1, "OG": 2, "1.OG": 2, "2.OG": 3, "3.OG": 4, "DG": 9, "OBEN": 10}
-        return (pri.get(f, 50), f)
-
-    floors_sorted = [fl for fl, _ in sorted(by_floor_A.items(), key=lambda kv: _floor_key(kv[0]))]
-    rows = [{"floor": fl, "A_m2": float(by_floor_A.get(fl, 0.0)), "V_m3": float(by_floor_V.get(fl, 0.0))}
-            for fl in floors_sorted]
-
-    return {
-        "by_floor": rows,
-        "total_m2": float(sum(by_floor_A.values())),
-        "total_m3": float(sum(by_floor_V.values())),
-        "by_room": by_room,
-        "meta": {"thickness_mode": str(thickness_mode), "area_shrink_factor": float(area_shrink_factor)},
-    }
-
-
-def render_floor_living_area_plot_png(
-    summary: Dict[str, object],
-    png_path: str,
-    *,
-    title: str = "Wohnfläche & Volumen je Geschoss",
-) -> Optional[str]:
-    """Erzeugt ein Balkendiagramm (PNG) aus summary['by_floor'].
-
-    - Fläche [m²] links
-    - Volumen [m³] rechts (falls vorhanden)
-    """
-    if _plt is None:
-        return None
-    try:
-        rows = (summary or {}).get("by_floor", []) or []
-        floors = [str(r.get("floor", "")) for r in rows]
-        A = [float(r.get("A_m2", 0.0) or 0.0) for r in rows]
-        V = [float(r.get("V_m3", 0.0) or 0.0) for r in rows]
-        if not floors:
-            return None
-
-        os.makedirs(os.path.dirname(png_path) or ".", exist_ok=True)
-
-        fig = _plt.figure(figsize=(6.4, 3.0), dpi=160)
-        ax1 = fig.add_subplot(111)
-
-        import numpy as _np
-        x = _np.arange(len(floors), dtype=float)
-
-        has_V = any(abs(v) > 1e-12 for v in V)
-        if has_V:
-            w = 0.38
-            ax1.bar(x - w/2, A, width=w, label="Wohnfläche [m²]")
-            ax2 = ax1.twinx()
-            ax2.bar(x + w/2, V, width=w, label="Volumen [m³]")
-
-            ax1.set_ylabel("m²")
-            ax2.set_ylabel("m³")
-
-            for i, v in enumerate(A):
-                ax1.text(x[i] - w/2, v, f"{v:.1f}", ha="center", va="bottom", fontsize=8)
-            for i, v in enumerate(V):
-                ax2.text(x[i] + w/2, v, f"{v:.1f}", ha="center", va="bottom", fontsize=8)
-
-            h1, l1 = ax1.get_legend_handles_labels()
-            h2, l2 = ax2.get_legend_handles_labels()
-            ax1.legend(h1 + h2, l1 + l2, loc="upper right", fontsize=8)
-        else:
-            ax1.bar(x, A)
-            ax1.set_ylabel("m²")
-            for i, v in enumerate(A):
-                ax1.text(x[i], v, f"{v:.1f}", ha="center", va="bottom", fontsize=8)
-
-        ax1.set_xticks(x)
-        ax1.set_xticklabels(floors)
-        ax1.set_title(title)
-        ax1.grid(True, axis="y", linestyle=":", linewidth=0.5)
-
-        fig.tight_layout()
-        fig.savefig(png_path)
-        _plt.close(fig)
-        return png_path
-    except Exception:
-        try:
-            _plt.close("all")
-        except Exception:
-            pass
-        return None
