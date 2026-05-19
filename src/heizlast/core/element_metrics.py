@@ -4,7 +4,7 @@ from typing import Dict, List
 from ..domain.models import ElementModel
 
 from ..domain.models import RoomModel
-from .element_access import element_belongs_to_room, element_axis_length_from_geometry
+from .element_access import element_axis_length_from_geometry
 
 
 class ElementMetricsService:
@@ -21,6 +21,7 @@ class ElementMetricsService:
     def __init__(self, rooms: Dict[str, RoomModel], elements: List[ElementModel]):
         self.rooms = rooms
         self.elements = elements
+        self._outer_side_count_cache: dict[tuple[str, str, float], int] | None = None
 
     # ------------------------------------------------------------------
     # Public API
@@ -59,6 +60,10 @@ class ElementMetricsService:
         """Muss aufgerufen werden, wenn MainWindow self.rooms/self.elements ersetzt."""
         self.rooms = rooms
         self.elements = elements
+        self.invalidate_cache()
+
+    def invalidate_cache(self) -> None:
+        self._outer_side_count_cache = None
     # Backwards-compat alias (falls irgendwo noch so aufgerufen wird)
     def apply_autocontour_display_length(self, e: ElementModel) -> None:
         self.apply_autocontour_length_rule(e)
@@ -235,6 +240,7 @@ class ElementMetricsService:
         """Zählt auto_contour-Außenwand-Segmente derselben Raumseite.
         Wenn >=2 -> Seite ist segmentiert.
         """
+        cache = self._outer_side_counts()
         rx0 = float(r.x_m); ry0 = float(r.y_m)
         rx1 = rx0 + float(r.w_m); ry1 = ry0 + float(r.h_m)
 
@@ -261,7 +267,15 @@ class ElementMetricsService:
             else:
                 return 1
 
-        cnt = 0
+        key = (str(getattr(r, "id", "") or ""), side[0], round(float(side[1]), 3))
+        cnt = int(cache.get(key, 0) or 0)
+        return cnt if cnt > 0 else 1
+
+    def _outer_side_counts(self) -> dict[tuple[str, str, float], int]:
+        if self._outer_side_count_cache is not None:
+            return self._outer_side_count_cache
+
+        cache: dict[tuple[str, str, float], int] = {}
         for e in self.elements:
             et = (getattr(e, "element_type", "") or "").lower()
             if ("aussen" not in et and "außen" not in et):
@@ -269,9 +283,11 @@ class ElementMetricsService:
             m = str(getattr(e, "meta", "") or "")
             if "auto_contour" not in m:
                 continue
-            if not element_belongs_to_room(e, r.id):
-                continue
             if not getattr(e, "has_geometry", lambda: False)():
+                continue
+            rid = str(getattr(e, "room_id", "") or "")
+            r = self.rooms.get(rid)
+            if r is None:
                 continue
 
             try:
@@ -280,9 +296,27 @@ class ElementMetricsService:
             except Exception:
                 continue
 
-            if side[0] == "H" and abs(yy1 - yy0) <= 1e-6 and abs(yy0 - side[1]) <= 1e-3:
-                cnt += 1
-            elif side[0] == "V" and abs(xx1 - xx0) <= 1e-6 and abs(xx0 - side[1]) <= 1e-3:
-                cnt += 1
+            rx0 = float(r.x_m)
+            ry0 = float(r.y_m)
+            rx1 = rx0 + float(r.w_m)
+            ry1 = ry0 + float(r.h_m)
+            if abs(yy1 - yy0) <= 1e-6:
+                if abs(yy0 - ry0) <= 1e-3:
+                    key = (rid, "H", round(ry0, 3))
+                elif abs(yy0 - ry1) <= 1e-3:
+                    key = (rid, "H", round(ry1, 3))
+                else:
+                    continue
+            elif abs(xx1 - xx0) <= 1e-6:
+                if abs(xx0 - rx0) <= 1e-3:
+                    key = (rid, "V", round(rx0, 3))
+                elif abs(xx0 - rx1) <= 1e-3:
+                    key = (rid, "V", round(rx1, 3))
+                else:
+                    continue
+            else:
+                continue
+            cache[key] = cache.get(key, 0) + 1
 
-        return cnt if cnt > 0 else 1
+        self._outer_side_count_cache = cache
+        return cache

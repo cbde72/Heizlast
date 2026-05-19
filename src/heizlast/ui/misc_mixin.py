@@ -33,6 +33,7 @@ from .dialogs.wall_elevation_dialog import WallElevationDialog, WallOpeningViewM
 from ..core.wall_openings import wall_openings_for_element
 from .gl_3d_shell_dialog import Shell3DDialog
 from .shell_2d_dialog import Shell2DDialog
+from .house_side_dialog import HouseSideDialog
 
 class MainWindowMiscMixin:
 
@@ -76,12 +77,15 @@ class MainWindowMiscMixin:
         scene_pos = view.mapToScene(event.pos())
         item = view.itemAt(event.pos())
         target_element = None
+        target_room = None
         if item is not None:
             if hasattr(item, "element") and isinstance(getattr(item, "element"), ElementModel):
                 target_element = getattr(item, "element")
             elif hasattr(item, "parentItem") and item.parentItem() is not None and hasattr(item.parentItem(), "element") and isinstance(getattr(item.parentItem(), "element"), ElementModel):
                 target_element = getattr(item.parentItem(), "element")
-        if target_element is None or not self._is_wall_like_element(target_element):
+            elif hasattr(item, "model") and isinstance(getattr(item, "model"), RoomModel):
+                target_room = getattr(item, "model")
+        if target_element is None and target_room is None:
             return False
 
         try:
@@ -93,10 +97,47 @@ class MainWindowMiscMixin:
             pass
 
         menu = QMenu(view)
-        act = menu.addAction("Ansicht")
+        act_view = None
+        act_edit = None
+        act_dup = None
+        act_delete = None
+        if target_room is not None:
+            self._selected_room_id = str(getattr(target_room, "id", "") or "")
+            act_edit = menu.addAction("Raum bearbeiten")
+            act_dup = menu.addAction("Raum duplizieren")
+            act_delete = menu.addAction("Raum löschen")
+        if target_element is not None:
+            act_edit = menu.addAction("Element bearbeiten")
+            if self._is_wall_like_element(target_element):
+                act_view = menu.addAction("Wandansicht")
+            act_delete = menu.addAction("Element löschen")
         chosen = menu.exec(view.mapToGlobal(event.pos()))
-        if chosen is act:
+        if chosen is act_view and target_element is not None:
             self._show_wall_elevation_dialog(target_element)
+            return True
+        if chosen is act_edit and target_element is not None:
+            if self._edit_element_dialog(target_element):
+                self._recompute_and_redraw()
+                self._populate_room_elements_list()
+            return True
+        if chosen is act_edit and target_room is not None:
+            self._selected_room_id = target_room.id
+            self._populate_room_form()
+            return True
+        if chosen is act_dup and target_room is not None:
+            self._duplicate_selected_room()
+            return True
+        if chosen is act_delete and target_element is not None:
+            try:
+                self.elements.remove(target_element)
+            except ValueError:
+                pass
+            self._recompute_and_redraw()
+            self._populate_room_elements_list()
+            return True
+        if chosen is act_delete and target_room is not None:
+            self._selected_room_id = target_room.id
+            self._delete_selected_rooms()
             return True
         return bool(chosen is not None)
 
@@ -885,6 +926,68 @@ class MainWindowMiscMixin:
         scene_data["roof_plan_lines"] = roof_plan_lines
         scene_data["px_per_m"] = 140.0
         return scene_data
+
+    def _collect_house_side_scene_data(self) -> dict:
+        heights = self._collect_floor_heights()
+        kg_h = float(heights.get("KG", 2.40) or 2.40)
+        eg_h = float(heights.get("EG", 2.60) or 2.60)
+        og_h = float(heights.get("DG", 2.50) or 2.50)
+
+        poly_by_floor = self._collect_outer_polygons_by_floor()
+        all_pts = [pt for polys in poly_by_floor.values() for poly in polys for pt in poly]
+        if all_pts:
+            xs = [float(p[0]) for p in all_pts]
+            ys = [float(p[1]) for p in all_pts]
+            building_width = max(3.0, max(xs) - min(xs))
+            building_depth = max(3.0, max(ys) - min(ys))
+        else:
+            attic = getattr(getattr(self, "project_cfg", None), "attic", None)
+            building_width = max(3.0, float(getattr(attic, "building_width_m", 10.0) or 10.0))
+            building_depth = max(3.0, float(getattr(attic, "building_length_m", 10.0) or 10.0))
+
+        roof_type = self._current_roof_type()
+        roof_height = self._roof_peak_height()
+        roof_style = self._roof_material_style()
+        material_style = self._facade_material_style()
+        roof_color = "#b24a3a"
+        facade_color = "#d9ded6"
+        try:
+            rf = roof_style.get("roof_face", (0.70, 0.20, 0.15, 1.0))
+            roof_color = "#{:02x}{:02x}{:02x}".format(int(rf[0] * 255), int(rf[1] * 255), int(rf[2] * 255))
+            wf = material_style.get("wall_face", (0.85, 0.86, 0.82, 1.0))
+            facade_color = "#{:02x}{:02x}{:02x}".format(int(wf[0] * 255), int(wf[1] * 255), int(wf[2] * 255))
+        except Exception:
+            pass
+
+        return {
+            "title": "Haus Seitenansicht",
+            "building_width_m": building_width,
+            "building_depth_m": building_depth,
+            "levels": [
+                {"label": "Keller", "z0_m": -kg_h, "z1_m": 0.0},
+                {"label": "Erdgeschoss", "z0_m": 0.0, "z1_m": eg_h},
+                {"label": "Obergeschoss", "z0_m": eg_h, "z1_m": eg_h + og_h},
+            ],
+            "roof_type": roof_type,
+            "roof_name": f"Dach · {self._roof_display_name(roof_type)}",
+            "roof_height_m": roof_height,
+            "roof_overhang_m": float(self._roof_profile_params().get("roof_overhang_m", 0.30) or 0.30),
+            "roof_color": roof_color,
+            "facade_color": facade_color,
+            "px_per_m": 78.0,
+        }
+
+    def _on_show_house_side_view(self) -> None:
+        scene_data = self._collect_house_side_scene_data()
+        if not scene_data:
+            QMessageBox.warning(self, "Haus Seitenansicht", "Keine Gebäudedaten gefunden.")
+            return
+        dlg = HouseSideDialog(scene_data, parent=self)
+        try:
+            self.statusBar().showMessage("Haus-Seitenansicht geöffnet: Keller, Erdgeschoss, Obergeschoss und Dach.", 7000)
+        except Exception:
+            pass
+        dlg.exec()
 
     def _on_show_2d_shell(self) -> None:
         scene_data = self._collect_shell_2d_scene_data()

@@ -1,17 +1,117 @@
 from pathlib import Path
+from datetime import datetime
 from ..domain.models import RoomModel
 from ..core.polygon_ops import snap_m
 
-from PySide6.QtWidgets import QFileDialog, QMessageBox
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtWidgets import QDialog, QDialogButtonBox, QLabel, QListWidget, QListWidgetItem, QFileDialog, QMessageBox, QPushButton, QVBoxLayout
 from .dialogs.new_project_dialog import NewProjectDialog
 
 from ..core.config import CSV_DELIMITER
 from ..core.csv_io import load_elements, load_rooms, save_elements, save_rooms
 from ..core.element_metrics import ElementMetricsService
-from ..core.heatload import ensure_auto_decks
 from ..configs.project_config import ProjectCfg, load_project_cfg, save_project_cfg
 
 class MainWindowLoadSaveMixin:
+    def _timestamp_slug(self) -> str:
+        return datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    def _write_project_backup(self, reason: str = "backup") -> Path | None:
+        rooms_path = getattr(self, "_project_rooms_path", None)
+        if rooms_path is None:
+            return None
+        base_dir = Path(rooms_path).parent / "_backups"
+        stem = Path(rooms_path).stem
+        stamp = self._timestamp_slug()
+        backup_rooms = base_dir / f"{stem}_{reason}_{stamp}.csv"
+        backup_elements = self._derive_elements_path(backup_rooms)
+        try:
+            base_dir.mkdir(parents=True, exist_ok=True)
+            save_rooms(str(backup_rooms), list(self.rooms.values()), delimiter=CSV_DELIMITER)
+            save_elements(str(backup_elements), self.elements, delimiter=CSV_DELIMITER)
+            cfg_path = self._project_json_path_for_rooms(backup_rooms)
+            save_project_cfg(cfg_path, self.project_cfg)
+            return backup_rooms
+        except Exception:
+            return None
+
+    def _on_save_version(self):
+        """Speichert eine versionierte Kopie im Projektordner."""
+        base = self._project_rooms_path or Path(self._default_project_dir()) / "rooms.csv"
+        version_dir = Path(base).parent / "Versionen"
+        version_name = f"{Path(base).stem}_V{self._timestamp_slug()}.csv"
+        version_path = version_dir / version_name
+        try:
+            version_dir.mkdir(parents=True, exist_ok=True)
+        except Exception as exc:
+            QMessageBox.critical(self, "Version speichern", str(exc))
+            return
+        elements_path = self._derive_elements_path(version_path)
+        try:
+            save_rooms(str(version_path), list(self.rooms.values()), delimiter=CSV_DELIMITER)
+            save_elements(str(elements_path), self.elements, delimiter=CSV_DELIMITER)
+            save_project_cfg(self._project_json_path_for_rooms(version_path), self.project_cfg)
+            self.statusBar().showMessage(f"Version gespeichert: {version_path.name}", 4500)
+        except Exception as exc:
+            QMessageBox.critical(self, "Version speichern", str(exc))
+
+    def _project_management_rows(self) -> list[tuple[str, Path]]:
+        rows: list[tuple[str, Path]] = []
+        for path_text in self._recent_files():
+            path = Path(path_text)
+            rows.append(("Zuletzt", path))
+        base = getattr(self, "_project_rooms_path", None)
+        if base is not None:
+            base_dir = Path(base).parent
+            for folder, label in (("Versionen", "Version"), ("_backups", "Backup")):
+                d = base_dir / folder
+                if d.exists():
+                    for p in sorted(d.glob("*.csv"), key=lambda x: x.stat().st_mtime if x.exists() else 0.0, reverse=True)[:20]:
+                        rows.append((label, p))
+        return rows
+
+    def _on_project_manager(self) -> None:
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Projektverwaltung")
+        lay = QVBoxLayout(dlg)
+        current = getattr(self, "_project_rooms_path", None)
+        title = QLabel(f"Aktuelles Projekt:\n{current or '—'}")
+        title.setWordWrap(True)
+        lay.addWidget(title)
+
+        lst = QListWidget()
+        lst.setToolTip("Zuletzt verwendete Projekte sowie Versionen und Backups des aktuellen Projektordners.")
+        lay.addWidget(lst)
+        rows = self._project_management_rows()
+        for kind, path in rows:
+            status = "vorhanden" if path.exists() else "fehlt"
+            item = QListWidgetItem(f"{kind}: {path.name} · {status}\n{path}")
+            item.setData(Qt.UserRole, str(path))
+            lst.addItem(item)
+
+        if not rows:
+            lst.addItem("Noch keine Projektversionen, Backups oder zuletzt verwendete Projekte.")
+
+        btn_version = QPushButton("Aktuelle Version speichern")
+        btn_version.clicked.connect(self._on_save_version)
+        lay.addWidget(btn_version)
+
+        bb = QDialogButtonBox(QDialogButtonBox.Open | QDialogButtonBox.Close)
+        lay.addWidget(bb)
+
+        def _open_selected() -> None:
+            item = lst.currentItem()
+            path = Path(str(item.data(Qt.UserRole) or "")) if item is not None else None
+            if path and path.exists():
+                dlg.accept()
+                self._open_recent_project(str(path))
+            elif path:
+                QMessageBox.warning(dlg, "Projektverwaltung", f"Datei nicht gefunden:\n{path}")
+
+        bb.accepted.connect(_open_selected)
+        bb.rejected.connect(dlg.reject)
+        dlg.exec()
+
     def _project_json_path_for_rooms(self, rooms_csv_path: Path) -> Path:
         """Erzeugt den Pfad zur Projekt-JSON-Datei."""
         return rooms_csv_path.with_name(f"{rooms_csv_path.stem}.project.json")
@@ -100,16 +200,42 @@ class MainWindowLoadSaveMixin:
             return
         self._load_project_from_path(rooms_path)
 
-    def _show_new_project_dialog(self) -> dict | None:
-        dlg = NewProjectDialog(self, default_dir=str(self._default_project_dir()))
+    def _show_new_project_dialog(self, *, guided_default: bool = True) -> dict | None:
+        dlg = NewProjectDialog(self, default_dir=str(self._default_project_dir()), guided_default=guided_default)
         if dlg.exec() != dlg.DialogCode.Accepted:
             return None
         return dlg.values()
 
-    def _create_new_project_from_dialog(self, *, open_settings_default: bool = False) -> None:
+    def _guided_setup_tabs(self, setup_scope: str) -> list[str]:
+        scope = str(setup_scope or "").strip()
+        if scope == "Nur Normprüfung und U-Werte":
+            return ["Normprüfung", "Auto-Decken"]
+        if scope == "Nur Projektparameter öffnen":
+            return ["Projektinfo"]
+        return ["Normprüfung", "Auto-Decken", "Lüftung", "Erdreich"]
+
+    def _run_project_setup_wizard(self, setup_scope: str) -> None:
+        tabs = self._guided_setup_tabs(setup_scope)
+        for tab in tabs:
+            accepted = self._open_project_settings_dialog(tab)
+            if not accepted:
+                break
+        if hasattr(self, "_show_project_dashboard"):
+            self._show_project_dashboard()
+        try:
+            QMessageBox.information(
+                self,
+                "Projekt-Assistent",
+                "Geführter Start abgeschlossen.\n\n"
+                "Nächste Schritte: Räume zeichnen oder importieren, Nutzung je Raum setzen und anschließend die Normprüfung im Dashboard kontrollieren.",
+            )
+        except Exception:
+            pass
+
+    def _create_new_project_from_dialog(self, *, open_settings_default: bool = False, guided_default: bool = False) -> None:
         if not self._confirm_discard_for_new_project():
             return
-        values = self._show_new_project_dialog()
+        values = self._show_new_project_dialog(guided_default=guided_default)
         if not values:
             return
         self._reset_project_state()
@@ -126,7 +252,9 @@ class MainWindowLoadSaveMixin:
             self._save_to_paths(rooms_path, elements_path)
         else:
             self._update_statusbar_summary()
-        if values.get("open_settings", open_settings_default):
+        if values.get("guided_setup", guided_default):
+            self._run_project_setup_wizard(str(values.get("setup_scope", "")))
+        elif values.get("open_settings", open_settings_default):
             try:
                 self._on_project_settings()
             except Exception:
@@ -215,6 +343,10 @@ class MainWindowLoadSaveMixin:
         """Legt ein neues Projekt an und öffnet direkt die Projektparameter."""
         self._create_new_project_from_dialog(open_settings_default=True)
 
+    def _on_new_project_wizard(self):
+        """Legt ein neues Projekt an und startet den geführten Normstart."""
+        self._create_new_project_from_dialog(open_settings_default=True, guided_default=True)
+
     # ---------------- Auswahl und Formular ----------------
 
     def _normalize_room_geometry(self, r: RoomModel) -> None:
@@ -257,6 +389,41 @@ class MainWindowLoadSaveMixin:
 
     def _load_project_from_path(self, rooms_path: Path) -> bool:
         elements_path = self._derive_elements_path(rooms_path)
+        blocked_scenes = []
+        frozen_views = []
+
+        def _freeze_load_painting() -> None:
+            for name in ("scene_KG", "scene_EG", "scene_DG"):
+                sc = getattr(self, name, None)
+                if sc is None:
+                    continue
+                try:
+                    blocked_scenes.append((sc, sc.signalsBlocked()))
+                    sc.blockSignals(True)
+                except Exception:
+                    pass
+            for name in ("view_KG", "view_EG", "view_DG"):
+                view = getattr(self, name, None)
+                if view is None:
+                    continue
+                try:
+                    frozen_views.append((view, view.updatesEnabled()))
+                    view.setUpdatesEnabled(False)
+                except Exception:
+                    pass
+
+        def _thaw_load_painting() -> None:
+            for sc, was_blocked in reversed(blocked_scenes):
+                try:
+                    sc.blockSignals(bool(was_blocked))
+                except Exception:
+                    pass
+            for view, was_enabled in reversed(frozen_views):
+                try:
+                    view.setUpdatesEnabled(bool(was_enabled))
+                    view.viewport().update()
+                except Exception:
+                    pass
 
         try:
             rooms = load_rooms(str(rooms_path), delimiter=CSV_DELIMITER)
@@ -265,14 +432,14 @@ class MainWindowLoadSaveMixin:
             QMessageBox.critical(self, "Load error", str(e))
             return False
 
-        for r in rooms:
-            try:
-                r.ensure_polygon()
-                self._normalize_room_geometry(r)
-            except Exception:
-                pass
         self.rooms = {r.id: r for r in rooms}
         self.elements = elements
+        self._selected_room_id = None
+        try:
+            if hasattr(self, "list_room_elements"):
+                self.list_room_elements.clear()
+        except Exception:
+            pass
 
         if hasattr(self, "metrics") and self.metrics is not None:
             self.metrics.bind(self.rooms, self.elements)
@@ -301,26 +468,42 @@ class MainWindowLoadSaveMixin:
             self.act_area_ref_outer.setChecked(bool(want_outer))
             self.act_area_ref_outer.blockSignals(False)
 
-        snap = self._snapshot_auto_deck_overrides()
+        _freeze_load_painting()
         try:
-            cfg = self.project_cfg
-            ensure_auto_decks(
-                self.rooms.values(),
-                self.elements,
-                u_kellerdecke_w_m2k=float(cfg.u_kellerdecke_w_m2k),
-                u_eg_geschossdecke_w_m2k=float(cfg.u_eg_geschossdecke_w_m2k),
-                u_dg_geschossdecke_w_m2k=float(cfg.u_dg_geschossdecke_w_m2k),
-            )
-        except Exception:
-            pass
-        self._restore_auto_deck_overrides(snap)
+            self._remember_project_path(rooms_path)
+            self._rebuild_rooms_graphics()
+        finally:
+            _thaw_load_painting()
 
-        self._remember_project_path(rooms_path)
-        self._rebuild_all_graphics()
-        if hasattr(self, "_refresh_attic_preview"):
-            self._refresh_attic_preview()
+        if hasattr(self, "_mark_clean"):
+            self._mark_clean()
         self._update_statusbar_summary()
-        self.statusBar().showMessage(f"Geladen: {rooms_path.name}", 3500)
+        self.statusBar().showMessage(f"Geladen: {rooms_path.name} – Bauteile und DIN werden nachgezogen", 3500)
+
+        def _finish_deferred_load_updates() -> None:
+            if getattr(self, "_project_rooms_path", None) != rooms_path:
+                return
+            try:
+                self._recompute_and_redraw(sync_auto_elements=True, mark_dirty=False, update_din_status=True)
+                self._rebuild_elements_graphics()
+            except Exception:
+                pass
+            try:
+                if hasattr(self, "_refresh_attic_preview"):
+                    self._refresh_attic_preview()
+            except Exception:
+                pass
+            try:
+                if hasattr(self, "_update_din_status_from_results"):
+                    self._update_din_status_from_results()
+            except Exception:
+                pass
+            try:
+                self._update_statusbar_summary()
+            except Exception:
+                pass
+
+        QTimer.singleShot(100, _finish_deferred_load_updates)
         return True
 
     def _save_to_paths(self, rooms_path: Path, elements_path: Path) -> bool:
@@ -339,6 +522,8 @@ class MainWindowLoadSaveMixin:
                 pass
 
             self._update_statusbar_summary()
+            if hasattr(self, "_mark_clean"):
+                self._mark_clean()
             self.statusBar().showMessage(f"Gespeichert: {rooms_path.name}", 3500)
             return True
         except Exception as e:
@@ -356,6 +541,7 @@ class MainWindowLoadSaveMixin:
 
     def _on_save_as(self):
         """Speichert die Daten unter einem neuen Namen."""
+        self._write_project_backup("before_save_as")
         start_dir = str(self._default_project_dir())
         start_name = str(self._project_rooms_path) if self._project_rooms_path else str(Path(start_dir) / "rooms.csv")
         path, _ = QFileDialog.getSaveFileName(self, "CSV speichern unter… (rooms)", start_name, "CSV (*.csv)")

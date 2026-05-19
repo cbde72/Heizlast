@@ -19,7 +19,10 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QPen
 
 from ..core.config import VentilationCfg
+from ..core.din_status import din_status_summary
+from ..core.ground_model import GroundModelCfg
 from ..core.heatload import calc_heatloads, ensure_auto_decks
+from ..core.heatload_types import ThermalBridgeCfg
 from ..core.attic_auto import rebuild_auto_attic_elements
 from ..domain.models import ElementModel
 
@@ -44,46 +47,68 @@ class MainWindowRedrawMixin:
 
     # ---------------- Neuberechnung und Zeichnung ----------------
 
-    def _recompute_and_redraw(self):
+    def _recompute_and_redraw(self, *, sync_auto_elements: bool = True, mark_dirty: bool = True, update_din_status: bool = True):
         """Berechnet die Heizlast neu und aktualisiert die Anzeige."""
         vent_cfg = getattr(self, "vent_cfg", None) or VentilationCfg()
         cfg = self.project_cfg
         area_mode = cfg.floor_area_mode
 
-        snap = self._snapshot_auto_deck_overrides()
-        try:
-            ensure_auto_decks(
-                self.rooms.values(),
-                self.elements,
-                u_kellerdecke_w_m2k=float(cfg.u_kellerdecke_w_m2k),
-                u_eg_geschossdecke_w_m2k=float(cfg.u_eg_geschossdecke_w_m2k),
-                u_dg_geschossdecke_w_m2k=float(cfg.u_dg_geschossdecke_w_m2k),
-            )
-        except Exception:
-            pass
-        self._restore_auto_deck_overrides(snap)
-
-        prev_attic_sig = tuple(sorted(str(getattr(e, "uid", "") or "") for e in self.elements if str(getattr(e, "uid", "") or "").startswith("auto_attic_")))
-        try:
-            rebuild_auto_attic_elements(
-                rooms=list(self.rooms.values()),
-                elements=self.elements,
-                attic_cfg=cfg.attic,
-            )
-        except Exception:
-            pass
-        new_attic_sig = tuple(sorted(str(getattr(e, "uid", "") or "") for e in self.elements if str(getattr(e, "uid", "") or "").startswith("auto_attic_")))
-        if new_attic_sig != prev_attic_sig:
+        if sync_auto_elements:
+            snap = self._snapshot_auto_deck_overrides()
             try:
-                self._rebuild_elements_graphics()
+                ensure_auto_decks(
+                    self.rooms.values(),
+                    self.elements,
+                    u_kellerdecke_w_m2k=float(cfg.u_kellerdecke_w_m2k),
+                    u_eg_geschossdecke_w_m2k=float(cfg.u_eg_geschossdecke_w_m2k),
+                    u_dg_geschossdecke_w_m2k=float(cfg.u_dg_geschossdecke_w_m2k),
+                )
             except Exception:
                 pass
+            self._restore_auto_deck_overrides(snap)
+
+            prev_attic_sig = tuple(sorted(str(getattr(e, "uid", "") or "") for e in self.elements if str(getattr(e, "uid", "") or "").startswith("auto_attic_")))
+            try:
+                rebuild_auto_attic_elements(
+                    rooms=list(self.rooms.values()),
+                    elements=self.elements,
+                    attic_cfg=cfg.attic,
+                )
+            except Exception:
+                pass
+            new_attic_sig = tuple(sorted(str(getattr(e, "uid", "") or "") for e in self.elements if str(getattr(e, "uid", "") or "").startswith("auto_attic_")))
+            if new_attic_sig != prev_attic_sig:
+                try:
+                    self._rebuild_elements_graphics()
+                except Exception:
+                    pass
         results = calc_heatloads(
             list(self.rooms.values()), self.elements, t_out_c=float(cfg.t_out_c),
             vent_cfg=vent_cfg,
             thickness_mode=cfg.thickness_mode,
             area_shrink_factor=float(cfg.area_shrink_factor),
-            floor_area_mode=area_mode
+            floor_area_mode=area_mode,
+            tb_cfg=ThermalBridgeCfg(**cfg.tb.__dict__),
+            ground_cfg=GroundModelCfg(**cfg.ground.__dict__),
+            u_aussenwand_w_m2k=float(getattr(cfg, "u_aussenwand_w_m2k", 0.45)),
+            u_fenster_w_m2k=float(getattr(cfg, "u_fenster_w_m2k", 2.80)),
+            u_tuer_w_m2k=float(getattr(cfg, "u_tuer_w_m2k", 1.80)),
+            reheat_power_w_m2=(float(cfg.reheat_power_w_m2) if bool(getattr(cfg, "reheat_enabled", False)) else 0.0),
+            reheat_duration_h=(float(cfg.reheat_duration_h) if bool(getattr(cfg, "reheat_enabled", False)) else 0.0),
+            reheat_temp_drop_k=(float(cfg.reheat_temp_drop_k) if bool(getattr(cfg, "reheat_enabled", False)) else 0.0),
+            reheat_capacity_wh_m2k=float(getattr(cfg, "reheat_capacity_wh_m2k", 20.0)),
+            u_kellerdecke_w_m2k=float(cfg.u_kellerdecke_w_m2k),
+            u_eg_geschossdecke_w_m2k=float(cfg.u_eg_geschossdecke_w_m2k),
+            u_dg_geschossdecke_w_m2k=float(cfg.u_dg_geschossdecke_w_m2k),
+            u_bodenplatte_w_m2k=float(getattr(cfg, "u_bodenplatte_w_m2k", 0.40)),
+            u_erdberuehrte_wand_w_m2k=float(getattr(cfg, "u_erdberuehrte_wand_w_m2k", 0.60)),
+            ventilation_mode=str(getattr(cfg, "ventilation_mode", "natural")),
+            min_air_change_1ph=float(getattr(cfg, "min_air_change_1ph", 0.0)),
+            infiltration_air_change_1ph=float(getattr(cfg, "infiltration_air_change_1ph", 0.0)),
+            mech_supply_m3h=float(getattr(cfg, "mech_supply_m3h", 0.0)),
+            mech_exhaust_m3h=float(getattr(cfg, "mech_exhaust_m3h", 0.0)),
+            heat_recovery_efficiency=float(getattr(cfg, "heat_recovery_efficiency", 0.0)),
+            sync_auto_decks=False,
         )
 
         for rid, it in self.room_items.items():
@@ -96,8 +121,31 @@ class MainWindowRedrawMixin:
             it.update()
 
         self._last_heatload_results = results
+        if update_din_status:
+            self._update_din_status_from_results(results=results, vent_cfg=vent_cfg)
+        else:
+            self._last_din_status = ("△", "DIN-Ampel wird nach dem Laden aktualisiert.")
         self._apply_room_debug_overlay(results)
         self._update_statusbar_summary()
+        if mark_dirty and hasattr(self, "_mark_dirty"):
+            self._mark_dirty("recompute")
+
+    def _update_din_status_from_results(self, *, results: dict | None = None, vent_cfg: VentilationCfg | None = None) -> None:
+        """Aktualisiert nur die DIN-Ampel; kann nach dem schnellen Laden verzögert laufen."""
+        results = results if results is not None else getattr(self, "_last_heatload_results", None)
+        if not isinstance(results, dict):
+            return
+        vent_cfg = vent_cfg or getattr(self, "vent_cfg", None) or VentilationCfg()
+        try:
+            self._last_din_status = din_status_summary(
+                results=results,
+                project_cfg=self.project_cfg,
+                vent_cfg=vent_cfg,
+                elements=self.elements,
+                rooms=list(self.rooms.values()),
+            )
+        except Exception:
+            self._last_din_status = ("✗", "DIN-Ampel: Rot – Status konnte nicht berechnet werden.")
 
     def _clear_elements_graphics(self):
         """Entfernt alle Element-Grafiken sicher."""
@@ -111,6 +159,10 @@ class MainWindowRedrawMixin:
     def _rebuild_elements_graphics(self):
         """Baut alle Element-Grafiken neu."""
         self._clear_elements_graphics()
+        try:
+            self.metrics.invalidate_cache()
+        except Exception:
+            pass
 
         for e in self.elements:
             if not e.has_geometry():
@@ -248,19 +300,21 @@ class MainWindowRedrawMixin:
             it = RoomPolygonItem(
                 r,
                 heatmap_enabled_cb=lambda: self.heatmap_enabled,
-                on_geometry_changed=self._on_room_geometry_changed,
+                on_geometry_changed=None,
             )
+            it.on_geometry_changed = self._on_room_geometry_changed
             sc.addItem(it)
             self.room_items[r.id] = it
 
         # EG-Grundriss im DG als Overlay
         self._rebuild_eg_shadow_in_dg()
 
-    def _rebuild_all_graphics(self):
+    def _rebuild_all_graphics(self, *, recompute: bool = True):
         """Baut alle Grafiken neu."""
         self._rebuild_rooms_graphics()
         self._rebuild_elements_graphics()
-        self._recompute_and_redraw()
+        if recompute:
+            self._recompute_and_redraw()
 
     # ---------------- Element-Bewegungsvorschlag (Snapping) ----------------
 

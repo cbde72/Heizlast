@@ -4,6 +4,7 @@ from PySide6.QtCore import Qt, QSize, QPointF, QTimer, Signal
 from PySide6.QtGui import QAction, QActionGroup, QKeySequence, QShortcut, QIcon, QPainter, QPen, QBrush, QColor, QPolygonF, QPainterPath, QPixmap
 from .attic_sketch import AtticSketchPanel
 from .dialogs.project_settings_dialog import RoofLineEditorWidget
+from ..core.config import ROOM_USAGE_DEFAULTS
 
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -17,8 +18,10 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QListWidget,
+    QMainWindow,
     QPushButton,
     QDialog,
+    QDialogButtonBox,
     QSplitter,
     QGridLayout,
     QScrollArea,
@@ -26,6 +29,7 @@ from PySide6.QtWidgets import (
     QStatusBar,
     QStyle,
     QTabWidget,
+    QTableWidget,
     QToolBar,
     QToolButton,
     QVBoxLayout,
@@ -42,9 +46,65 @@ class RoofExampleCard(QFrame):
         super().mousePressEvent(event)
 
 
+class DockTitleBar(QFrame):
+    def __init__(self, dock: QDockWidget, title: str, subtitle: str = "", badge: str = ""):
+        super().__init__(dock)
+        self.setObjectName("dockTitleBar")
+        self._dock = dock
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(10, 8, 8, 8)
+        lay.setSpacing(8)
+
+        text_box = QWidget(self)
+        text_lay = QVBoxLayout(text_box)
+        text_lay.setContentsMargins(0, 0, 0, 0)
+        text_lay.setSpacing(1)
+        title_lbl = QLabel(title)
+        title_lbl.setObjectName("dockTitle")
+        title_lbl.setMinimumWidth(0)
+        title_lbl.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        text_lay.addWidget(title_lbl)
+        if subtitle:
+            sub_lbl = QLabel(subtitle)
+            sub_lbl.setObjectName("dockSubtitle")
+            sub_lbl.setWordWrap(False)
+            sub_lbl.setMinimumWidth(0)
+            sub_lbl.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+            text_lay.addWidget(sub_lbl)
+        lay.addWidget(text_box, 1)
+
+        if badge:
+            badge_lbl = QLabel(badge)
+            badge_lbl.setObjectName("dockBadge")
+            lay.addWidget(badge_lbl, 0, Qt.AlignVCenter)
+
+        self.btn_float = QToolButton(self)
+        self.btn_float.setObjectName("dockTitleButton")
+        self.btn_float.setText("↗")
+        self.btn_float.setToolTip("Dock abdocken / andocken")
+        self.btn_float.clicked.connect(lambda: dock.setFloating(not dock.isFloating()))
+        lay.addWidget(self.btn_float, 0, Qt.AlignVCenter)
+
+        self.btn_close = QToolButton(self)
+        self.btn_close.setObjectName("dockTitleButton")
+        self.btn_close.setText("×")
+        self.btn_close.setToolTip("Dock ausblenden")
+        self.btn_close.clicked.connect(dock.hide)
+        lay.addWidget(self.btn_close, 0, Qt.AlignVCenter)
+
+
 class MainWindowBuildMixin:
+    _DOCK_MAX_WIDTH = 16777215
+
     def _build_ui(self):
         """Erstellt die Benutzeroberfläche."""
+        self.setDockOptions(
+            self.dockOptions()
+            | QMainWindow.AllowNestedDocks
+            | QMainWindow.AllowTabbedDocks
+            | QMainWindow.GroupedDragging
+            | QMainWindow.AnimatedDocks
+        )
         self._create_menus()
         self._create_toolbars()
         self._create_central_widget()
@@ -57,6 +117,24 @@ class MainWindowBuildMixin:
 
         # Signale erst verbinden, wenn alle Widgets (inkl. DockWidgets) existieren.
         self._connect_signals()
+
+    def _configure_side_dock(self, dock: QDockWidget, min_width: int = 220) -> None:
+        dock.setMinimumWidth(min_width)
+        dock.setMaximumWidth(self._DOCK_MAX_WIDTH)
+        dock.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        widget = dock.widget()
+        if widget is not None:
+            widget.setMinimumWidth(0)
+            widget.setMaximumWidth(self._DOCK_MAX_WIDTH)
+            widget.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
+
+    def _side_dock_widgets(self) -> list[QDockWidget]:
+        names = ("dock_dashboard", "dock_properties", "dock_elements", "dock_attic", "dock_plausibility")
+        return [getattr(self, name) for name in names if hasattr(self, name)]
+
+    def _release_side_dock_width_limits(self) -> None:
+        for dock in self._side_dock_widgets():
+            self._configure_side_dock(dock)
 
     def _std_icon(self, sp):
         return self.style().standardIcon(sp)
@@ -293,7 +371,7 @@ class MainWindowBuildMixin:
             "Info…",
             slot=self._on_show_info_dialog,
             icon=self._toolbar_icon("project_settings"),
-            tip="Versionen, Hauptfunktionen und DIN-Konformität anzeigen",
+            tip="Versionen, Hauptfunktionen und DIN-Prüfstatus anzeigen",
         )
         menu.addAction(self.act_info_dialog)
 
@@ -314,6 +392,12 @@ class MainWindowBuildMixin:
             slot=self._on_new_project_with_settings,
             icon=self._toolbar_icon("new_with_settings"),
             tip="Leeres Projekt anlegen und direkt die Projektparameter öffnen",
+        )
+        self.act_new_project_wizard = self._make_action(
+            "Neues Projekt-Assistent…",
+            slot=self._on_new_project_wizard,
+            icon=self._toolbar_icon("new_with_settings"),
+            tip="Geführter Start: Projekt anlegen und anschließend die wichtigsten Projektparameter durchgehen",
         )
 
         self.act_load = self._make_action(
@@ -355,6 +439,7 @@ class MainWindowBuildMixin:
         m_new.setToolTipsVisible(True)
         m_new.addAction(self.act_new_project)
         m_new.addAction(self.act_new_project_with_settings)
+        m_new.addAction(self.act_new_project_wizard)
 
         self.menu_recent_files = menu.addMenu(self._std_icon(QStyle.SP_DirOpenIcon), "Zuletzt verwendet")
         self.menu_recent_files.setToolTipsVisible(True)
@@ -376,6 +461,42 @@ class MainWindowBuildMixin:
             slot=self._on_project_settings,
             icon=self._toolbar_icon("project_settings"),
             tip="Randbedingungen, Geometrie, Erdreich und Wärmebrücken bearbeiten",
+        )
+        self.act_project_settings_norm = self._make_action(
+            "Normprüfung…",
+            slot=self._on_project_settings_norm,
+            icon=self._toolbar_icon("project_settings"),
+            tip="DIN-Prüfliste und fehlende Quellen direkt öffnen",
+        )
+        self.act_project_settings_u_values = self._make_action(
+            "U-Werte…",
+            slot=self._on_project_settings_u_values,
+            icon=self._toolbar_icon("project_settings"),
+            tip="Projekt-U-Werte für Außenwand, Fenster, Türen, Decken, Boden und Dach öffnen",
+        )
+        self.act_project_settings_ventilation = self._make_action(
+            "Lüftung…",
+            slot=self._on_project_settings_ventilation,
+            icon=self._toolbar_icon("project_settings"),
+            tip="Lüftung, Infiltration, WRG und Aufheizzuschlag öffnen",
+        )
+        self.act_project_settings_ground = self._make_action(
+            "Erdreich…",
+            slot=self._on_project_settings_ground,
+            icon=self._toolbar_icon("project_settings"),
+            tip="Bodenplatte, erdberührte Bauteile und DIN/TS-Faktoren öffnen",
+        )
+        self.act_project_dashboard = self._make_action(
+            "Projekt-Dashboard",
+            slot=self._show_project_dashboard,
+            icon=self._toolbar_icon("project_settings"),
+            tip="Projektstatus, DIN-Ampel, Räume, Bauteile und offene Punkte anzeigen",
+        )
+        self.act_project_manager = self._make_action(
+            "Projektverwaltung…",
+            slot=self._on_project_manager,
+            icon=self._toolbar_icon("open"),
+            tip="Zuletzt verwendete Projekte, Versionen und Backups anzeigen",
         )
         self.act_autowalls = self._make_action(
             "Auto-Wände neu",
@@ -407,6 +528,12 @@ class MainWindowBuildMixin:
             icon=self._toolbar_icon("view_3d"),
             tip="2D-Darstellung der Gebäudehülle mit echter Wanddicke, Öffnungen und Dachlinien in der Draufsicht",
         )
+        self.act_show_house_side = self._make_action(
+            "Haus Seitenansicht",
+            slot=self._on_show_house_side_view,
+            icon=self._toolbar_icon("view_3d"),
+            tip="Seitenansicht des Hauses mit Keller, Erdgeschoss, Obergeschoss und Dach anzeigen",
+        )
         self.act_show_3d_shell_gl = self._make_action(
             "3D Gebäudehülle+",
             slot=self._on_show_3d_shell_gl,
@@ -414,11 +541,19 @@ class MainWindowBuildMixin:
             tip="OpenGL-Darstellung der Gebäudehülle mit echter Wanddicke, Fensterlaibungen und Dach aus Firstlinien",
         )
         menu.addAction(self.act_project_settings)
+        menu.addAction(self.act_project_settings_norm)
+        menu.addAction(self.act_project_dashboard)
+        menu.addAction(self.act_project_manager)
+        menu.addSeparator()
+        menu.addAction(self.act_project_settings_u_values)
+        menu.addAction(self.act_project_settings_ventilation)
+        menu.addAction(self.act_project_settings_ground)
         menu.addSeparator()
         menu.addAction(self.act_autowalls)
         menu.addAction(self.act_auto_keller)
         menu.addAction(self.act_show_3d_floor)
         menu.addAction(self.act_show_2d_shell)
+        menu.addAction(self.act_show_house_side)
         menu.addAction(self.act_show_3d_shell_gl)
         menu.addAction(self.act_show_3d)
 
@@ -451,6 +586,24 @@ class MainWindowBuildMixin:
         self.act_redo_room_op.setShortcutContext(Qt.ApplicationShortcut)
         self.addAction(self.act_redo_room_op)
         menu.addAction(self.act_redo_room_op)
+        menu.addSeparator()
+
+        self.act_comfort_undo = self._make_action(
+            "Änderung rückgängig",
+            slot=self._comfort_undo,
+            shortcut="Ctrl+Alt+Z",
+            icon=self._toolbar_icon("undo"),
+            tip="Letzte Projektänderung per Snapshot rückgängig machen",
+        )
+        self.act_comfort_redo = self._make_action(
+            "Änderung wiederholen",
+            slot=self._comfort_redo,
+            shortcut="Ctrl+Alt+Y",
+            icon=self._toolbar_icon("redo"),
+            tip="Zuletzt rückgängig gemachte Projektänderung wiederholen",
+        )
+        menu.addAction(self.act_comfort_undo)
+        menu.addAction(self.act_comfort_redo)
 
         self._room_tool_group = QActionGroup(self)
         self._room_tool_group.setExclusive(True)
@@ -756,7 +909,14 @@ class MainWindowBuildMixin:
             ]),
             ("Projekt", [
                 self.act_project_settings,
+                self.act_project_settings_norm,
+                self.act_project_dashboard,
+                self.act_project_manager,
+                self.act_project_settings_u_values,
+                self.act_project_settings_ventilation,
+                self.act_project_settings_ground,
                 self.act_auto_keller,
+                self.act_show_house_side,
                 self.act_show_3d_floor,
                 self.act_show_3d_shell_gl,
                 self.act_show_3d,
@@ -774,6 +934,8 @@ class MainWindowBuildMixin:
                 self.act_autowalls_enabled,
             ]),
             ("Bearbeiten", [
+                self.act_comfort_undo,
+                self.act_comfort_redo,
                 self.act_merge_rooms,
                 self.act_subtract_rooms,
                 self.act_delete_selection,
@@ -858,6 +1020,8 @@ class MainWindowBuildMixin:
     def _create_central_widget(self):
         """Erstellt das zentrale Widget nur mit Geschoss-Tabs; Eigenschaften/Elemente liegen in DockWidgets."""
         cw = QWidget()
+        cw.setMinimumWidth(0)
+        cw.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
         self.setCentralWidget(cw)
         root = QVBoxLayout(cw)
         root.setContentsMargins(0, 0, 0, 0)
@@ -870,6 +1034,8 @@ class MainWindowBuildMixin:
         self.tabs = QTabWidget()
         self.tabs.setDocumentMode(True)
         self.tabs.setMovable(False)
+        self.tabs.setMinimumWidth(0)
+        self.tabs.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
         self.tabs.addTab(self.view_KG, "Keller")
         self.tabs.addTab(self.view_EG, "EG")
         self.tabs.addTab(self.view_DG, "DG")
@@ -887,45 +1053,22 @@ class MainWindowBuildMixin:
         control_bar = QFrame()
         control_bar.setObjectName("planInfoBar")
         control_bar.setFrameShape(QFrame.NoFrame)
+        control_bar.setMinimumWidth(0)
+        control_bar.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
         control_lay = QHBoxLayout(control_bar)
         control_lay.setContentsMargins(10, 8, 10, 8)
         control_lay.setSpacing(12)
 
         lbl_hint = QLabel("Planansicht")
         lbl_hint.setObjectName("planInfoTitle")
+        lbl_hint.setMinimumWidth(0)
         lbl_sub = QLabel("Auswahlmodus zum Selektieren, dazu Werkzeuge für Rechteck-, L- und Polygonräume, Trennen, Verschmelzen, Subtrahieren und Fenster")
         lbl_sub.setObjectName("planInfoText")
+        lbl_sub.setMinimumWidth(0)
+        lbl_sub.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
 
         control_lay.addWidget(lbl_hint)
         control_lay.addWidget(lbl_sub, 1)
-
-        self.btn_fit_current_view = QPushButton("Ansicht einpassen")
-        self.btn_fit_current_view.setObjectName("fitCurrentViewButton")
-        self.btn_fit_current_view.setIcon(self._toolbar_icon("fit_view"))
-        self.btn_fit_current_view.setToolTip("Zentriert und zoomt auf die aktuelle Skizze der aktiven Geschossansicht")
-        self.btn_fit_current_view.clicked.connect(self._fit_current_plan_view)
-        control_lay.addWidget(self.btn_fit_current_view)
-
-        self.btn_show_current_floor_3d = QPushButton("3D Geschoss")
-        self.btn_show_current_floor_3d.setObjectName("showCurrentFloor3DButton")
-        self.btn_show_current_floor_3d.setIcon(self._toolbar_icon("view_3d"))
-        self.btn_show_current_floor_3d.setToolTip("Öffnet eine 3D-Darstellung der Wände und des Grundrisses des aktiven Geschosses")
-        self.btn_show_current_floor_3d.clicked.connect(self._on_show_3d_floor)
-        control_lay.addWidget(self.btn_show_current_floor_3d)
-
-        self.btn_show_shell_2d = QPushButton("2D Hülle+")
-        self.btn_show_shell_2d.setObjectName("showShell2DButton")
-        self.btn_show_shell_2d.setIcon(self._toolbar_icon("view_3d"))
-        self.btn_show_shell_2d.setToolTip("2D-Draufsicht der Gebäudehülle mit Wanddicke, Öffnungen und Dachlinien")
-        self.btn_show_shell_2d.clicked.connect(self._on_show_2d_shell)
-        control_lay.addWidget(self.btn_show_shell_2d)
-
-        self.btn_show_shell_3d_gl = QPushButton("3D Hülle+")
-        self.btn_show_shell_3d_gl.setObjectName("showShell3DOpenGLButton")
-        self.btn_show_shell_3d_gl.setIcon(self._toolbar_icon("view_3d"))
-        self.btn_show_shell_3d_gl.setToolTip("OpenGL-3D der Gebäudehülle mit Wanddicke, Fensterlaibungen und Dach aus Firstlinien")
-        self.btn_show_shell_3d_gl.clicked.connect(self._on_show_3d_shell_gl)
-        control_lay.addWidget(self.btn_show_shell_3d_gl)
 
         left.addWidget(control_bar)
 
@@ -976,19 +1119,54 @@ class MainWindowBuildMixin:
         summary_grid.addWidget(self._create_roof_editor_metric_card("Gesamthöhe", self.lbl_roof_metric_height, "roofMetricHeightCard"), 0, 3)
         root.addWidget(summary_wrap)
 
+        balance_wrap = QFrame()
+        balance_wrap.setObjectName("roofEditorBalanceWrap")
+        balance_grid = QGridLayout(balance_wrap)
+        balance_grid.setContentsMargins(12, 10, 12, 10)
+        balance_grid.setHorizontalSpacing(16)
+        balance_grid.setVerticalSpacing(6)
+        balance_title = QLabel("Live-Bilanz")
+        balance_title.setObjectName("roofEditorSectionTitle")
+        balance_grid.addWidget(balance_title, 0, 0, 1, 4)
+        self.lbl_roof_balance_gross = QLabel("–")
+        self.lbl_roof_balance_openings = QLabel("–")
+        self.lbl_roof_balance_effective = QLabel("–")
+        self.lbl_roof_balance_heat = QLabel("–")
+        for col, (title, label) in enumerate((
+            ("Dach brutto", self.lbl_roof_balance_gross),
+            ("Öffnungen", self.lbl_roof_balance_openings),
+            ("Dach wirksam", self.lbl_roof_balance_effective),
+            ("Dach Φ", self.lbl_roof_balance_heat),
+        )):
+            t = QLabel(title)
+            t.setObjectName("roofEditorMetricTitle")
+            label.setObjectName("roofEditorMetricValue")
+            balance_grid.addWidget(t, 1, col)
+            balance_grid.addWidget(label, 2, col)
+        self.lbl_roof_validation = QLabel("–")
+        self.lbl_roof_validation.setObjectName("roofEditorValidation")
+        self.lbl_roof_validation.setWordWrap(True)
+        balance_grid.addWidget(self.lbl_roof_validation, 3, 0, 1, 4)
+        root.addWidget(balance_wrap)
+
         content_splitter = QSplitter(Qt.Horizontal, page)
         content_splitter.setObjectName("roofEditorSplitter")
         content_splitter.setChildrenCollapsible(False)
+        content_splitter.setOpaqueResize(True)
         root.addWidget(content_splitter, 1)
 
         left_wrap = QFrame()
         left_wrap.setObjectName("roofEditorParamWrap")
-        left_wrap.setMinimumWidth(320)
-        left_wrap.setMaximumWidth(380)
+        left_wrap.setMinimumWidth(280)
+        left_wrap.setMaximumWidth(520)
+        left_wrap.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
         left_lay = QVBoxLayout(left_wrap)
         left_lay.setContentsMargins(0, 0, 0, 0)
         left_lay.setSpacing(12)
         content_splitter.addWidget(left_wrap)
+        self.roof_editor_param_tabs = QTabWidget()
+        self.roof_editor_param_tabs.setObjectName("roofEditorParamTabs")
+        left_lay.addWidget(self.roof_editor_param_tabs, 1)
 
         form_wrap = QFrame()
         form_wrap.setObjectName("roofEditorFormWrap")
@@ -1040,7 +1218,7 @@ class MainWindowBuildMixin:
         form.addRow("Kniestock", self._wrap_roof_editor_field_with_help(self.sp_roof_tab_knee, "knee", "Hilfe zum Kniestock öffnen"))
         form.addRow("Dachüberstand", self._wrap_roof_editor_field_with_help(self.sp_roof_tab_overhang, "overhang", "Hilfe zum Dachüberstand öffnen"))
         form_lay.addLayout(form)
-        left_lay.addWidget(form_wrap)
+        self.roof_editor_param_tabs.addTab(form_wrap, "Geometrie")
 
         dormer_wrap = QFrame()
         dormer_wrap.setObjectName("roofEditorDormerWrap")
@@ -1089,12 +1267,17 @@ class MainWindowBuildMixin:
         self.btn_roof_tab_draw_dormer.setToolTip("CAD-Modus: Im Dachplan klicken und ziehen, um die Breite einer neuen Gaube direkt grafisch aufzuziehen.")
         self.btn_roof_tab_draw_dormer.toggled.connect(self._on_toggle_roof_editor_dormer_draw_mode)
         mode_row.addWidget(self.btn_roof_tab_draw_dormer)
+        self.btn_roof_tab_place_window = QPushButton("Dachfenster platzieren")
+        self.btn_roof_tab_place_window.setCheckable(True)
+        self.btn_roof_tab_place_window.setToolTip("Aktiviert die grafische Dachfenster-Platzierung im Dachplan. Jeder Klick fügt ein Dachfenster auf der gewählten Dachseite hinzu.")
+        self.btn_roof_tab_place_window.toggled.connect(self._on_toggle_roof_editor_window_place_mode)
+        mode_row.addWidget(self.btn_roof_tab_place_window)
         dormer_lay.addLayout(mode_row)
         self.lbl_roof_dormer_place_hint = QLabel("Tipp: 'Gaube zeichnen' für Click+Drag-Erzeugung verwenden oder 'Grafisch platzieren' für Klickplatzierung, Verschieben und Resize der markierten Gaube.")
         self.lbl_roof_dormer_place_hint.setWordWrap(True)
         self.lbl_roof_dormer_place_hint.setObjectName("roofEditorText")
         dormer_lay.addWidget(self.lbl_roof_dormer_place_hint)
-        left_lay.addWidget(dormer_wrap)
+        self.roof_editor_param_tabs.addTab(dormer_wrap, "Gauben")
 
         actions_wrap = QFrame()
         actions_wrap.setObjectName("roofEditorActionsWrap")
@@ -1104,7 +1287,7 @@ class MainWindowBuildMixin:
         actions_title = QLabel("Aktionen")
         actions_title.setObjectName("roofEditorSectionTitle")
         actions_lay.addWidget(actions_title)
-        self.btn_roof_tab_open_settings = QPushButton("Projektparameter")
+        self.btn_roof_tab_open_settings = QPushButton("Weitere Projektparameter")
         self.btn_roof_tab_open_settings.clicked.connect(self._on_attic_project_settings)
         actions_lay.addWidget(self.btn_roof_tab_open_settings)
         self.btn_roof_tab_to_dg = QPushButton("Zum DG")
@@ -1120,8 +1303,7 @@ class MainWindowBuildMixin:
         actions_hint.setWordWrap(True)
         actions_hint.setObjectName("roofEditorText")
         actions_lay.addWidget(actions_hint)
-        left_lay.addWidget(actions_wrap)
-        left_lay.addStretch(1)
+        self.roof_editor_param_tabs.addTab(actions_wrap, "Aktionen")
 
         right_wrap = QWidget()
         right_col = QVBoxLayout(right_wrap)
@@ -1130,10 +1312,16 @@ class MainWindowBuildMixin:
         content_splitter.addWidget(right_wrap)
         content_splitter.setStretchFactor(0, 0)
         content_splitter.setStretchFactor(1, 1)
-        content_splitter.setSizes([340, 760])
+        content_splitter.setSizes([360, 900])
+        self.roof_editor_right_splitter = QSplitter(Qt.Vertical, right_wrap)
+        self.roof_editor_right_splitter.setObjectName("roofEditorRightSplitter")
+        self.roof_editor_right_splitter.setChildrenCollapsible(False)
+        self.roof_editor_right_splitter.setOpaqueResize(True)
+        right_col.addWidget(self.roof_editor_right_splitter, 1)
 
         preview_wrap = QFrame()
         preview_wrap.setObjectName("roofEditorPreviewWrap")
+        preview_wrap.setMinimumHeight(260)
         preview_lay = QVBoxLayout(preview_wrap)
         preview_lay.setContentsMargins(12, 12, 12, 12)
         preview_lay.setSpacing(8)
@@ -1153,8 +1341,10 @@ class MainWindowBuildMixin:
         self.roof_editor_preview_panel.dormerResizeStarted.connect(self._on_roof_editor_dormer_resize_started)
         self.roof_editor_preview_panel.dormerResizeMoved.connect(self._on_roof_editor_dormer_resize_moved)
         self.roof_editor_preview_panel.dormerResizeFinished.connect(self._on_roof_editor_dormer_resize_finished)
+        self.roof_editor_preview_panel.setMinimumHeight(240)
+        self.roof_editor_preview_panel.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         preview_lay.addWidget(self.roof_editor_preview_panel, 1)
-        right_col.addWidget(preview_wrap, 2)
+        self.roof_editor_right_splitter.addWidget(preview_wrap)
 
         facet_wrap = QFrame()
         facet_wrap.setObjectName("roofEditorFacetWrap")
@@ -1178,7 +1368,7 @@ class MainWindowBuildMixin:
         self.lst_roof_tab_facets = QListWidget()
         self.lst_roof_tab_facets.setObjectName("roofTabFacetList")
         facet_lay.addWidget(self.lst_roof_tab_facets, 1)
-        right_col.addWidget(facet_wrap, 1)
+        self.roof_editor_right_splitter.addWidget(facet_wrap)
 
         line_wrap = QFrame()
         line_wrap.setObjectName("roofEditorLineWrap")
@@ -1230,7 +1420,11 @@ class MainWindowBuildMixin:
         btn_col.addStretch(1)
         list_row.addLayout(btn_col)
         line_lay.addLayout(list_row)
-        right_col.addWidget(line_wrap, 1)
+        self.roof_editor_right_splitter.addWidget(line_wrap)
+        self.roof_editor_right_splitter.setStretchFactor(0, 4)
+        self.roof_editor_right_splitter.setStretchFactor(1, 1)
+        self.roof_editor_right_splitter.setStretchFactor(2, 2)
+        self.roof_editor_right_splitter.setSizes([420, 160, 260])
 
         if hasattr(self, "_sync_roof_editor_tab_widgets"):
             self._sync_roof_editor_tab_widgets()
@@ -1255,8 +1449,8 @@ class MainWindowBuildMixin:
             dlg = QDialog(self)
             dlg.setWindowTitle("Dach-Editor")
             dlg.setModal(False)
-            dlg.resize(1200, 860)
-            dlg.setMinimumSize(900, 640)
+            dlg.resize(1280, 820)
+            dlg.setMinimumSize(780, 560)
             lay = QVBoxLayout(dlg)
             lay.setContentsMargins(0, 0, 0, 0)
 
@@ -1273,7 +1467,7 @@ class MainWindowBuildMixin:
             container_lay.setSpacing(0)
 
             self.roof_editor_panel = self._create_roof_editor_panel(container)
-            self.roof_editor_panel.setMinimumSize(1080, 980)
+            self.roof_editor_panel.setMinimumSize(720, 560)
             container_lay.addWidget(self.roof_editor_panel)
             container_lay.addStretch(1)
             scroll.setWidget(container)
@@ -1788,19 +1982,105 @@ class MainWindowBuildMixin:
 
     def _create_docks(self):
         """Erstellt echte DockWidgets für Eigenschaften und Elemente."""
+        dock_features = (
+            QDockWidget.DockWidgetMovable
+            | QDockWidget.DockWidgetFloatable
+            | QDockWidget.DockWidgetClosable
+        )
+        # Projekt-Dashboard
+        self.dock_dashboard = QDockWidget("Projekt-Dashboard", self)
+        self.dock_dashboard.setObjectName("dock_dashboard")
+        self.dock_dashboard.setAllowedAreas(Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea)
+        self.dock_dashboard.setFeatures(dock_features)
+        self.dock_dashboard.setTitleBarWidget(DockTitleBar(self.dock_dashboard, "Projekt-Dashboard", "Status, DIN und offene Punkte", "Projekt"))
+        dashboard_widget = QWidget()
+        dashboard_widget.setMinimumWidth(0)
+        dashboard_widget.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
+        dashboard_lay = QVBoxLayout(dashboard_widget)
+        dashboard_lay.setContentsMargins(8, 8, 8, 8)
+        dashboard_lay.setSpacing(8)
+        self.lbl_dashboard_project = QLabel("Projekt: —")
+        self.lbl_dashboard_project.setWordWrap(True)
+        self.lbl_dashboard_din = QLabel("DIN: —")
+        self.lbl_dashboard_din.setWordWrap(True)
+        self.lbl_dashboard_counts = QLabel("Räume: 0 · Bauteile: 0")
+        self.lbl_dashboard_counts.setWordWrap(True)
+        self.lbl_dashboard_saved = QLabel("Status: —")
+        self.lbl_dashboard_saved.setWordWrap(True)
+        self.lbl_dashboard_workflow = QLabel("Arbeits-Checkliste")
+        self.lbl_dashboard_workflow.setObjectName("panelSectionTitle")
+        self.list_dashboard_workflow = QListWidget()
+        self.list_dashboard_workflow.setObjectName("projectDashboardWorkflow")
+        self.list_dashboard_workflow.setToolTip("Zentrale Projektführung mit direktem Sprung zur passenden Eingabe.")
+        self.list_dashboard_workflow.setMaximumHeight(130)
+        self.list_dashboard_checks = QListWidget()
+        self.list_dashboard_checks.setObjectName("projectDashboardChecks")
+        self.list_dashboard_checks.setToolTip("Projektweite offene Punkte und nächste Korrekturen.")
+        self.lbl_dashboard_room_matrix = QLabel("Raum-Nachweis-Matrix")
+        self.lbl_dashboard_room_matrix.setObjectName("panelSectionTitle")
+        self.tbl_room_norm_matrix = QTableWidget(0, 10)
+        self.tbl_room_norm_matrix.setObjectName("roomNormProofMatrix")
+        self.tbl_room_norm_matrix.setToolTip("Raumweise DIN-Prüfpunkte für Geometrie, Transmission, Lüftung und Nachbarzonen.")
+        self.tbl_room_norm_matrix.setHorizontalHeaderLabels([
+            "Raum", "AW", "Fen.", "Dach", "Decke", "Boden", "WB", "Luft", "Temp.", "Nachbar",
+        ])
+        self.tbl_room_norm_matrix.verticalHeader().setVisible(False)
+        self.tbl_room_norm_matrix.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.tbl_room_norm_matrix.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.tbl_room_norm_matrix.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.tbl_room_norm_matrix.setMaximumHeight(180)
+        self.lbl_dashboard_heat_audit = QLabel("Heizlast-Audit")
+        self.lbl_dashboard_heat_audit.setObjectName("panelSectionTitle")
+        self.list_dashboard_heat_audit = QListWidget()
+        self.list_dashboard_heat_audit.setObjectName("heatloadAuditList")
+        self.list_dashboard_heat_audit.setToolTip("Top-Lasttreiber und Auffälligkeiten bei DG-Dach-/Giebelflächen.")
+        self.list_dashboard_heat_audit.setMaximumHeight(190)
+        btn_row = QWidget()
+        btn_row_lay = QHBoxLayout(btn_row)
+        btn_row_lay.setContentsMargins(0, 0, 0, 0)
+        btn_row_lay.setSpacing(6)
+        self.btn_dashboard_norm = QPushButton("Normprüfung")
+        self.btn_dashboard_save_version = QPushButton("Version speichern")
+        btn_row_lay.addWidget(self.btn_dashboard_norm)
+        btn_row_lay.addWidget(self.btn_dashboard_save_version)
+        dashboard_lay.addWidget(self.lbl_dashboard_project)
+        dashboard_lay.addWidget(self.lbl_dashboard_din)
+        dashboard_lay.addWidget(self.lbl_dashboard_counts)
+        dashboard_lay.addWidget(self.lbl_dashboard_saved)
+        dashboard_lay.addWidget(self.lbl_dashboard_workflow)
+        dashboard_lay.addWidget(self.list_dashboard_workflow)
+        dashboard_lay.addWidget(self.lbl_dashboard_room_matrix)
+        dashboard_lay.addWidget(self.tbl_room_norm_matrix)
+        dashboard_lay.addWidget(self.lbl_dashboard_heat_audit)
+        dashboard_lay.addWidget(self.list_dashboard_heat_audit)
+        dashboard_lay.addWidget(self.list_dashboard_checks, 1)
+        dashboard_lay.addWidget(btn_row)
+        self.dock_dashboard.setWidget(dashboard_widget)
+        self._configure_side_dock(self.dock_dashboard, 240)
+        self.addDockWidget(Qt.RightDockWidgetArea, self.dock_dashboard)
+
         # Eigenschaften
         self.dock_properties = QDockWidget("Eigenschaften", self)
         self.dock_properties.setObjectName("dock_properties")
         self.dock_properties.setAllowedAreas(Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea)
+        self.dock_properties.setFeatures(dock_features)
+        self.dock_properties.setTitleBarWidget(DockTitleBar(self.dock_properties, "Eigenschaften", "Raumdaten und Bezugsfläche", "Raum"))
         prop_scroll = QScrollArea()
         prop_scroll.setWidgetResizable(True)
         prop_scroll.setFrameShape(QFrame.NoFrame)
+        prop_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        prop_scroll.setMinimumWidth(0)
+        prop_scroll.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
         prop_widget = QWidget()
+        prop_widget.setMinimumWidth(0)
+        prop_widget.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         prop_layout = QVBoxLayout(prop_widget)
         prop_layout.setContentsMargins(8, 8, 8, 8)
         prop_layout.addWidget(QLabel("Raum-Eigenschaften (Auswahl):"))
 
         form = QFormLayout()
+        form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+        form.setRowWrapPolicy(QFormLayout.WrapLongRows)
         self._create_room_form_widgets(form)
         prop_layout.addLayout(form)
 
@@ -1816,19 +2096,36 @@ class MainWindowBuildMixin:
         self.btn_apply = QPushButton("Übernehmen")
         self.btn_apply.setIcon(self._std_icon(QStyle.SP_DialogApplyButton))
         prop_layout.addWidget(self.btn_apply)
+        self.lbl_room_norm_status = QLabel("Raumstatus: —")
+        self.lbl_room_norm_status.setWordWrap(True)
+        prop_layout.addWidget(self.lbl_room_norm_status)
         prop_layout.addStretch(1)
         prop_scroll.setWidget(prop_widget)
         self.dock_properties.setWidget(prop_scroll)
+        self._configure_side_dock(self.dock_properties, 220)
         self.addDockWidget(Qt.RightDockWidgetArea, self.dock_properties)
+        self.splitDockWidget(self.dock_dashboard, self.dock_properties, Qt.Vertical)
 
         # Elemente
         self.dock_elements = QDockWidget("Elemente", self)
         self.dock_elements.setObjectName("dock_elements")
         self.dock_elements.setAllowedAreas(Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea)
+        self.dock_elements.setFeatures(dock_features)
+        self.dock_elements.setTitleBarWidget(DockTitleBar(self.dock_elements, "Elemente", "Bauteile des aktiven Raums", "Liste"))
         elem_widget = QWidget()
+        elem_widget.setMinimumWidth(0)
+        elem_widget.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
         elem_layout = QVBoxLayout(elem_widget)
         elem_layout.setContentsMargins(8, 8, 8, 8)
         elem_layout.addWidget(QLabel("Elemente des selektierten Raums:"))
+        self.ed_element_filter = QLineEdit()
+        self.ed_element_filter.setPlaceholderText("Elemente filtern…")
+        self.ed_element_filter.setToolTip("Filtert nach Bauteiltyp, Auto-DG-Marker, Fläche oder U-Wert.")
+        self.ed_element_filter.textChanged.connect(self._filter_room_elements_list)
+        elem_layout.addWidget(self.ed_element_filter)
+        self.btn_element_assistant = QPushButton("Bauteil-Assistent")
+        self.btn_element_assistant.setToolTip("Geführte Eingabe für Bauteiltyp, Randbedingung, U-Wert, Fläche und Quelle.")
+        elem_layout.addWidget(self.btn_element_assistant)
 
         self.list_room_elements = QListWidget()
         self.list_room_elements.setMinimumHeight(200)
@@ -1839,17 +2136,44 @@ class MainWindowBuildMixin:
         elem_layout.addWidget(self.list_room_elements)
 
         self.dock_elements.setWidget(elem_widget)
+        self._configure_side_dock(self.dock_elements, 220)
         self.addDockWidget(Qt.RightDockWidgetArea, self.dock_elements)
         self.splitDockWidget(self.dock_properties, self.dock_elements, Qt.Vertical)
 
         self.dock_attic = QDockWidget("DG Dach / Giebel", self)
         self.dock_attic.setObjectName("dock_attic")
         self.dock_attic.setAllowedAreas(Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea)
+        self.dock_attic.setFeatures(dock_features)
+        self.dock_attic.setTitleBarWidget(DockTitleBar(self.dock_attic, "DG Dach / Giebel", "Live-Skizze und Dachstatus", "Dach"))
         self.attic_sketch_panel = AtticSketchPanel(self)
+        self.attic_sketch_panel.setMinimumHeight(260)
         self.dock_attic.setWidget(self.attic_sketch_panel)
+        self._configure_side_dock(self.dock_attic, 220)
         self.addDockWidget(Qt.RightDockWidgetArea, self.dock_attic)
         self.splitDockWidget(self.dock_elements, self.dock_attic, Qt.Vertical)
-        self.dock_properties.raise_()
+
+        self.dock_plausibility = QDockWidget("Plausibilität", self)
+        self.dock_plausibility.setObjectName("dock_plausibility")
+        self.dock_plausibility.setAllowedAreas(Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea)
+        self.dock_plausibility.setFeatures(dock_features)
+        self.dock_plausibility.setTitleBarWidget(DockTitleBar(self.dock_plausibility, "Plausibilität", "Hinweise und Prüfungen", "Check"))
+        plaus_widget = QWidget()
+        plaus_widget.setMinimumWidth(0)
+        plaus_widget.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
+        plaus_lay = QVBoxLayout(plaus_widget)
+        plaus_lay.setContentsMargins(8, 8, 8, 8)
+        self.list_plausibility = QListWidget()
+        self.list_plausibility.setToolTip("Hinweise und Prüfungen; Klick auf einen Eintrag dient als Merkliste für die nächste Korrektur.")
+        plaus_lay.addWidget(self.list_plausibility)
+        self.dock_plausibility.setWidget(plaus_widget)
+        self._configure_side_dock(self.dock_plausibility, 220)
+        self.addDockWidget(Qt.RightDockWidgetArea, self.dock_plausibility)
+        self.splitDockWidget(self.dock_attic, self.dock_plausibility, Qt.Vertical)
+        self.tabifyDockWidget(self.dock_elements, self.dock_plausibility)
+        self.tabifyDockWidget(self.dock_dashboard, self.dock_properties)
+        self.dock_dashboard.raise_()
+        self.dock_elements.raise_()
+        QTimer.singleShot(0, self._release_side_dock_width_limits)
 
     def _create_statusbar(self):
         """Statusbar mit Projektpfad, Raumanzahl und Heizlast gesamt."""
@@ -1863,11 +2187,13 @@ class MainWindowBuildMixin:
         self.lbl_status_recent = QLabel("Zuletzt: —")
         self.lbl_status_rooms = QLabel("Räume: 0")
         self.lbl_status_heat = QLabel("Heizlast gesamt: 0 W")
+        self.lbl_status_din = QLabel("DIN: —")
 
         sb.addWidget(self.lbl_status_project, 1)
         sb.addPermanentWidget(self.lbl_status_recent)
         sb.addPermanentWidget(self.lbl_status_rooms)
         sb.addPermanentWidget(self.lbl_status_heat)
+        sb.addPermanentWidget(self.lbl_status_din)
 
         self._update_statusbar_summary()
 
@@ -1881,12 +2207,33 @@ class MainWindowBuildMixin:
                         continue
                     total_q += float(rr.get("Q_sum_W", 0.0) or 0.0)
             last_dir = getattr(self, "_last_project_dir", None) or "—"
-            self.lbl_status_project.setText(f"Projekt: {project_path}")
+            dirty = " *" if getattr(self, "_dirty", False) else ""
+            self.lbl_status_project.setText(f"Projekt: {project_path}{dirty}")
             self.lbl_status_recent.setText(f"Ordner: {last_dir}")
             self.lbl_status_rooms.setText(f"Räume: {len(self.rooms)}")
             self.lbl_status_heat.setText(f"Heizlast gesamt: {total_q:,.0f} W".replace(",", "."))
+            din_status = getattr(self, "_last_din_status", None)
+            if isinstance(din_status, tuple) and len(din_status) >= 2:
+                symbol, summary = din_status[0], din_status[1]
+                label = {"✓": "Grün", "△": "Gelb", "✗": "Rot"}.get(str(symbol), "—")
+                self.lbl_status_din.setText(f"DIN: {label}")
+                self.lbl_status_din.setToolTip(str(summary))
+            else:
+                self.lbl_status_din.setText("DIN: —")
+                self.lbl_status_din.setToolTip("DIN-Prüfstatus wird nach der Berechnung angezeigt.")
+            if hasattr(self, "_refresh_project_dashboard"):
+                self._refresh_project_dashboard()
         except Exception:
             pass
+
+    def _show_project_dashboard(self):
+        dock = getattr(self, "dock_dashboard", None)
+        if dock is None:
+            return
+        dock.show()
+        dock.raise_()
+        if hasattr(self, "_refresh_project_dashboard"):
+            self._refresh_project_dashboard()
 
     def _create_right_panel(self):
         """Erstellt das rechte Panel mit Raumeigenschaften."""
@@ -1950,6 +2297,11 @@ class MainWindowBuildMixin:
         self.sp_height.setRange(1.8, 6.0)
         self.sp_height.setDecimals(2)
         self.sp_height.setSingleStep(0.05)
+        self.cb_usage_type = QComboBox()
+        self.cb_usage_type.addItem("Individuell", "")
+        for usage in sorted(ROOM_USAGE_DEFAULTS.keys()):
+            label = str(usage).title().replace("Kueche", "Küche").replace("Hwr", "HWR").replace("Wc", "WC")
+            self.cb_usage_type.addItem(label, usage)
         self.sp_tin = QDoubleSpinBox()
         self.sp_tin.setRange(5, 30)
         self.sp_tin.setDecimals(1)
@@ -1959,6 +2311,22 @@ class MainWindowBuildMixin:
         self.sp_n.setDecimals(2)
         self.sp_n.setSingleStep(0.05)
 
+        for editor in (
+            self.ed_id,
+            self.ed_name,
+            self.cb_floor,
+            self.sp_x,
+            self.sp_y,
+            self.sp_w,
+            self.sp_h,
+            self.sp_height,
+            self.cb_usage_type,
+            self.sp_tin,
+            self.sp_n,
+        ):
+            editor.setMinimumWidth(0)
+            editor.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+
         form.addRow("ID", self.ed_id)
         form.addRow("Name", self.ed_name)
         form.addRow("Geschoss", self.cb_floor)
@@ -1967,6 +2335,7 @@ class MainWindowBuildMixin:
         form.addRow("Länge w [m]", self.sp_w)
         form.addRow("Breite h [m]", self.sp_h)
         form.addRow("Raumhöhe [m]", self.sp_height)
+        form.addRow("Nutzung", self.cb_usage_type)
         form.addRow("T innen [°C]", self.sp_tin)
         form.addRow("n [1/h]", self.sp_n)
 
@@ -1981,12 +2350,26 @@ class MainWindowBuildMixin:
             self.dock_attic.visibilityChanged.connect(self._sync_attic_dock_action)
         if getattr(self, "cb_area_ref_outer", None) is not None:
             self.cb_area_ref_outer.toggled.connect(self._on_toggle_area_ref_outer_action)
+        if getattr(self, "cb_usage_type", None) is not None:
+            self.cb_usage_type.currentIndexChanged.connect(self._on_room_usage_preset_changed)
+        if getattr(self, "btn_dashboard_norm", None) is not None:
+            self.btn_dashboard_norm.clicked.connect(self._on_project_settings_norm)
+        if getattr(self, "btn_dashboard_save_version", None) is not None:
+            self.btn_dashboard_save_version.clicked.connect(self._on_save_version)
+        if getattr(self, "list_dashboard_workflow", None) is not None:
+            self.list_dashboard_workflow.itemClicked.connect(self._on_dashboard_workflow_item_clicked)
+        if getattr(self, "tbl_room_norm_matrix", None) is not None:
+            self.tbl_room_norm_matrix.cellClicked.connect(self._on_room_norm_matrix_cell_clicked)
+        if getattr(self, "list_dashboard_heat_audit", None) is not None:
+            self.list_dashboard_heat_audit.itemClicked.connect(self._on_heat_audit_item_clicked)
+        if getattr(self, "btn_element_assistant", None) is not None:
+            self.btn_element_assistant.clicked.connect(self._on_element_assistant)
         self.btn_apply.clicked.connect(self._apply_room_form)
 
         # Auswahländerungen in den Szenen
-        self.scene_KG.selectionChanged.connect(lambda: self._on_scene_selection_changed("KG"))
-        self.scene_EG.selectionChanged.connect(lambda: self._on_scene_selection_changed("EG"))
-        self.scene_DG.selectionChanged.connect(lambda: self._on_scene_selection_changed("DG"))
+        self.scene_KG.selectionChanged.connect(self._on_scene_selection_changed_kg)
+        self.scene_EG.selectionChanged.connect(self._on_scene_selection_changed_eg)
+        self.scene_DG.selectionChanged.connect(self._on_scene_selection_changed_dg)
 
 
         #
@@ -2066,15 +2449,16 @@ class MainWindowBuildMixin:
             self._last_project_dir = ""
 
         try:
+            was_maximized = self._settings.value("main_was_maximized", True, type=bool)
             geom = self._settings.value("main_geometry")
-            if geom:
+            if geom and not was_maximized:
                 self.restoreGeometry(geom)
             state = self._settings.value("main_state")
             if state:
                 self.restoreState(state)
-            was_maximized = self._settings.value("main_was_maximized", True, type=bool)
             if was_maximized:
                 self.showMaximized()
+            QTimer.singleShot(0, self._release_side_dock_width_limits)
         except Exception:
             pass
 
@@ -2206,8 +2590,10 @@ class MainWindowBuildMixin:
             background: #ffffff;
         }
         QDockWidget {
-            titlebar-close-icon: none;
-            titlebar-normal-icon: none;
+            background: #ffffff;
+            border: 1px solid #d7dbe0;
+            border-radius: 8px;
+            margin: 4px;
         }
         QDockWidget::title {
             background: #ffffff;
@@ -2215,6 +2601,48 @@ class MainWindowBuildMixin:
             padding: 8px 10px;
             text-align: left;
             font-weight: 600;
+        }
+        QFrame#dockTitleBar {
+            background: #ffffff;
+            border-bottom: 1px solid #d7dbe0;
+        }
+        QLabel#dockTitle {
+            color: #1f2937;
+            font-weight: 700;
+            font-size: 12px;
+        }
+        QLabel#dockSubtitle {
+            color: #64748b;
+            font-size: 10px;
+        }
+        QLabel#dockBadge {
+            color: #365f8d;
+            background: #edf3fb;
+            border: 1px solid #c9d8ea;
+            border-radius: 8px;
+            padding: 2px 7px;
+            font-size: 10px;
+            font-weight: 700;
+        }
+        QToolButton#dockTitleButton {
+            background: #f8fafc;
+            border: 1px solid #d7dbe0;
+            border-radius: 7px;
+            padding: 2px 6px;
+            min-width: 18px;
+            color: #334155;
+        }
+        QToolButton#dockTitleButton:hover {
+            background: #edf3fb;
+            border-color: #a8c2df;
+        }
+        QMainWindow::separator {
+            background: #d7dbe0;
+            width: 5px;
+            height: 5px;
+        }
+        QMainWindow::separator:hover {
+            background: #a8c2df;
         }
         QListWidget, QLineEdit, QComboBox, QDoubleSpinBox {
             background: #ffffff;
