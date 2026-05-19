@@ -3,6 +3,8 @@ from ..domain.models import RoomModel
 from PySide6.QtWidgets import QMessageBox, QDialog, QInputDialog
 from ..core.element_metrics import ElementMetricsService
 from ..core.config import DEFAULT_FACTOR, DEFAULT_U
+from ..core.attic_auto import derive_auto_attic_elements
+from ..core.dormer_auto_elements import build_dormer_results_from_attic_cfg, dormer_cutout_area_total
 
 from ..configs.project_config import save_project_cfg, DormerCfgDTO
 from ..domain.models import ElementModel
@@ -180,6 +182,79 @@ class MainWindowSettingsMixin:
             widget = getattr(self, attr, None)
             if widget is not None:
                 widget.setText(value)
+        self._sync_roof_editor_balance()
+        self._sync_roof_editor_validation()
+
+    def _sync_roof_editor_balance(self) -> None:
+        attic = getattr(getattr(self, "project_cfg", None), "attic", None)
+        geom_getter = getattr(self, "_current_attic_geometry", None)
+        geom = geom_getter() if callable(geom_getter) else None
+        values = {
+            "lbl_roof_balance_gross": "–",
+            "lbl_roof_balance_openings": "–",
+            "lbl_roof_balance_effective": "–",
+            "lbl_roof_balance_heat": "–",
+        }
+        if attic is not None and geom is not None:
+            try:
+                roof_window_area = (
+                    max(0, int(getattr(attic, "roof_window_count", 0) or 0))
+                    * max(0.0, float(getattr(attic, "roof_window_width_m", 0.0) or 0.0))
+                    * max(0.0, float(getattr(attic, "roof_window_height_m", 0.0) or 0.0))
+                )
+                try:
+                    dormer_cutout = dormer_cutout_area_total(build_dormer_results_from_attic_cfg(attic))
+                except Exception:
+                    dormer_cutout = 0.0
+                rooms = [r for r in getattr(self, "rooms", {}).values() if str(getattr(r, "floor", "") or "").strip().upper() == "DG"]
+                auto = derive_auto_attic_elements(rooms, attic) if rooms else []
+                effective_roof = sum(
+                    float(getattr(e, "area_m2", 0.0) or 0.0)
+                    for e in auto
+                    if getattr(e, "element_type", "") == "Dach" and not str(getattr(e, "uid", "") or "").startswith("auto_dormer_")
+                )
+                if effective_roof <= 0.0:
+                    effective_roof = max(0.0, float(getattr(geom, "roof_area_total_m2", 0.0)) - roof_window_area - dormer_cutout)
+                roof_phi = sum(
+                    float(getattr(e, "area_m2", 0.0) or 0.0) * float(getattr(e, "u_w_m2k", 0.0) or 0.0) * float(getattr(e, "factor", 1.0) or 1.0)
+                    for e in auto
+                    if getattr(e, "element_type", "") == "Dach"
+                )
+                values["lbl_roof_balance_gross"] = f"{float(getattr(geom, 'roof_area_total_m2', 0.0)):.2f} m²"
+                values["lbl_roof_balance_openings"] = f"-{roof_window_area + dormer_cutout:.2f} m²"
+                values["lbl_roof_balance_effective"] = f"{effective_roof:.2f} m²"
+                values["lbl_roof_balance_heat"] = f"{roof_phi:.1f} W/K"
+            except Exception:
+                pass
+        for attr, value in values.items():
+            widget = getattr(self, attr, None)
+            if widget is not None:
+                widget.setText(value)
+
+    def _sync_roof_editor_validation(self) -> None:
+        attic = getattr(getattr(self, "project_cfg", None), "attic", None)
+        label = getattr(self, "lbl_roof_validation", None)
+        if label is None:
+            return
+        if attic is None or not bool(getattr(attic, "enabled", False)):
+            label.setText("○ DG-Dachprofil ist deaktiviert.")
+            return
+        warnings: list[str] = []
+        errors: list[str] = []
+        if abs(float(getattr(attic, "ridge_offset_ratio", 0.0) or 0.0)) > 1e-9 and getattr(attic, "ridge_height_m", None) is None:
+            warnings.append("Firstversatz ohne explizite Firsthöhe")
+        if str(getattr(attic, "roof_boundary", "outside") or "outside").strip().lower() == "unheated_attic":
+            warnings.append("Dachboden/Abseite: Faktor prüfen")
+        if int(getattr(attic, "roof_window_count", 0) or 0) > 0 and float(getattr(attic, "roof_window_width_m", 0.0) or 0.0) <= 0.0:
+            errors.append("Dachfensterbreite fehlt")
+        if list(getattr(attic, "dormers", []) or []) and str(getattr(attic, "roof_type", "satteldach") or "satteldach").strip().lower() == "flachdach":
+            errors.append("Gauben bei Flachdach deaktivieren")
+        if errors:
+            label.setText("● Prüfen: " + "; ".join(errors + warnings))
+        elif warnings:
+            label.setText("● Hinweis: " + "; ".join(warnings))
+        else:
+            label.setText("● Dach/Giebel-Eingaben vollständig für DIN-nahe Bilanz.")
 
     def _sync_roof_editor_facet_list(self) -> None:
         lst = getattr(self, "lst_roof_tab_facets", None)
@@ -286,7 +361,7 @@ class MainWindowSettingsMixin:
         enabled = attic is not None and roof_type != "flachdach"
         lst = getattr(self, "lst_roof_tab_dormers", None)
         has_selection = lst is not None and lst.currentRow() >= 0
-        for attr, state in (("btn_roof_tab_add_dormer", enabled), ("btn_roof_tab_edit_dormer", enabled and has_selection), ("btn_roof_tab_delete_dormer", enabled and has_selection), ("btn_roof_tab_place_dormer", enabled), ("btn_roof_tab_draw_dormer", enabled)):
+        for attr, state in (("btn_roof_tab_add_dormer", enabled), ("btn_roof_tab_edit_dormer", enabled and has_selection), ("btn_roof_tab_delete_dormer", enabled and has_selection), ("btn_roof_tab_place_dormer", enabled), ("btn_roof_tab_draw_dormer", enabled), ("btn_roof_tab_place_window", enabled)):
             widget = getattr(self, attr, None)
             if widget is not None:
                 widget.setEnabled(bool(state))
@@ -315,6 +390,7 @@ class MainWindowSettingsMixin:
                 other.blockSignals(True)
                 other.setChecked(False)
                 other.blockSignals(False)
+            self._set_roof_editor_window_place_mode(False)
         hint = getattr(self, "lbl_roof_dormer_place_hint", None)
         if hint is not None:
             if bool(active):
@@ -341,6 +417,7 @@ class MainWindowSettingsMixin:
                 other.blockSignals(True)
                 other.setChecked(False)
                 other.blockSignals(False)
+            self._set_roof_editor_window_place_mode(False)
         btn = getattr(self, "btn_roof_tab_place_dormer", None)
         if btn is not None and update_button and btn.isChecked() != bool(active):
             btn.blockSignals(True)
@@ -362,6 +439,27 @@ class MainWindowSettingsMixin:
 
     def _on_toggle_roof_editor_dormer_place_mode(self, checked: bool) -> None:
         self._set_roof_editor_place_mode(bool(checked), update_button=False)
+
+    def _set_roof_editor_window_place_mode(self, active: bool, *, update_button: bool = True) -> None:
+        self._roof_editor_place_window_active = bool(active)
+        if bool(active):
+            self._set_roof_editor_draw_mode(False)
+            self._set_roof_editor_place_mode(False)
+        btn = getattr(self, "btn_roof_tab_place_window", None)
+        if btn is not None and update_button and btn.isChecked() != bool(active):
+            btn.blockSignals(True)
+            btn.setChecked(bool(active))
+            btn.blockSignals(False)
+        hint = getattr(self, "lbl_roof_dormer_place_hint", None)
+        if hint is not None:
+            hint.setText(
+                "Dachfenster-Platzierung aktiv: im Dachplan auf die gewünschte Dachseite klicken."
+                if bool(active) else
+                "Tipp: 'Gaube zeichnen' für Click+Drag-Erzeugung oder 'Grafisch platzieren' für Klickplatzierung, Verschieben und Resize verwenden."
+            )
+
+    def _on_toggle_roof_editor_window_place_mode(self, checked: bool) -> None:
+        self._set_roof_editor_window_place_mode(bool(checked), update_button=False)
 
     def _clamp_roof_editor_dormer_center(self, dormer: DormerCfgDTO, along_m: float) -> float:
         attic = getattr(getattr(self, "project_cfg", None), "attic", None)
@@ -537,6 +635,22 @@ class MainWindowSettingsMixin:
 
     def _on_roof_editor_preview_plan_clicked(self, payload: dict) -> None:
         attic = getattr(getattr(self, "project_cfg", None), "attic", None)
+        if attic is not None and bool(getattr(self, "_roof_editor_place_window_active", False)):
+            side = str((payload or {}).get("side", "right") or "right").strip().lower()
+            previous = str(getattr(attic, "roof_window_side", "right") or "right").strip().lower()
+            active = {"left", "right"} if str(getattr(attic, "ridge_orientation", "length") or "length").strip().lower() == "length" else {"front", "back"}
+            attic.roof_window_count = int(getattr(attic, "roof_window_count", 0) or 0) + 1
+            attic.roof_window_side = side if previous not in active or previous == side or int(getattr(attic, "roof_window_count", 0) or 0) == 1 else "both"
+            self._persist_project_cfg_if_possible()
+            self._recompute_and_redraw()
+            self._refresh_attic_preview()
+            self._sync_roof_editor_tab_widgets()
+            self._set_roof_editor_window_place_mode(False)
+            try:
+                self.statusBar().showMessage(f"Dachfenster eingefügt: {side}", 2500)
+            except Exception:
+                pass
+            return
         if attic is None or bool(getattr(self, "_roof_editor_draw_dormer_active", False)) or not bool(getattr(self, "_roof_editor_place_dormer_active", False)):
             return
         roof_type = str(getattr(attic, "roof_type", "satteldach") or "satteldach").strip().lower()
@@ -888,6 +1002,22 @@ class MainWindowSettingsMixin:
     def _on_project_settings(self):
         """Öffnet den Projekteinstellungen-Dialog."""
         self._open_project_settings_dialog()
+
+    def _on_project_settings_norm(self):
+        """Öffnet die Projektparameter direkt auf der Normprüfung."""
+        self._open_project_settings_dialog("Normprüfung")
+
+    def _on_project_settings_u_values(self):
+        """Öffnet die Projektparameter direkt auf den U-Werten."""
+        self._open_project_settings_dialog("Auto-Decken")
+
+    def _on_project_settings_ventilation(self):
+        """Öffnet die Projektparameter direkt auf der Lüftung."""
+        self._open_project_settings_dialog("Lüftung")
+
+    def _on_project_settings_ground(self):
+        """Öffnet die Projektparameter direkt auf dem Erdreichansatz."""
+        self._open_project_settings_dialog("Erdreich")
 
     def _on_attic_project_settings(self):
         """Öffnet die Projektparameter direkt auf dem Tab DG Dach."""

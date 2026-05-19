@@ -6,13 +6,13 @@ MISC_MIXIN = ROOT / "src" / "heizlast" / "ui" / "misc_mixin.py"
 GL_DIALOG = ROOT / "src" / "heizlast" / "ui" / "gl_3d_shell_dialog.py"
 
 
-def test_project_menu_and_plan_bar_expose_shell_gl_action():
+def test_project_menu_exposes_shell_gl_action_without_plan_bar_button():
     src = BUILD_MIXIN.read_text(encoding="utf-8")
     assert 'self.act_show_3d_shell_gl = self._make_action(' in src
     assert '"3D Gebäudehülle+"' in src
     assert 'menu.addAction(self.act_show_3d_shell_gl)' in src
-    assert 'self.btn_show_shell_3d_gl = QPushButton("3D Hülle+")' in src
-    assert 'self.btn_show_shell_3d_gl.clicked.connect(self._on_show_3d_shell_gl)' in src
+    assert 'self.btn_show_shell_3d_gl = QPushButton("3D Hülle+")' not in src
+    assert 'self.btn_show_shell_3d_gl.clicked.connect(self._on_show_3d_shell_gl)' not in src
 
 
 def test_misc_mixin_contains_shell_gl_scene_builder_and_launcher():

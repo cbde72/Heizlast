@@ -6,6 +6,8 @@ from typing import Iterable, List, Optional, Sequence
 
 from .attic_geometry import AtticGeometry
 from .config import DEFAULT_FACTOR, DEFAULT_U
+from .dormer_auto_elements import build_dormer_results_from_attic_cfg, dormer_to_auto_elements
+from .din_boundary import DIN_BOUNDARY_CONDITIONS
 from .geometry import classify_floor_edge_spans
 from ..domain.models import ElementModel, RoomModel
 from ..configs.project_config import AtticCfgDTO
@@ -24,6 +26,7 @@ class _RoofModel:
     roof_type: str
     ridge_orientation: str
     ridge_offset_ratio: float
+    ridge_height_m: float | None
     pult_rise_side: str
     half_hip_ratio: float = 0.45
     roof_line_area_factor: float = 1.0
@@ -52,6 +55,8 @@ class _RoofModel:
 
     @property
     def rise_m(self) -> float:
+        if self.ridge_height_m is not None:
+            return max(0.0, float(self.ridge_height_m) - float(self.knee_m))
         pitch = math.radians(max(1.0, float(self.pitch_deg)))
         if self.roof_type == "flachdach":
             return 0.12
@@ -106,13 +111,14 @@ def attic_part_display_name(attic_part: str | None) -> str:
         'gable_right': 'gable_right',
         'roof_front': 'roof_front',
         'roof_back': 'roof_back',
+        'roof_window': 'roof_window',
     }
     return mapping.get(str(attic_part or '').strip(), str(attic_part or '').strip())
 
 
 def auto_attic_marker_label(e: ElementModel) -> str:
     meta = parse_attic_meta(getattr(e, 'meta', None))
-    attic_part = attic_part_display_name(meta.get('attic_part', ''))
+    attic_part = attic_part_display_name(meta.get('attic_part', '') or (f"dormer_{meta.get('part', '')}" if "dormer_auto" in str(getattr(e, "meta", "") or "") else ""))
     if attic_part:
         return f'auto_attic | {attic_part}'
     return 'auto_attic'
@@ -121,7 +127,7 @@ def auto_attic_marker_label(e: ElementModel) -> str:
 def is_auto_attic_element(e: ElementModel) -> bool:
     uid = str(getattr(e, "uid", "") or "")
     meta = str(getattr(e, "meta", "") or "")
-    return uid.startswith(AUTO_ATTIC_UID_PREFIX) or "attic_auto" in meta
+    return uid.startswith(AUTO_ATTIC_UID_PREFIX) or uid.startswith("auto_dormer_") or "attic_auto" in meta or "dormer_auto" in meta
 
 
 def remove_auto_attic_elements(elements: Sequence[ElementModel]) -> list[ElementModel]:
@@ -167,6 +173,7 @@ def _build_geom_from_cfg(cfg: AtticCfgDTO) -> Optional[AtticGeometry]:
             eave_overhang_m=float(getattr(cfg, "eave_overhang_m", getattr(cfg, "roof_overhang_m", 0.30)) or 0.0),
             gable_overhang_m=float(getattr(cfg, "gable_overhang_m", getattr(cfg, "roof_overhang_m", 0.30)) or 0.0),
             ridge_offset_ratio=float(getattr(cfg, "ridge_offset_ratio", 0.0) or 0.0),
+            ridge_height_m=(float(getattr(cfg, "ridge_height_m")) if getattr(cfg, "ridge_height_m", None) is not None else None),
             pult_rise_side=str(getattr(cfg, "pult_rise_side", "right") or "right").strip().lower(),
             half_hip_ratio=float(getattr(cfg, "half_hip_ratio", 0.45) or 0.45),
             dormer_type=str(getattr(cfg, "dormer_type", "none") or "none").strip().lower(),
@@ -208,6 +215,7 @@ def _build_roof_model(cfg: AtticCfgDTO) -> _RoofModel:
         roof_type=roof_type,
         ridge_orientation=ridge_orientation,
         ridge_offset_ratio=float(getattr(cfg, "ridge_offset_ratio", 0.0) or 0.0),
+        ridge_height_m=(float(getattr(cfg, "ridge_height_m")) if getattr(cfg, "ridge_height_m", None) is not None else None),
         pult_rise_side=pult_rise_side,
         half_hip_ratio=float(getattr(cfg, "half_hip_ratio", 0.45) or 0.45),
         roof_line_area_factor=1.0 + max(0.0, float(extra_area)) / base_plan,
@@ -305,6 +313,111 @@ def _wall_strip_area(side: str, p0: float, p1: float, model: _RoofModel) -> floa
     return _integrate_linear(lambda s: _side_wall_height(side, s, model), p0, p1, breaks)
 
 
+def _roof_window_specs(cfg: AtticCfgDTO, model: _RoofModel) -> list[dict[str, float | str]]:
+    count = max(0, int(getattr(cfg, "roof_window_count", 0) or 0))
+    if count <= 0 or model.roof_type == "flachdach":
+        return []
+
+    side_raw = str(getattr(cfg, "roof_window_side", "right") or "right").strip().lower()
+    active = ("left", "right") if model.ridge_orientation == "length" else ("front", "back")
+    if side_raw == "both":
+        sides = [active[i % 2] for i in range(count)]
+    elif side_raw in active:
+        sides = [side_raw for _ in range(count)]
+    else:
+        sides = [active[-1] for _ in range(count)]
+
+    width = max(0.3, float(getattr(cfg, "roof_window_width_m", 0.78) or 0.78))
+    height = max(0.4, float(getattr(cfg, "roof_window_height_m", 1.18) or 1.18))
+    usable = max(width, 0.70 * model.along_span_m)
+    start = 0.5 * (model.along_span_m - usable)
+    out: list[dict[str, float | str]] = []
+    for i, side in enumerate(sides):
+        center = start + usable * ((i + 0.5) / count)
+        out.append({
+            "side": side,
+            "center": max(0.0, min(model.along_span_m, center)),
+            "width": width,
+            "area": width * height,
+        })
+    return out
+
+
+def _opening_overlap_share(center_m: float, width_m: float, span0_m: float, span1_m: float) -> float:
+    half = 0.5 * max(0.0, float(width_m))
+    opening0 = float(center_m) - half
+    opening1 = float(center_m) + half
+    span0 = min(float(span0_m), float(span1_m))
+    span1 = max(float(span0_m), float(span1_m))
+    if opening1 <= opening0 or span1 <= span0:
+        return 0.0
+    return max(0.0, min(opening1, span1) - max(opening0, span0)) / (opening1 - opening0)
+
+
+def _subtract_roof_opening(elems: list[ElementModel], *, side: str, center_m: float, width_m: float, area_m2: float, tag: str) -> str | None:
+    target_room: str | None = None
+    opening_area = max(0.0, float(area_m2))
+    for elem in elems:
+        if elem.element_type != "Dach":
+            continue
+        meta = parse_attic_meta(getattr(elem, "meta", None))
+        if meta.get("side") != side:
+            continue
+        try:
+            local0 = float(meta.get("local0", "nan"))
+            local1 = float(meta.get("local1", "nan"))
+        except ValueError:
+            continue
+        share = _opening_overlap_share(center_m, width_m, local0, local1)
+        if share <= EPS:
+            continue
+        delta = min(float(elem.area_m2), opening_area * share)
+        elem.area_m2 = max(0.0, float(elem.area_m2) - delta)
+        elem.meta = f"{elem.meta or ''}|roof_opening_subtract={tag}:{delta:.6f}"
+        target_room = target_room or elem.room_id
+    if target_room is not None:
+        return target_room
+    return next((e.room_id for e in elems if e.element_type == "Dach" and parse_attic_meta(e.meta).get("side") == side), None)
+
+
+def _add_roof_windows(elems: list[ElementModel], cfg: AtticCfgDTO, model: _RoofModel) -> None:
+    win_u = float(DEFAULT_U.get("Fenster", 1.30))
+    for idx, spec in enumerate(_roof_window_specs(cfg, model), 1):
+        side = str(spec["side"])
+        center = float(spec["center"])
+        width = float(spec["width"])
+        area = float(spec["area"])
+        room_id = _subtract_roof_opening(elems, side=side, center_m=center, width_m=width, area_m2=area, tag=f"roof_window_{idx}")
+        if room_id is None:
+            continue
+        elems.append(ElementModel(
+            room_id=room_id,
+            element_type="Fenster",
+            area_m2=area,
+            u_w_m2k=win_u,
+            factor=1.0,
+            floor="DG",
+            uid=f"auto_roof_window_{idx}_{side}_{_fmt_num(center)}",
+            meta=f"attic_auto|attic_part=roof_window|basis=roof_window|side={side}|boundary=outside|center={center:.6f}|width={width:.6f}",
+        ))
+
+
+def _add_dormers(elems: list[ElementModel], cfg: AtticCfgDTO) -> None:
+    try:
+        results = build_dormer_results_from_attic_cfg(cfg)
+    except Exception:
+        return
+    for result in results:
+        side = str(result.input.roof_side)
+        center = float(result.input.center_along_m)
+        width = float(result.input.width_m)
+        cutout = float(result.areas.cutout_main_roof_m2)
+        room_id = _subtract_roof_opening(elems, side=side, center_m=center, width_m=width, area_m2=cutout, tag=f"dormer_{result.input.id}")
+        if room_id is None:
+            room_id = next((e.room_id for e in elems if e.element_type == "Dach"), "DG")
+        elems.extend(dormer_to_auto_elements(result, room_id=room_id, floor="DG"))
+
+
 def derive_auto_attic_elements(dg_rooms: Sequence[RoomModel], attic_cfg: AtticCfgDTO) -> List[ElementModel]:
     geom = _build_geom_from_cfg(attic_cfg)
     if geom is None:
@@ -329,6 +442,12 @@ def derive_auto_attic_elements(dg_rooms: Sequence[RoomModel], attic_cfg: AtticCf
     out: List[ElementModel] = []
     roof_u = float(getattr(attic_cfg, "u_roof_w_m2k", DEFAULT_U.get("Dach", 0.30)) or DEFAULT_U.get("Dach", 0.30))
     gable_u = float(getattr(attic_cfg, "u_gable_w_m2k", DEFAULT_U.get("Außenwand", DEFAULT_U.get("Aussenwand", 0.45))) or DEFAULT_U.get("Außenwand", DEFAULT_U.get("Aussenwand", 0.45)))
+    roof_factor = float(DEFAULT_FACTOR.get('Dach', 1.0))
+    roof_boundary = str(getattr(attic_cfg, "roof_boundary", "outside") or "outside").strip().lower()
+    roof_boundary_key = "attic_unheated" if roof_boundary == "unheated_attic" else "outside"
+    if roof_boundary_key == "attic_unheated":
+        default_factor = DIN_BOUNDARY_CONDITIONS["attic_unheated"].factor
+        roof_factor *= max(0.0, float(getattr(attic_cfg, "roof_unheated_factor", default_factor) or default_factor))
 
     for s in spans:
         if s.element_type != 'Aussenwand':
@@ -354,7 +473,7 @@ def derive_auto_attic_elements(dg_rooms: Sequence[RoomModel], attic_cfg: AtticCf
                 etype = 'Dach'
                 part = f'roof_{side}'
                 u_val = roof_u
-                factor = float(DEFAULT_FACTOR.get('Dach', 1.0))
+                factor = roof_factor
                 h_val = max(0.0, area / max(EPS, abs(float(s.a1) - float(s.a0))))
             else:
                 area = _wall_strip_area(side, local0, local1, model)
@@ -366,7 +485,8 @@ def derive_auto_attic_elements(dg_rooms: Sequence[RoomModel], attic_cfg: AtticCf
 
             if area > EPS:
                 uid = f"{AUTO_ATTIC_UID_PREFIX}{part}_{room.id}_{_fmt_num(local0)}_{_fmt_num(local1)}"
-                meta = f"attic_auto|attic_part={part}|basis=edge|side={side}|source_uid={s.uid}"
+                boundary_key = roof_boundary_key if etype == 'Dach' else "outside"
+                meta = f"attic_auto|attic_part={part}|basis=edge|side={side}|boundary={boundary_key}|local0={local0:.6f}|local1={local1:.6f}|source_uid={s.uid}"
                 out.append(ElementModel(
                     room_id=room.id,
                     element_type=etype,
@@ -408,13 +528,14 @@ def derive_auto_attic_elements(dg_rooms: Sequence[RoomModel], attic_cfg: AtticCf
                 etype = 'Dach'
                 part = f'roof_{side}'
                 u_val = roof_u
-                factor = float(DEFAULT_FACTOR.get('Dach', 1.0))
+                factor = roof_factor
                 h_val = max(0.0, area / max(EPS, abs(float(s.a1) - float(s.a0))))
 
             if area <= EPS:
                 continue
             uid = f"{AUTO_ATTIC_UID_PREFIX}{part}_{room.id}_{_fmt_num(local0)}_{_fmt_num(local1)}"
-            meta = f"attic_auto|attic_part={part}|basis=edge|side={side}|source_uid={s.uid}"
+            boundary_key = roof_boundary_key if etype == 'Dach' else "outside"
+            meta = f"attic_auto|attic_part={part}|basis=edge|side={side}|boundary={boundary_key}|local0={local0:.6f}|local1={local1:.6f}|source_uid={s.uid}"
             out.append(ElementModel(
                 room_id=room.id,
                 element_type=etype,
@@ -432,6 +553,8 @@ def derive_auto_attic_elements(dg_rooms: Sequence[RoomModel], attic_cfg: AtticCf
                 meta=meta,
             ))
 
+    _add_roof_windows(out, attic_cfg, model)
+    _add_dormers(out, attic_cfg)
     return out
 
 

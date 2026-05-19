@@ -16,7 +16,7 @@ def test_build_mixin_contains_dach_editor_tab():
     assert 'dlg.setWindowTitle("Dach-Editor")' in src
     assert 'self.roof_line_editor_tab = RoofLineEditorWidget(self)' in src
     assert 'self.lst_roof_tab_lines = QListWidget()' in src
-    assert 'self.btn_roof_tab_open_settings = QPushButton("Projektparameter")' in src
+    assert 'self.btn_roof_tab_open_settings = QPushButton("Weitere Projektparameter")' in src
 
 
 def test_settings_mixin_contains_roof_editor_sync_and_handlers():
@@ -30,12 +30,21 @@ def test_settings_mixin_contains_roof_editor_sync_and_handlers():
 def test_roof_editor_dialog_contains_professional_splitter_metrics_and_live_preview():
     src = BUILD.read_text(encoding='utf-8')
     assert 'content_splitter = QSplitter(Qt.Horizontal, page)' in src
+    assert 'self.roof_editor_right_splitter = QSplitter(Qt.Vertical, right_wrap)' in src
+    assert 'self.roof_editor_right_splitter.setSizes([420, 160, 260])' in src
     assert 'summary_wrap = QFrame()' in src
     assert 'self.lbl_roof_metric_area = QLabel("–")' in src
     assert 'preview_title = QLabel("Live-Dachvorschau")' in src
     assert 'facet_title = QLabel("Dachflächen / Facetten")' in src
     assert 'self.lst_roof_tab_facets = QListWidget()' in src
     assert 'line_title = QLabel("Dachlinien-Editor")' in src
+    assert 'self.roof_editor_panel.setMinimumSize(720, 560)' in src
+
+
+def test_attic_sketch_uses_responsive_preview_layout():
+    src = Path("src/heizlast/ui/attic_sketch.py").read_text(encoding="utf-8")
+    assert 'if rect.width() < 720:' in src
+    assert 'self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)' in src
 
 
 def test_main_window_refresh_updates_dialog_preview_panel_and_summary():
@@ -77,6 +86,46 @@ def test_property_dock_is_scrollable():
     src = Path("src/heizlast/ui/build_mixin.py").read_text(encoding="utf-8")
     assert 'prop_scroll = QScrollArea()' in src
     assert 'self.dock_properties.setWidget(prop_scroll)' in src
+    assert 'prop_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)' in src
+    assert 'form.setRowWrapPolicy(QFormLayout.WrapLongRows)' in src
+
+
+def test_main_docks_have_professional_titlebars_and_tabbed_layout():
+    src = Path("src/heizlast/ui/build_mixin.py").read_text(encoding="utf-8")
+    assert 'class DockTitleBar(QFrame):' in src
+    assert 'self.setDockOptions(' in src
+    assert 'QMainWindow.AllowTabbedDocks' in src
+    assert 'QMainWindow.GroupedDragging' in src
+    assert 'self.dock_attic.setTitleBarWidget(DockTitleBar(' in src
+    assert 'self.tabifyDockWidget(self.dock_elements, self.dock_plausibility)' in src
+    assert 'QFrame#dockTitleBar' in src
+    assert 'def _configure_side_dock(self, dock: QDockWidget, min_width: int = 220) -> None:' in src
+    assert 'dock.setMaximumWidth(self._DOCK_MAX_WIDTH)' in src
+    assert 'widget.setMaximumWidth(self._DOCK_MAX_WIDTH)' in src
+    assert 'def _release_side_dock_width_limits(self) -> None:' in src
+    assert 'self.resizeDocks(docks, [preferred] * len(docks), Qt.Horizontal)' not in src
+
+
+def test_central_plan_area_can_shrink_for_wide_side_docks():
+    build_src = Path("src/heizlast/ui/build_mixin.py").read_text(encoding="utf-8")
+    graphics_src = Path("src/heizlast/ui/graphics.py").read_text(encoding="utf-8")
+    assert 'cw.setMinimumWidth(0)' in build_src
+    assert 'cw.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)' in build_src
+    assert 'self.tabs.setMinimumWidth(0)' in build_src
+    assert 'self.tabs.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)' in build_src
+    assert 'control_bar.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)' in build_src
+    assert 'self.btn_fit_current_view = QPushButton("Ansicht einpassen")' not in build_src
+    assert 'self.btn_show_current_floor_3d = QPushButton("3D Geschoss")' not in build_src
+    assert 'self.btn_show_shell_2d = QPushButton("2D Hülle+")' not in build_src
+    assert 'self.btn_show_shell_3d_gl = QPushButton("3D Hülle+")' not in build_src
+    assert 'self.setMinimumSize(0, 0)' in graphics_src
+    assert 'self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)' in graphics_src
+
+
+def test_main_window_does_not_restore_oversized_geometry_before_maximize():
+    src = Path("src/heizlast/ui/build_mixin.py").read_text(encoding="utf-8")
+    assert 'was_maximized = self._settings.value("main_was_maximized", True, type=bool)' in src
+    assert 'if geom and not was_maximized:' in src
 
 
 def test_roof_help_contains_interactive_example_roofs():

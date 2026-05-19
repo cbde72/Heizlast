@@ -13,10 +13,10 @@ def test_project_menu_and_toolbar_expose_floor_3d_action():
     assert 'self.act_show_3d_floor,' in src
 
 
-def test_plan_info_bar_contains_floor_3d_button():
+def test_plan_info_bar_does_not_contain_floor_3d_button():
     src = BUILD_MIXIN.read_text(encoding="utf-8")
-    assert 'self.btn_show_current_floor_3d = QPushButton("3D Geschoss")' in src
-    assert 'self.btn_show_current_floor_3d.clicked.connect(self._on_show_3d_floor)' in src
+    assert 'self.btn_show_current_floor_3d = QPushButton("3D Geschoss")' not in src
+    assert 'self.btn_show_current_floor_3d.clicked.connect(self._on_show_3d_floor)' not in src
 
 
 def test_misc_mixin_contains_floor_3d_helpers():

@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from heizlast import PROJECT_SCHEMA_VERSION
 from heizlast.configs.project_config import ProjectCfg
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -28,6 +29,6 @@ def test_project_cfg_v30_schema_upgrade_keeps_roof_lines_list():
             ],
         },
     })
-    assert cfg.cfg_version == 16
+    assert cfg.cfg_version == PROJECT_SCHEMA_VERSION
     assert len(cfg.attic.roof_lines) == 2
     assert cfg.attic.roof_lines[1].kind == "kehle"

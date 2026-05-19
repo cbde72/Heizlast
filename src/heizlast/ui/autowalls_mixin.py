@@ -33,9 +33,10 @@ class MainWindowAutowallsMixin:
         self.elements = [e for e in self.elements if not _is_auto_wall(e)]
         # 2) Neue Auto-Wände erzeugen
         autos: List[ElementModel] = []
+        u_outer = float(getattr(getattr(self, "project_cfg", None), "u_aussenwand_w_m2k", 0.45))
         for floor in ("KG", "EG", "DG"):
             rooms = [r for r in self.rooms.values() if r.floor == floor]
-            autos.extend(build_auto_walls_shared_merge(rooms))
+            autos.extend(build_auto_walls_shared_merge(rooms, u_aussenwand_w_m2k=u_outer))
 
         # >>> Overrides aus Snapshot auf neu erzeugte Auto-Elemente anwenden + ov_* in meta persistieren
         self._apply_user_overrides_to_autowalls(autos, snap)

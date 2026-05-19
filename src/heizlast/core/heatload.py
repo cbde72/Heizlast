@@ -36,11 +36,14 @@ from .auto_decks import (
     DEFAULT_U_DG_GESCHOSSDECKE_W_M2K,
     DEFAULT_U_EG_GESCHOSSDECKE_W_M2K,
     DEFAULT_U_KELLERDECKE_W_M2K,
+    deck_kind_for_element,
     ensure_auto_decks,
+    is_auto_deck,
 )
 from .config import DEFAULT_U, VentilationCfg
 from .floor_area import calc_floor_living_area_by_floor, render_floor_living_area_plot_png
-from .ground_model import GroundModelCfg, _effective_ground_temp, _is_ground_element
+from .ground_model import GroundModelCfg, _effective_ground_temp_for_cfg, _is_ground_element
+from .din_boundary import boundary_from_meta, boundary_label_for_bucket, canonical_bucket
 from .heatload_types import (
     EPS,
     INNER_WALL_TYPES,
@@ -274,6 +277,28 @@ def _is_speicherdecke(et: str) -> bool:
     return ("speicher" in s) or ("dachraum" in s) or (("dach" in s) and ("decke" in s))
 #neu end
 
+
+def _transmission_surface_role(e: ElementModel, *, ground_kind: str = "") -> str:
+    """Classify a transmission line for DIN-style reporting groups."""
+    et = _norm_str(getattr(e, "element_type", "") or "")
+    if ground_kind == "slab" or "bodenplatte" in et or "fussboden" in et or "fußboden" in et:
+        return "floor_ground"
+    if ground_kind == "wall":
+        return "wall_ground"
+    if et == "dach" or et.startswith("dach ") or "dachflaeche" in et or "dachfläche" in et:
+        return "roof"
+    if _is_kellerdecke(getattr(e, "element_type", "") or ""):
+        return "deck_basement"
+    if _is_speicherdecke(getattr(e, "element_type", "") or ""):
+        return "deck_attic"
+    if _is_geschossdecke(getattr(e, "element_type", "") or ""):
+        return "deck_interzone"
+    if et in {"fenster", "dachfenster"}:
+        return "window"
+    if "wand" in et:
+        return "wall"
+    return "other"
+
 ''' alt
 def _deltaT_and_bucket(
     r: RoomModel,
@@ -293,6 +318,27 @@ def _deltaT_and_bucket(
     """
     t_in = float(r.t_inside_c or 0.0)
     et = (e.element_type or "")
+    explicit_boundary = boundary_from_meta(getattr(e, "meta", None))
+    if explicit_boundary is not None:
+        if explicit_boundary.key == "attic_unheated":
+            t_adj = _meta_get_float(getattr(e, "meta", None), "t_adj_c")
+            if t_adj is None:
+                t_adj = float(t_oben_c)
+            return max(0.0, t_in - float(t_adj)), "dachraum"
+        if explicit_boundary.key in {"unheated", "basement_unheated"}:
+            t_adj = _meta_get_float(getattr(e, "meta", None), "t_adj_c")
+            if t_adj is None:
+                t_adj = float(t_keller_c if explicit_boundary.key == "basement_unheated" else t_oben_c)
+            return max(0.0, t_in - float(t_adj)), "keller" if explicit_boundary.key == "basement_unheated" else "dachraum"
+        if explicit_boundary.key in {"adjacent_heated", "interzone"}:
+            t_adj = _meta_get_float(getattr(e, "meta", None), "t_adj_c")
+            if t_adj is None:
+                t_adj = t_in
+            return max(0.0, t_in - float(t_adj)), "interzone"
+        if explicit_boundary.key == "ground":
+            return max(0.0, t_in - float(t_keller_c)), "ground"
+        if explicit_boundary.key == "outside":
+            return max(0.0, t_in - float(t_out_c)), "out"
 
     if _is_kellerdecke(et):
         # optional adjacent override via meta
@@ -328,6 +374,27 @@ def _deltaT_and_bucket(
     """
     t_in = float(r.t_inside_c or 0.0)
     et = (e.element_type or "")
+    explicit_boundary = boundary_from_meta(getattr(e, "meta", None))
+    if explicit_boundary is not None:
+        if explicit_boundary.key == "attic_unheated":
+            t_adj = _meta_get_float(getattr(e, "meta", None), "t_adj_c")
+            if t_adj is None:
+                t_adj = float(t_oben_c)
+            return max(0.0, t_in - float(t_adj)), "dachraum"
+        if explicit_boundary.key in {"unheated", "basement_unheated"}:
+            t_adj = _meta_get_float(getattr(e, "meta", None), "t_adj_c")
+            if t_adj is None:
+                t_adj = float(t_keller_c if explicit_boundary.key == "basement_unheated" else t_oben_c)
+            return max(0.0, t_in - float(t_adj)), "keller" if explicit_boundary.key == "basement_unheated" else "dachraum"
+        if explicit_boundary.key in {"adjacent_heated", "interzone"}:
+            t_adj = _meta_get_float(getattr(e, "meta", None), "t_adj_c")
+            if t_adj is None:
+                t_adj = t_in
+            return max(0.0, t_in - float(t_adj)), "interzone"
+        if explicit_boundary.key == "ground":
+            return max(0.0, t_in - float(t_keller_c)), "ground"
+        if explicit_boundary.key == "outside":
+            return max(0.0, t_in - float(t_out_c)), "out"
 
     if _is_kellerdecke(et):
         # optional adjacent override via meta
@@ -376,6 +443,25 @@ def calc_heatloads(
     floor_area_mode: FloorAreaMode = "inner",
     tb_cfg: Optional[ThermalBridgeCfg] = None,
     ground_cfg: Optional[GroundModelCfg] = None,
+    u_aussenwand_w_m2k: float = 0.45,
+    u_fenster_w_m2k: float = 2.80,
+    u_tuer_w_m2k: float = 1.80,
+    reheat_power_w_m2: float = 0.0,
+    reheat_duration_h: float = 0.0,
+    reheat_temp_drop_k: float = 0.0,
+    reheat_capacity_wh_m2k: float = 20.0,
+    u_kellerdecke_w_m2k: float = DEFAULT_U_KELLERDECKE_W_M2K,
+    u_eg_geschossdecke_w_m2k: float = DEFAULT_U_EG_GESCHOSSDECKE_W_M2K,
+    u_dg_geschossdecke_w_m2k: float = DEFAULT_U_DG_GESCHOSSDECKE_W_M2K,
+    u_bodenplatte_w_m2k: float = 0.40,
+    u_erdberuehrte_wand_w_m2k: float = 0.60,
+    ventilation_mode: str = "natural",
+    min_air_change_1ph: float = 0.0,
+    infiltration_air_change_1ph: float = 0.0,
+    mech_supply_m3h: float = 0.0,
+    mech_exhaust_m3h: float = 0.0,
+    heat_recovery_efficiency: float = 0.0,
+    sync_auto_decks: bool = True,
 ) -> Dict[str, dict]:
     """
     Berechnet Heizlasten pro Raum.
@@ -390,7 +476,14 @@ def calc_heatloads(
       - mode='psi'      -> Φ_WB = Σ(ψ*L*ΔT)
       - mode='percent'  -> Φ_WB = p * Φ_trans
     """
-    ensure_auto_decks(rooms, elements)
+    if sync_auto_decks:
+        ensure_auto_decks(
+            rooms,
+            elements,
+            u_kellerdecke_w_m2k=float(u_kellerdecke_w_m2k),
+            u_eg_geschossdecke_w_m2k=float(u_eg_geschossdecke_w_m2k),
+            u_dg_geschossdecke_w_m2k=float(u_dg_geschossdecke_w_m2k),
+        )
 
     tb = tb_cfg or ThermalBridgeCfg()
     ground = ground_cfg or GroundModelCfg()
@@ -414,6 +507,86 @@ def calc_heatloads(
         if not raw:
             return []
         return [x.strip() for x in raw.split(",") if x.strip()]
+
+    def _auto_deck_suppressed(e: ElementModel) -> bool:
+        meta = str(getattr(e, "meta", "") or "")
+        return "auto_suppressed=1" in meta or "suppressed_by=manual_deck" in meta
+
+    def _horizontal_boundary_kind(item: ElementModel) -> str | None:
+        deck_kind = deck_kind_for_element(item)
+        if deck_kind in {"keller", "geschoss", "speicher"}:
+            return deck_kind
+        is_ground, ground_kind = _is_ground_element(item)
+        if is_ground and ground_kind == "slab":
+            return "bodenplatte"
+        role = _transmission_surface_role(item, ground_kind=ground_kind if is_ground else "")
+        if role == "floor_ground":
+            return "bodenplatte"
+        et = _norm_str(getattr(item, "element_type", "") or "")
+        meta = str(getattr(item, "meta", "") or "").lower()
+        if ("bodenplatte" in et) or ("fussboden" in et) or ("fußboden" in et) or ("ground=slab" in meta):
+            return "bodenplatte"
+        if et in {"boden", "fussboden", "fußboden"}:
+            return "boden"
+        return None
+
+    def _element_signature(item: ElementModel) -> tuple:
+        return (
+            _norm_str(getattr(item, "element_type", "") or ""),
+            round(float(getattr(item, "area_m2", 0.0) or 0.0), 6),
+            round(float(getattr(item, "u_w_m2k", 0.0) or 0.0), 6),
+            round(float(getattr(item, "factor", 1.0) or 1.0), 6),
+            str(getattr(item, "meta", "") or ""),
+        )
+
+    def _keep_unique_manual(candidates: list[ElementModel]) -> list[ElementModel]:
+        seen: set[tuple] = set()
+        kept: list[ElementModel] = []
+        for item in candidates:
+            sig = _element_signature(item)
+            if sig in seen:
+                continue
+            seen.add(sig)
+            kept.append(item)
+        return kept
+
+    def _dedupe_room_horizontal_boundaries(room_id: str, room_items: List[ElementModel]) -> List[ElementModel]:
+        grouped: dict[str, list[ElementModel]] = {}
+        out: list[ElementModel] = []
+        for item in room_items:
+            kind = _horizontal_boundary_kind(item)
+            if kind is None:
+                out.append(item)
+                continue
+            grouped.setdefault(kind, []).append(item)
+
+        lower_manual = []
+        for lower_kind in ("bodenplatte", "boden", "keller"):
+            lower_manual.extend([item for item in grouped.get(lower_kind, []) if not is_auto_deck(item)])
+        if lower_manual:
+            lower_kind_to_keep = "bodenplatte" if grouped.get("bodenplatte") else ("boden" if grouped.get("boden") else "keller")
+            grouped["keller"] = [item for item in grouped.get("keller", []) if not is_auto_deck(item)]
+            for lower_kind in ("bodenplatte", "boden", "keller"):
+                if lower_kind != lower_kind_to_keep:
+                    grouped[lower_kind] = [item for item in grouped.get(lower_kind, []) if is_auto_deck(item) and _auto_deck_suppressed(item)]
+
+        for kind in ("keller", "geschoss", "speicher", "bodenplatte", "boden"):
+            candidates = grouped.get(kind, [])
+            if not candidates:
+                continue
+            manual = [item for item in candidates if not is_auto_deck(item)]
+            if manual:
+                out.extend(_keep_unique_manual(manual))
+                continue
+            kept_auto = False
+            for item in candidates:
+                if _auto_deck_suppressed(item):
+                    continue
+                if kept_auto:
+                    continue
+                out.append(item)
+                kept_auto = True
+        return out
 
     # Elemente nach Raum gruppieren (inkl. shared walls via meta rooms=...)
     e_by_room: Dict[str, List[ElementModel]] = {}
@@ -440,6 +613,9 @@ def calc_heatloads(
             e_by_room.setdefault(rid, []).append(e)
             if u:
                 seen_uid_per_room.setdefault(rid, set()).add(u)
+
+    for rid, room_items in list(e_by_room.items()):
+        e_by_room[rid] = _dedupe_room_horizontal_boundaries(rid, room_items)
     ###
     out: Dict[str, dict] = {}
 
@@ -497,6 +673,11 @@ def calc_heatloads(
         x1, y1 = x0 + w_out, y0 + h_out
 
         room_h = float(getattr(r, "height_m", None) or 2.5)
+        room_perimeter = 0.0
+        try:
+            room_perimeter = max(0.0, float(r.perimeter_m()))
+        except Exception:
+            room_perimeter = 2.0 * (max(w_out, 0.0) + max(h_out, 0.0))
 
         def _edge_scale_for_element(e: ElementModel) -> float:
             """Skaliert Elemente auf Raumkanten (sx oder sy) wenn floor_area_mode='inner'."""
@@ -546,8 +727,8 @@ def calc_heatloads(
         def _acc_env(bucket: str, A_used: float, L_used: float):
             #nonlocal A_env_out, A_env_keller, A_env_oben, A_env_interzone
             #nonlocal L_env_out, L_env_keller, L_env_oben, L_env_interzone
-            nonlocal A_env_out, A_env_keller, A_env_oben, A_env_interzone, A_env_dachraum
-            nonlocal L_env_out, L_env_keller, L_env_oben, L_env_interzone, L_env_dachraum
+            nonlocal A_env_out, A_env_keller, A_env_oben, A_env_interzone, A_env_dachraum, A_env_ground
+            nonlocal L_env_out, L_env_keller, L_env_oben, L_env_interzone, L_env_dachraum, L_env_ground
             if bucket == "out" and tb.include_out:
                 A_env_out += A_used
                 L_env_out += L_used
@@ -566,6 +747,9 @@ def calc_heatloads(
                 L_env_interzone += L_used
                 A_env_oben += A_used
                 L_env_oben += L_used
+            elif bucket == "ground":
+                A_env_ground += A_used
+                L_env_ground += L_used
 
         # -------------------------------------------------------------------
         # Audit-Trail / Berechnungsnachweis (wird von reporting.py genutzt)
@@ -601,12 +785,17 @@ def calc_heatloads(
                 env_details.append({
                     "floor": floor_key,
                     "bucket": bkt,
+                    "boundary_bucket": canonical_bucket(bkt),
+                    "boundary_label": boundary_label_for_bucket(bkt),
                     "uid": str(line.get("uid", "") or ""),
                     "element_type": str(line.get("element_type", "") or ""),
+                    "surface_role": str(line.get("surface_role", "") or ""),
                     "A_m2": float(A_br),
                     "A_open_m2": float(A_op),
                     "A_eff_m2": float(A_eff),
                     "L_m": float(line.get("L_m", 0.0) or 0.0),
+                    "perimeter_m": float(line.get("perimeter_m", 0.0) or 0.0),
+                    "B_prime_m": float(line.get("B_prime_m", 0.0) or 0.0),
                     "U_w_m2k": float(line.get("U_W_m2K", 0.0) or 0.0),
                     "note": str(line.get("notes", "") or ""),
                 })
@@ -618,19 +807,23 @@ def calc_heatloads(
 
             is_ground, ground_kind = _is_ground_element(e)
             if is_ground and ground.mode != "none":
-                fg = float(ground.f_slab if ground_kind == "slab" else ground.f_wall)
-                Tg = _effective_ground_temp(
-                    t_in,
-                    float(t_out_c),
-                    fixed_ground_temp_c=getattr(ground, "ground_temp_c", None),
-                    f_ground=fg,
-                )
+                if U <= EPS:
+                    U = float(u_bodenplatte_w_m2k if ground_kind == "slab" else u_erdberuehrte_wand_w_m2k)
+                    try:
+                        e.u_w_m2k = U
+                    except Exception:
+                        pass
+                Tg, fg, ground_method = _effective_ground_temp_for_cfg(ground, ground_kind, t_in, float(t_out_c))
                 dT_e = max(0.0, t_in - float(Tg))
                 bucket = "ground"
             else:
+                Tg = None
+                fg = 0.0
+                ground_method = ""
                 dT_e, bucket = _deltaT_and_bucket(
                     r, e, t_out_c=t_out_c, t_keller_c=t_keller_c, t_oben_c=t_oben_c
                 )
+            surface_role = _transmission_surface_role(e, ground_kind=ground_kind if is_ground else "")
 
             scale = _edge_scale_for_element(e)
 
@@ -642,11 +835,23 @@ def calc_heatloads(
             if et in OUTER_WALL_TYPES:
                 # 1) U-Wert defaulten
                 if U <= EPS:
-                    U = float(DEFAULT_U.get(et, DEFAULT_U.get("Aussenwand", 0.45)))
+                    U = float(u_aussenwand_w_m2k or DEFAULT_U.get(et, DEFAULT_U.get("Aussenwand", 0.45)))
                     try:
                         e.u_w_m2k = U
                     except Exception:
                         pass
+            elif et in WINDOW_TYPES and U <= EPS:
+                U = float(u_fenster_w_m2k or DEFAULT_U.get("Fenster", 2.80))
+                try:
+                    e.u_w_m2k = U
+                except Exception:
+                    pass
+            elif _norm_str(et) in {"tuer", "tür", "aussentuer", "außentuer", "haustuer", "haustür"} and U <= EPS:
+                U = float(u_tuer_w_m2k or 1.80)
+                try:
+                    e.u_w_m2k = U
+                except Exception:
+                    pass
 
             # Decken/Bodenflächen explizit aus Raumfläche (damit inner/outer sicher wirkt)
             if _is_kellerdecke(et) or _is_geschossdecke(et):
@@ -705,7 +910,10 @@ def calc_heatloads(
                     "line_type": "TRANSMISSION",
                     "uid": str(getattr(e, "uid", "") or ""),
                     "element_type": et,
+                    "surface_role": surface_role,
                     "bucket": bucket,
+                    "boundary_bucket": canonical_bucket(bucket),
+                    "boundary_label": boundary_label_for_bucket(bucket),
                     "U_W_m2K": float(U),
                     "factor": float(f),
                     "scale": float(scale),
@@ -713,8 +921,15 @@ def calc_heatloads(
                     "A_brutto_m2": float(A),          # bereits skaliert
                     "A_open_m2": float(A_open),       # bereits skaliert
                     "A_eff_m2": float(A_eff),
+                    "perimeter_m": 0.0,
+                    "B_prime_m": 0.0,
+                    "ground_kind": str(ground_kind or ""),
                     "Q_W": float(Q_e),
-                    "notes": "outer wall (A_eff = A - openings)",
+                    "notes": (
+                        f"outer wall (A_eff = A - openings); ground_method={ground_method}; f_ground={fg:.3f}; Tg={float(Tg):.2f} °C"
+                        if bucket == "ground" and Tg is not None
+                        else "outer wall (A_eff = A - openings)"
+                    ),
                 })
 
                 Q_trans += Q_e
@@ -724,6 +939,8 @@ def calc_heatloads(
                     Q_trans_keller += Q_e
                 elif bucket == "oben":
                     Q_trans_oben += Q_e
+                    Q_trans_dachraum += Q_e
+                elif bucket == "dachraum":
                     Q_trans_dachraum += Q_e
                 elif bucket == "interzone":
                     Q_trans_interzone += Q_e
@@ -739,26 +956,37 @@ def calc_heatloads(
                         A = max(A, Lw * hw)
                     A *= scale
                     _acc_env(bucket, A, Lw * scale)
+                    L_env_used = Lw * scale
 
                 # Wände ohne explizite Fläche: aus Länge*Höhe ableiten
-                if et not in WINDOW_TYPES and e.has_geometry() and A <= EPS:
+                elif et not in WINDOW_TYPES and e.has_geometry() and A <= EPS:
                     Lg = float(e.compute_length() or 0.0)
                     if Lg > EPS:
                         A = Lg * room_h
                     A *= scale
-                    _acc_env(bucket, A, Lg * scale)
+                    L_env_used = Lg * scale
+                    _acc_env(bucket, A, L_env_used)
                 elif et not in WINDOW_TYPES:
                     # wenn A gesetzt ist, aber Element auf Raumkante liegt, trotzdem skalieren
                     A *= scale
-                    _acc_env(bucket, A, float(e.compute_length() or 0.0) * scale if e.has_geometry() else 0.0)
+                    L_env_used = float(e.compute_length() or 0.0) * scale if e.has_geometry() else 0.0
+                    if bucket == "ground" and ground_kind == "slab" and L_env_used <= EPS:
+                        L_env_used = room_perimeter * (shrink ** 0.5 if floor_area_mode == "inner" else 1.0)
+                    _acc_env(bucket, A, L_env_used)
+                else:
+                    L_env_used = 0.0
 
                 Q_e = U * A * dT_e * f
+                b_prime = A / max(0.5 * L_env_used, EPS) if bucket == "ground" and ground_kind == "slab" and A > EPS and L_env_used > EPS else 0.0
 
                 _add_line({
                     "line_type": "TRANSMISSION",
                     "uid": str(getattr(e, "uid", "") or ""),
                     "element_type": et,
+                    "surface_role": surface_role,
                     "bucket": bucket,
+                    "boundary_bucket": canonical_bucket(bucket),
+                    "boundary_label": boundary_label_for_bucket(bucket),
                     "U_W_m2K": float(U),
                     "factor": float(f),
                     "scale": float(scale),
@@ -766,15 +994,26 @@ def calc_heatloads(
                     "A_brutto_m2": float(A),     # i.d.R. bereits skaliert
                     "A_open_m2": 0.0,
                     "A_eff_m2": float(A),
+                    "perimeter_m": float(L_env_used if bucket == "ground" and ground_kind == "slab" else 0.0),
+                    "B_prime_m": float(b_prime),
+                    "ground_kind": str(ground_kind or ""),
                     "Q_W": float(Q_e),
-                    "notes": "",
+                    "notes": (
+                        f"ground element; ground_method={ground_method}; f_ground={fg:.3f}; Tg={float(Tg):.2f} °C"
+                        if bucket == "ground" and Tg is not None
+                        else ""
+                    ),
                 })
 
                 Q_trans += Q_e
-                if bucket == "keller":
+                if bucket == "ground":
+                    Q_trans_ground += Q_e
+                elif bucket == "keller":
                     Q_trans_keller += Q_e
                 elif bucket == "oben":
                     Q_trans_oben += Q_e
+                    Q_trans_dachraum += Q_e
+                elif bucket == "dachraum":
                     Q_trans_dachraum += Q_e
                 elif bucket == "interzone":
                     Q_trans_interzone += Q_e
@@ -824,6 +1063,12 @@ def calc_heatloads(
                         Q_tb_keller += q
                     elif bucket == "oben" and tb.include_oben:
                         Q_tb_oben += q
+                    elif bucket == "dachraum" and tb.include_oben:
+                        Q_tb_dachraum += q
+                    elif bucket == "ground":
+                        Q_tb_ground += q
+                    elif bucket == "interzone":
+                        pass
                     elif tb.include_out:
                         Q_tb_out += q
 
@@ -836,14 +1081,10 @@ def calc_heatloads(
             Q_tb_interzone = 0.0
 
         # Erdreich-Zuschläge (nur wenn Ground-Modell aktiv und Erdreichflächen existieren)
+        Tg_ground_ref, _fg_ground_ref, _ground_ref_method = _effective_ground_temp_for_cfg(ground, "slab", t_in, float(t_out_c))
         dT_ground_ref = max(
             0.0,
-            t_in - _effective_ground_temp(
-                t_in,
-                float(t_out_c),
-                fixed_ground_temp_c=getattr(ground, "ground_temp_c", None),
-                f_ground=float(ground.f_slab),
-            )
+            t_in - Tg_ground_ref
         )
         if ground.mode != "none":
             if tb.mode == "delta_u":
@@ -899,16 +1140,28 @@ def calc_heatloads(
         if abs(Q_tb_oben) > 1e-12:
             _add_line({
                 "line_type": "THERMAL_BRIDGE",
-                "element_type": "Wärmebrücken (Oben/Dachraum)",
+                "element_type": "Wärmebrücken (Oben)",
+                "bucket": "oben",
+                "mode": tb.mode,
+                "dT_K": float(max(0.0, t_in - float(t_oben_c))),
+                "A_env_m2": float(A_env_oben),
+                "L_env_m": float(L_env_oben),
+                "Q_W": float(Q_tb_oben),
+                "notes": "thermal bridge surcharge",
+            })
+        if abs(Q_tb_dachraum) > 1e-12:
+            _add_line({
+                "line_type": "THERMAL_BRIDGE",
+                "element_type": "Wärmebrücken (Dachraum)",
                 "bucket": "dachraum",
                 "mode": tb.mode,
                 "dT_K": float(max(0.0, t_in - float(t_oben_c))),
                 "A_env_m2": float(A_env_dachraum),
                 "L_env_m": float(L_env_dachraum),
-                "Q_W": float(Q_tb_oben),
+                "Q_W": float(Q_tb_dachraum),
                 "notes": "thermal bridge surcharge",
             })
-        Q_tb = Q_tb_out + Q_tb_keller + Q_tb_oben + Q_tb_ground  # ground/oben includes backward-compat; dachraum separate key below
+        Q_tb = Q_tb_out + Q_tb_keller + Q_tb_oben + Q_tb_dachraum + Q_tb_ground
 
 
         # Zuschlag zur Transmission addieren
@@ -916,13 +1169,33 @@ def calc_heatloads(
         Q_trans_out += Q_tb_out
         Q_trans_keller += Q_tb_keller
         Q_trans_oben += Q_tb_oben
+        Q_trans_dachraum += Q_tb_dachraum
         Q_trans_ground += Q_tb_ground
         # interzone: keine WB-Zuschläge
 
         # -------------------------------------------------------------------
         # Lüftung (immer Innenvolumen)
         # -------------------------------------------------------------------
-        Q_vent = float(vent_cfg.c_air) * float(r.air_change_1ph or 0.0) * float(V_in_eff or 0.0) * dT_out
+        c_air = float(vent_cfg.c_air)
+        n_room = max(0.0, float(r.air_change_1ph or 0.0))
+        n_min = max(0.0, float(min_air_change_1ph or 0.0))
+        n_inf = max(0.0, float(infiltration_air_change_1ph or 0.0))
+        v_room = float(V_in_eff or 0.0)
+        vdot_room = n_room * v_room
+        vdot_min = n_min * v_room
+        vdot_inf = n_inf * v_room
+        Q_vent_natural = c_air * max(vdot_room, vdot_min + vdot_inf) * dT_out
+        vent_mode = str(ventilation_mode or "natural").strip().lower()
+        total_volume = sum(max(float(getattr(room, "volume_m3", 0.0) or 0.0), 0.0) for room in rooms)
+        room_share = (v_room / max(total_volume, EPS)) if total_volume > EPS else 0.0
+        mech_flow = max(float(mech_supply_m3h or 0.0), float(mech_exhaust_m3h or 0.0))
+        hrv_eta = min(1.0, max(0.0, float(heat_recovery_efficiency or 0.0)))
+        vdot_mech_room = room_share * mech_flow
+        vdot_mech_recovered = vdot_mech_room * (1.0 - hrv_eta)
+        vdot_min_uncovered = max(0.0, vdot_min - vdot_mech_room)
+        vdot_din_room = vdot_inf + vdot_min_uncovered + vdot_mech_recovered
+        Q_vent_mech = c_air * vdot_din_room * dT_out
+        Q_vent = Q_vent_mech if (vent_mode == "mechanical" and mech_flow > EPS) else Q_vent_natural
         _add_line({
             "line_type": "VENTILATION",
             "element_type": "Lüftung",
@@ -935,13 +1208,45 @@ def calc_heatloads(
             "A_open_m2": 0.0,
             "A_eff_m2": 0.0,
             "Q_W": float(Q_vent),
-            "notes": f"c_air={float(vent_cfg.c_air):.3f} Wh/(m³K); n={float(r.air_change_1ph or 0.0):.3f} 1/h; V_in={float(V_in_eff):.3f} m³",
+            "V_in_m3": float(v_room),
+            "n_room_1ph": float(n_room),
+            "n_min_1ph": float(n_min),
+            "n_infiltration_1ph": float(n_inf),
+            "Vdot_room_m3h": float(vdot_room),
+            "Vdot_min_m3h": float(vdot_min),
+            "Vdot_infiltration_m3h": float(vdot_inf),
+            "Vdot_mech_room_m3h": float(vdot_mech_room),
+            "Vdot_effective_m3h": float(vdot_din_room if (vent_mode == "mechanical" and mech_flow > EPS) else max(vdot_room, vdot_min + vdot_inf)),
+            "notes": (
+                f"mechanical; c_air={c_air:.3f}; Vdot={mech_flow:.3f} m³/h; share={room_share:.3f}; eta_WRG={hrv_eta:.3f}; Vdot_inf={vdot_inf:.3f}; Vdot_min_uncovered={vdot_min_uncovered:.3f}; Q_nat_ref={Q_vent_natural:.3f} W"
+                if (vent_mode == "mechanical" and mech_flow > EPS)
+                else f"natural; c_air={c_air:.3f} Wh/(m³K); n_room={n_room:.3f} 1/h; n_min={n_min:.3f} 1/h; n_inf={n_inf:.3f} 1/h; V_in={v_room:.3f} m³"
+            ),
         })
-
-        Q_sum = Q_trans + Q_vent
 
         # Bezugsfläche für W/m²
         A_ref = A_in_eff if floor_area_mode == "inner" else A_out_eff
+        q_reheat = max(0.0, float(reheat_power_w_m2 or 0.0))
+        if q_reheat <= EPS and float(reheat_duration_h or 0.0) > EPS and float(reheat_temp_drop_k or 0.0) > EPS:
+            q_reheat = max(0.0, float(reheat_capacity_wh_m2k or 0.0)) * max(0.0, float(reheat_temp_drop_k or 0.0)) / max(float(reheat_duration_h), EPS)
+        Q_reheat = q_reheat * max(0.0, float(A_ref or 0.0))
+        if Q_reheat > 1e-12:
+            _add_line({
+                "line_type": "REHEAT",
+                "element_type": "Aufheizzuschlag",
+                "bucket": "out",
+                "U_W_m2K": None,
+                "factor": None,
+                "scale": 1.0,
+                "dT_K": 0.0,
+                "A_brutto_m2": float(A_ref),
+                "A_open_m2": 0.0,
+                "A_eff_m2": float(A_ref),
+                "Q_W": float(Q_reheat),
+                "notes": f"q_hu={float(q_reheat):.3f} W/m²; A_ref={float(A_ref):.3f} m²; duration={float(reheat_duration_h or 0.0):.2f} h; temp_drop={float(reheat_temp_drop_k or 0.0):.2f} K",
+            })
+
+        Q_sum = Q_trans + Q_vent + Q_reheat
         q_W_per_m2 = Q_sum / max(A_ref, EPS)
 
         out[r.id] = {
@@ -964,6 +1269,18 @@ def calc_heatloads(
             "Q_tb_ground_W": Q_tb_ground,
 
             "Q_vent_W": Q_vent,
+            "Q_vent_natural_ref_W": Q_vent_natural,
+            "Q_vent_mech_W": Q_vent_mech,
+            "ventilation_n_room_1ph": n_room,
+            "ventilation_n_min_1ph": n_min,
+            "ventilation_n_infiltration_1ph": n_inf,
+            "ventilation_vdot_room_m3h": vdot_room,
+            "ventilation_vdot_min_m3h": vdot_min,
+            "ventilation_vdot_infiltration_m3h": vdot_inf,
+            "ventilation_vdot_mech_room_m3h": vdot_mech_room,
+            "ventilation_vdot_effective_m3h": (vdot_din_room if (vent_mode == "mechanical" and mech_flow > EPS) else max(vdot_room, vdot_min + vdot_inf)),
+            "Q_reheat_W": Q_reheat,
+            "q_reheat_W_m2": q_reheat,
             "Q_sum_W": Q_sum,
             "Q_W_per_m2": q_W_per_m2,
 
@@ -1010,6 +1327,19 @@ def calc_heatloads(
             "ground_f_slab": float(ground.f_slab),
             "ground_f_wall": float(ground.f_wall),
             "ground_psi_perimeter_w_mk": float(ground.psi_perimeter_w_mk),
+            "ground_din_ts_f_slab": float(getattr(ground, "din_ts_f_slab", 0.35)),
+            "ground_din_ts_f_wall": float(getattr(ground, "din_ts_f_wall", 0.50)),
+            "u_aussenwand_w_m2k": float(u_aussenwand_w_m2k),
+            "u_fenster_w_m2k": float(u_fenster_w_m2k),
+            "u_tuer_w_m2k": float(u_tuer_w_m2k),
+            "u_bodenplatte_w_m2k": float(u_bodenplatte_w_m2k),
+            "u_erdberuehrte_wand_w_m2k": float(u_erdberuehrte_wand_w_m2k),
+            "ventilation_mode": vent_mode,
+            "min_air_change_1ph": n_min,
+            "infiltration_air_change_1ph": n_inf,
+            "mech_supply_m3h": float(mech_supply_m3h or 0.0),
+            "mech_exhaust_m3h": float(mech_exhaust_m3h or 0.0),
+            "heat_recovery_efficiency": hrv_eta,
         }
 
     # --- Gebäude-Hüllflächen: Summen & Details für Reporting ---
@@ -1062,6 +1392,7 @@ def calc_heatloads(
         "notes": [
             "A_eff = A - A_open (nur bei Außenwänden mit Öffnungsabzug).",
             "Interzone-Flächen (zu beheizten Nachbarräumen) sind keine Hüllflächen und werden in A_env_sum nicht gezählt.",
+            "Boundary-Buckets: external, ground, basement, attic/unheated, adjacent_heated/interzone werden zusätzlich zu den historischen Buckets im Detailnachweis ausgewiesen.",
             "DG wird als Dachgeschoss geführt; 'SPEICHER' nur, wenn entsprechende Räume/Elemente vorhanden sind.",
             "Erdberührte Flächen (ground) werden separat ausgewiesen.",
         ],

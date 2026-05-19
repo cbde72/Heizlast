@@ -32,6 +32,15 @@ def test_project_settings_dialog_exposes_all_project_fields_including_t_out_sour
     src = PROJECT_DIALOG.read_text(encoding="utf-8")
     assert 'self.cb_t_out_source = QComboBox()' in src
     assert 'cfg.t_out_source = self.cb_t_out_source.currentText()' in src
+    assert 'self.ed_norm_edition = QLineEdit' in src
+    assert 'cfg.norm_edition = self.ed_norm_edition.text().strip()' in src
+    assert 'self.cb_vent_mode = QComboBox()' in src
+    assert 'cfg.ventilation_mode = self.cb_vent_mode.currentText()' in src
+    assert 'self.cb_reheat_enabled = QCheckBox("Aufheizzuschlag ansetzen")' in src
+    assert 'cfg.reheat_power_w_m2 = float(self.sp_reheat.value())' in src
+    assert 'cfg.reheat_duration_h = float(self.sp_reheat_duration.value())' in src
+    assert 'cfg.climate_station = self.ed_climate_station.text().strip()' in src
+    assert 'cfg.ground.din_ts_f_slab = float(self.sp_ground_din_f_slab.value())' in src
     assert 'cfg.attic.u_gable_w_m2k = float(self.sp_attic_u_gable.value())' in src
     assert 'cfg.ground.psi_perimeter_w_mk = float(self.sp_ground_psi.value())' in src
     assert 'cfg.tb.include_oben = bool(self.cb_tb_o.isChecked())' in src

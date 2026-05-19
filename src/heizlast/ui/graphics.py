@@ -7,7 +7,8 @@ from PySide6.QtCore import Qt, QPointF
 from PySide6.QtGui import QPen, QBrush, QPainter, QColor, QPainterPath
 from PySide6.QtWidgets import (
     QGraphicsView, QGraphicsScene,
-    QGraphicsItem, QGraphicsRectItem, QGraphicsLineItem, QGraphicsSimpleTextItem, QGraphicsPathItem, QGraphicsEllipseItem
+    QGraphicsItem, QGraphicsRectItem, QGraphicsLineItem, QGraphicsSimpleTextItem, QGraphicsPathItem, QGraphicsEllipseItem,
+    QSizePolicy,
 )
 
 from ..core.attic_auto import is_auto_attic_element, parse_attic_meta
@@ -25,6 +26,13 @@ from ..core.polygon_ops import (
 RESIZE_MARGIN_PX = 10.0  # px: grab zone at room edges
 ROOM_SNAP_PX = 10.0      # px: snap tolerance to other room edges
 ROOM_TOUCH_EPS = 0.0     # px: >0 would require a gap; 0 => touching is allowed
+
+
+def _ctrl_drag_requested(event) -> bool:
+    try:
+        return bool(event.modifiers() & Qt.ControlModifier)
+    except Exception:
+        return False
 
 
 # --------------------------------------------------------------------------------------
@@ -71,6 +79,8 @@ class PlanView(QGraphicsView):
         super().__init__(scene)
         self.setRenderHint(QPainter.Antialiasing, True)
         self.setViewportUpdateMode(QGraphicsView.FullViewportUpdate)
+        self.setMinimumSize(0, 0)
+        self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
 
         # Zoom-Setup
         self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
@@ -303,6 +313,8 @@ class RoomPolygonItem(QGraphicsPathItem):
         self._in_itemchange = False
         self._vertex_drag_active = False
         self._edge_drag_active = False
+        self._ctrl_move_active = False
+        self._mouse_move_guard_active = False
         self.vertex_handles: list[PolygonVertexHandleItem] = []
         self.edge_handles: list[PolygonEdgeHandleItem] = []
         self._rebuild_path_from_model()
@@ -482,6 +494,8 @@ class RoomPolygonItem(QGraphicsPathItem):
         if change == QGraphicsItem.ItemSelectedHasChanged:
             self._refresh_edit_handles()
         if change == QGraphicsItem.ItemPositionChange:
+            if getattr(self, "_mouse_move_guard_active", False) and not getattr(self, "_ctrl_move_active", False):
+                return self.pos()
             if self._vertex_drag_active:
                 return self.pos()
             p = value
@@ -499,6 +513,20 @@ class RoomPolygonItem(QGraphicsPathItem):
             finally:
                 self._in_itemchange = False
         return super().itemChange(change, value)
+
+    def mousePressEvent(self, event):
+        self._mouse_move_guard_active = True
+        self._ctrl_move_active = _ctrl_drag_requested(event)
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        self._ctrl_move_active = _ctrl_drag_requested(event)
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        super().mouseReleaseEvent(event)
+        self._mouse_move_guard_active = False
+        self._ctrl_move_active = False
 
     def paint(self, painter: QPainter, option, widget=None):
         painter.setRenderHint(QPainter.Antialiasing, True)
@@ -532,6 +560,8 @@ class ElementLabelItem(QGraphicsSimpleTextItem):
     """
     def __init__(self, element: ElementModel):
         self._in_change = False
+        self._ctrl_move_active = False
+        self._mouse_move_guard_active = False
         super().__init__()
         self.element = element
         self.setFlag(QGraphicsItem.ItemIsMovable, True)
@@ -548,11 +578,28 @@ class ElementLabelItem(QGraphicsSimpleTextItem):
                 p.setSelected(True)
         except Exception:
             pass
+        self._mouse_move_guard_active = True
+        self._ctrl_move_active = _ctrl_drag_requested(event)
         super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        super().mouseReleaseEvent(event)
+        self._mouse_move_guard_active = False
+        self._ctrl_move_active = False
+
+    def mouseMoveEvent(self, event):
+        self._ctrl_move_active = _ctrl_drag_requested(event)
+        super().mouseMoveEvent(event)
 
     def itemChange(self, change, value):
         if getattr(self, "_in_change", False):
             return super().itemChange(change, value)
+        if (
+            change == QGraphicsItem.ItemPositionChange
+            and getattr(self, "_mouse_move_guard_active", False)
+            and not getattr(self, "_ctrl_move_active", False)
+        ):
+            return self.pos()
         if change == QGraphicsItem.ItemPositionHasChanged:
             try:
                 self._in_change = True
@@ -586,6 +633,8 @@ class ElementLineItem(QGraphicsLineItem):
     ):
         # MUST exist before Qt potentially triggers itemChange during init/flag changes
         self._in_itemchange = False
+        self._ctrl_move_active = False
+        self._mouse_move_guard_active = False
         super().__init__()
 
         self.element = element
@@ -641,6 +690,12 @@ class ElementLineItem(QGraphicsLineItem):
             "gable_back": (QColor(234, 88, 12), "GH"),
             "gable_left": (QColor(251, 191, 36), "GL"),
             "gable_right": (QColor(249, 115, 22), "GR"),
+            "roof_window": (QColor(14, 165, 233), "DF"),
+            "dormer_front": (QColor(20, 184, 166), "GF"),
+            "dormer_side_left": (QColor(13, 148, 136), "GS"),
+            "dormer_side_right": (QColor(13, 148, 136), "GS"),
+            "dormer_roof": (QColor(45, 212, 191), "GD"),
+            "dormer_window": (QColor(6, 182, 212), "GW"),
         }
         return mapping.get(part, (QColor(139, 92, 246), "DG"))
 
@@ -855,6 +910,8 @@ class ElementLineItem(QGraphicsLineItem):
             return super().itemChange(change, value)
 
         if change == QGraphicsItem.ItemPositionChange and isinstance(value, QPointF):
+            if getattr(self, "_mouse_move_guard_active", False) and not getattr(self, "_ctrl_move_active", False):
+                return self.pos()
             # optional snap/validation via callback (MainWindow)
             if self.on_propose_move and self.element.has_geometry():
                 try:
@@ -885,7 +942,18 @@ class ElementLineItem(QGraphicsLineItem):
                 self.on_select(self.element)
             except Exception:
                 pass
+        self._mouse_move_guard_active = True
+        self._ctrl_move_active = _ctrl_drag_requested(event)
         super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        super().mouseReleaseEvent(event)
+        self._mouse_move_guard_active = False
+        self._ctrl_move_active = False
+
+    def mouseMoveEvent(self, event):
+        self._ctrl_move_active = _ctrl_drag_requested(event)
+        super().mouseMoveEvent(event)
 
 
 # --------------------------------------------------------------------------------------
@@ -915,6 +983,8 @@ class WindowLineItem(QGraphicsLineItem):
         self._a0_m = float(min(a0_m, a1_m))
         self._a1_m = float(max(a0_m, a1_m))
         self._on_geometry_changed = on_geometry_changed
+        self._ctrl_move_active = False
+        self._mouse_move_guard_active = False
 
         self.setFlag(QGraphicsItem.ItemIsSelectable, True)
         self.setFlag(QGraphicsItem.ItemIsMovable, True)
@@ -1014,6 +1084,8 @@ class WindowLineItem(QGraphicsLineItem):
 
     def itemChange(self, change, value):
         if change == QGraphicsItem.ItemPositionChange and isinstance(value, QPointF):
+            if getattr(self, "_mouse_move_guard_active", False) and not getattr(self, "_ctrl_move_active", False):
+                return self.pos()
             # constrain to wall axis and to [a0, a1]
             x = value.x() / PX_PER_M
             y = value.y() / PX_PER_M
@@ -1042,3 +1114,17 @@ class WindowLineItem(QGraphicsLineItem):
                 self._on_geometry_changed(self.element)
 
         return super().itemChange(change, value)
+
+    def mousePressEvent(self, event):
+        self._mouse_move_guard_active = True
+        self._ctrl_move_active = _ctrl_drag_requested(event)
+        super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        super().mouseReleaseEvent(event)
+        self._mouse_move_guard_active = False
+        self._ctrl_move_active = False
+
+    def mouseMoveEvent(self, event):
+        self._ctrl_move_active = _ctrl_drag_requested(event)
+        super().mouseMoveEvent(event)

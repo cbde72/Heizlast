@@ -15,16 +15,20 @@ class GroundModelCfg:
       - "none"       : Erdreichmodell aus
       - "simplified" : effektive Erdtemperatur Tg
       - "perimeter"  : simplified + ψ·L·ΔT-Randverlust
+      - "din_ts"     : DIN/TS-orientierter Ersatztemperaturansatz mit separaten Faktoren
 
     ground_temp_c:
       Feste Erdtemperatur. Wenn ``None``, wird Tg aus ``f_ground`` gebildet.
     """
 
-    mode: Literal["none", "simplified", "perimeter"] = "simplified"
+    mode: Literal["none", "simplified", "perimeter", "din_ts"] = "simplified"
     ground_temp_c: Optional[float] = None
     f_slab: float = 0.40
     f_wall: float = 0.60
     psi_perimeter_w_mk: float = 0.0
+    din_ts_f_slab: float = 0.35
+    din_ts_f_wall: float = 0.50
+    din_ts_source: str = ""
 
 
 def effective_ground_temp(
@@ -41,6 +45,27 @@ def effective_ground_temp(
         except Exception:
             pass
     return float(t_out_c) + float(f_ground) * (float(t_in_c) - float(t_out_c))
+
+
+def effective_ground_temp_for_cfg(
+    cfg: GroundModelCfg,
+    ground_kind: str,
+    t_in_c: float,
+    t_out_c: float,
+) -> tuple[float, float, str]:
+    """Return effective ground temperature plus factor and method label."""
+    mode = str(getattr(cfg, "mode", "simplified") or "simplified").strip().lower()
+    if mode == "din_ts":
+        f = float(getattr(cfg, "din_ts_f_slab", 0.35) if ground_kind == "slab" else getattr(cfg, "din_ts_f_wall", 0.50))
+        return effective_ground_temp(t_in_c, t_out_c, fixed_ground_temp_c=None, f_ground=f), f, "din_ts"
+
+    f = float(getattr(cfg, "f_slab", 0.40) if ground_kind == "slab" else getattr(cfg, "f_wall", 0.60))
+    return effective_ground_temp(
+        t_in_c,
+        t_out_c,
+        fixed_ground_temp_c=getattr(cfg, "ground_temp_c", None),
+        f_ground=f,
+    ), f, mode
 
 
 def is_ground_element(e: ElementModel) -> Tuple[bool, str]:
@@ -74,4 +99,15 @@ def is_ground_element(e: ElementModel) -> Tuple[bool, str]:
 
 # Backward-compatible aliases for existing internal call sites
 _effective_ground_temp = effective_ground_temp
+_effective_ground_temp_for_cfg = effective_ground_temp_for_cfg
 _is_ground_element = is_ground_element
+
+
+def describe_ground_model(mode: str) -> str:
+    labels = {
+        "none": "kein Erdreichmodell",
+        "simplified": "vereinfachte Ersatztemperatur",
+        "perimeter": "vereinfachte Ersatztemperatur mit Psi-Perimeter",
+        "din_ts": "DIN/TS-orientierter Ersatztemperaturansatz",
+    }
+    return labels.get(str(mode or "").strip().lower(), "vereinfachte Ersatztemperatur")

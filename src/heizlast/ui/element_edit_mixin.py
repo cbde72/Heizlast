@@ -1,6 +1,8 @@
 from typing import List, Optional
 import json
+from uuid import uuid4
 from PySide6.QtWidgets import (
+    QComboBox,
     QDialog,
     QVBoxLayout,
     QFormLayout,
@@ -8,6 +10,7 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox,
     QTextEdit,
     QLabel,
+    QPushButton,
     QDialogButtonBox,
     QMessageBox,
 )
@@ -20,6 +23,142 @@ from ..domain.models import ElementModel
 from ..core.polygon_ops import snap_m
 
 class MainWindowElementEditMixin:
+    def _project_u_default_for_element(self, element_type: str) -> float:
+        cfg = getattr(self, "project_cfg", None)
+        et = str(element_type or "").lower()
+        if "fenster" in et:
+            return float(getattr(cfg, "u_fenster_w_m2k", 1.30) or 1.30)
+        if "tür" in et or "tuer" in et:
+            return float(getattr(cfg, "u_tuer_w_m2k", 1.80) or 1.80)
+        if "bodenplatte" in et or "boden" in et:
+            return float(getattr(cfg, "u_bodenplatte_w_m2k", 0.35) or 0.35)
+        if "erd" in et:
+            return float(getattr(cfg, "u_erdberuehrte_wand_w_m2k", 0.45) or 0.45)
+        if "innenwand" in et or "innen" in et:
+            return 0.0
+        if "kellerdecke" in et:
+            return float(getattr(cfg, "u_kellerdecke_w_m2k", 0.60) or 0.60)
+        if "geschossdecke" in et:
+            return float(getattr(cfg, "u_eg_geschossdecke_w_m2k", 0.40) or 0.40)
+        if "speicherdecke" in et:
+            return float(getattr(cfg, "u_dg_geschossdecke_w_m2k", 0.20) or 0.20)
+        if "dach" in et:
+            attic = getattr(cfg, "attic", None)
+            return float(getattr(attic, "u_roof_w_m2k", 0.20) or 0.20)
+        return float(getattr(cfg, "u_aussenwand_w_m2k", 0.35) or 0.35)
+
+    def _on_element_assistant(self) -> None:
+        rid = getattr(self, "_selected_room_id", None)
+        room = self.rooms.get(rid) if rid else None
+        if room is None:
+            QMessageBox.information(self, "Bauteil-Assistent", "Bitte zuerst einen Raum auswählen.")
+            return
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Bauteil-Assistent")
+        lay = QVBoxLayout(dlg)
+        hint = QLabel("Geführte Eingabe für normnahe Bauteildaten. Das Bauteil wird dem selektierten Raum zugeordnet.")
+        hint.setWordWrap(True)
+        lay.addWidget(hint)
+        form = QFormLayout()
+        lay.addLayout(form)
+
+        cb_type = QComboBox()
+        cb_type.addItems(["Außenwand", "Innenwand", "Fenster", "Tür", "Dach", "Kellerdecke", "Geschossdecke", "Speicherdecke", "Bodenplatte", "Erdberührte Wand"])
+        form.addRow("Bauteiltyp", cb_type)
+
+        cb_boundary = QComboBox()
+        cb_boundary.addItems(["Außenluft", "Erdreich", "unbeheizter Keller", "unbeheizter Dachraum", "Nachbarzone/Interzone"])
+        form.addRow("Randbedingung", cb_boundary)
+
+        sp_area = QDoubleSpinBox()
+        sp_area.setRange(0.0, 10000.0)
+        sp_area.setDecimals(3)
+        sp_area.setSingleStep(0.5)
+        sp_area.setValue(max(0.0, float(room.area_m2() if "Boden" in cb_type.currentText() else room.perimeter_m() * room.height_m)))
+        form.addRow("Fläche A [m²]", sp_area)
+
+        sp_u = QDoubleSpinBox()
+        sp_u.setRange(0.0, 20.0)
+        sp_u.setDecimals(3)
+        sp_u.setSingleStep(0.05)
+        sp_u.setValue(self._project_u_default_for_element(cb_type.currentText()))
+        form.addRow("U [W/m²K]", sp_u)
+
+        sp_factor = QDoubleSpinBox()
+        sp_factor.setRange(0.0, 5.0)
+        sp_factor.setDecimals(3)
+        sp_factor.setSingleStep(0.05)
+        sp_factor.setValue(1.0)
+        form.addRow("Temperaturfaktor f", sp_factor)
+
+        cb_source = QComboBox()
+        cb_source.addItems(["Projektwert", "DIN/Normtabelle", "Hersteller-/Bauteilnachweis", "geschätzt", "manuell"])
+        form.addRow("Quelle/Status", cb_source)
+
+        ed_source = QLineEdit()
+        ed_source.setPlaceholderText("z.B. Projekt-U-Wert, Datenblatt, Bestand, Annahme")
+        form.addRow("Quellenhinweis", ed_source)
+
+        def _type_changed(label: str) -> None:
+            sp_u.setValue(self._project_u_default_for_element(label))
+            label_l = label.lower()
+            if "innenwand" in label_l:
+                cb_boundary.setCurrentText("Nachbarzone/Interzone")
+                sp_factor.setValue(0.0)
+                sp_area.setValue(max(0.0, float(room.perimeter_m() * room.height_m * 0.5)))
+            elif any(token in label_l for token in ("boden", "decke")):
+                sp_area.setValue(max(0.0, float(room.area_m2())))
+            elif "fenster" in label_l or "tür" in label_l or "tuer" in label_l:
+                sp_area.setValue(1.5 if "fenster" in label_l else 2.0)
+            else:
+                if "außenwand" in label_l or "aussenwand" in label_l:
+                    cb_boundary.setCurrentText("Außenluft")
+                    sp_factor.setValue(1.0)
+                sp_area.setValue(max(0.0, float(room.perimeter_m() * room.height_m)))
+
+        cb_type.currentTextChanged.connect(_type_changed)
+
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        lay.addWidget(bb)
+        bb.accepted.connect(dlg.accept)
+        bb.rejected.connect(dlg.reject)
+        if dlg.exec() != QDialog.Accepted:
+            return
+
+        boundary_map = {
+            "Außenluft": "outside",
+            "Erdreich": "ground",
+            "unbeheizter Keller": "basement",
+            "unbeheizter Dachraum": "attic_unheated",
+            "Nachbarzone/Interzone": "interzone",
+        }
+        source_status = cb_source.currentText()
+        meta = dump_meta({
+            "manual_assistant": "1",
+            "boundary": boundary_map.get(cb_boundary.currentText(), "outside"),
+            "source_status": source_status,
+            "source_note": ed_source.text().strip(),
+        })
+        element = ElementModel(
+            room_id=str(room.id),
+            element_type=cb_type.currentText(),
+            area_m2=float(sp_area.value()),
+            u_w_m2k=float(sp_u.value()),
+            factor=float(sp_factor.value()),
+            floor=str(getattr(room, "floor", "") or ""),
+            uid=f"manual_{uuid4().hex[:10]}",
+            meta=meta,
+        )
+        self.elements.append(element)
+        try:
+            self.metrics.bind(self.rooms, self.elements)
+        except Exception:
+            pass
+        self._populate_room_elements_list()
+        self._recompute_and_redraw()
+        self._mark_dirty("element_assistant")
+
     def _edit_element_dialog(self, e) -> bool:
         """Öffnet einen Dialog zum Bearbeiten eines Elements."""
         dlg = QDialog(self)
@@ -82,6 +221,17 @@ class MainWindowElementEditMixin:
         meta_raw = getattr(e, "meta", "") or ""
         meta_dict, meta_fmt = self._meta_parse_any(meta_raw)
 
+        cb_source = QComboBox()
+        cb_source.addItems(["Projektwert", "DIN/Normtabelle", "Hersteller-/Bauteilnachweis", "geschätzt", "manuell"])
+        source_status = str(meta_dict.get("source_status", "") or "")
+        idx = cb_source.findText(source_status)
+        cb_source.setCurrentIndex(idx if idx >= 0 else 0)
+        form.addRow("Quelle/Status", cb_source)
+
+        ed_source = QLineEdit(str(meta_dict.get("source_note", "") or ""))
+        ed_source.setPlaceholderText("Quellenhinweis oder Annahme")
+        form.addRow("Quellenhinweis", ed_source)
+
         te_meta = QTextEdit()
         te_meta.setMinimumHeight(110)
         try:
@@ -109,6 +259,8 @@ class MainWindowElementEditMixin:
                     return
 
             # Meta zurück in ursprüngliches Format serialisieren (JSON bleibt JSON)
+            new_meta_dict["source_status"] = cb_source.currentText()
+            new_meta_dict["source_note"] = ed_source.text().strip()
             new_meta_str = self._meta_dump_any(new_meta_dict, meta_fmt)
 
             # Zurückschreiben

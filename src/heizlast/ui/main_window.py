@@ -21,6 +21,7 @@ from .redraw_mixin import MainWindowRedrawMixin
 from .autowalls_mixin import MainWindowAutowallsMixin
 from .overlay_mixin import MainWindowOverlayMixin
 from .misc_mixin import MainWindowMiscMixin
+from .comfort_mixin import MainWindowComfortMixin
 from ..infrastructure.attic_svg import AtticSvgRenderer
 from .. import APP_NAME, __internal_version__
 
@@ -37,6 +38,7 @@ class MainWindow(
     MainWindowAutowallsMixin,
     MainWindowOverlayMixin,
     MainWindowMiscMixin,
+    MainWindowComfortMixin,
     QMainWindow,
 ):
     """Integrated split MainWindow for the V5.16 package."""
@@ -110,6 +112,7 @@ class MainWindow(
         # Persisted UI settings
         self._settings = QSettings("Heizlast", "HouseTool")
         self._build_ui()
+        self._setup_comfort_features()
         # Re-entrancy guards (verhindert doppelte/rekursive Updates)
         self._in_populate_room_elements_list = False
         self._in_sync_list_with_graphics_selection = False
@@ -119,6 +122,7 @@ class MainWindow(
 
         self._recompute_and_redraw()
         self._refresh_attic_preview()
+        self._mark_clean()
 
     def _current_attic_geometry(self) -> Optional[AtticGeometry]:
         cfg = getattr(self, "project_cfg", None)
@@ -134,8 +138,20 @@ class MainWindow(
                 roof_type=str(getattr(attic_cfg, "roof_type", "satteldach") or "satteldach").strip().lower(),
                 ridge_orientation=str(getattr(attic_cfg, "ridge_orientation", "length") or "length").strip().lower(),
                 roof_overhang_m=float(getattr(attic_cfg, "roof_overhang_m", 0.30) or 0.0),
+                eave_overhang_m=float(getattr(attic_cfg, "eave_overhang_m", getattr(attic_cfg, "roof_overhang_m", 0.30)) or 0.0),
+                gable_overhang_m=float(getattr(attic_cfg, "gable_overhang_m", getattr(attic_cfg, "roof_overhang_m", 0.30)) or 0.0),
                 ridge_offset_ratio=float(getattr(attic_cfg, "ridge_offset_ratio", 0.0) or 0.0),
+                ridge_height_m=(float(getattr(attic_cfg, "ridge_height_m")) if getattr(attic_cfg, "ridge_height_m", None) is not None else None),
                 pult_rise_side=str(getattr(attic_cfg, "pult_rise_side", "right") or "right").strip().lower(),
+                half_hip_ratio=float(getattr(attic_cfg, "half_hip_ratio", 0.45) or 0.45),
+                dormer_type=str(getattr(attic_cfg, "dormer_type", "none") or "none").strip().lower(),
+                dormer_width_m=float(getattr(attic_cfg, "dormer_width_m", 1.80) or 1.80),
+                dormer_height_m=float(getattr(attic_cfg, "dormer_height_m", 1.20) or 1.20),
+                dormer_offset_ratio=float(getattr(attic_cfg, "dormer_offset_ratio", 0.0) or 0.0),
+                roof_window_count=int(getattr(attic_cfg, "roof_window_count", 0) or 0),
+                roof_window_width_m=float(getattr(attic_cfg, "roof_window_width_m", 0.78) or 0.78),
+                roof_window_height_m=float(getattr(attic_cfg, "roof_window_height_m", 1.18) or 1.18),
+                roof_window_side=str(getattr(attic_cfg, "roof_window_side", "right") or "right").strip().lower(),
                 roof_lines=tuple((str(getattr(line, "kind", "first") or "first"), float(getattr(line, "x1_ratio", 0.0) or 0.0), float(getattr(line, "y1_ratio", 0.0) or 0.0), float(getattr(line, "x2_ratio", 0.0) or 0.0), float(getattr(line, "y2_ratio", 0.0) or 0.0)) for line in list(getattr(attic_cfg, "roof_lines", []) or [])),
             )
         except Exception:

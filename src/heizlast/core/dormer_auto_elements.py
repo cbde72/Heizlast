@@ -82,13 +82,13 @@ def dormer_to_auto_elements(result: DormerResult, *, room_id: str = "DG", floor:
     win_u = float(DEFAULT_U.get("Fenster", 1.30))
 
     if result.areas.front_wall_net_m2 > 0:
-        elems.append(ElementModel(room_id=room_id, element_type="Außenwand", area_m2=result.areas.front_wall_net_m2, u_w_m2k=wall_u, factor=wall_factor, floor=floor, uid=f"auto_dormer_front_{result.input.id}", meta=f"dormer_auto|part=front|dormer_id={result.input.id}"))
+        elems.append(ElementModel(room_id=room_id, element_type="Außenwand", area_m2=result.areas.front_wall_net_m2, u_w_m2k=wall_u, factor=wall_factor, floor=floor, uid=f"auto_dormer_front_{result.input.id}", meta=f"dormer_auto|part=front|boundary=outside|dormer_id={result.input.id}"))
     side_each = result.areas.side_walls_net_m2 / 2.0
     if side_each > 0:
-        elems.append(ElementModel(room_id=room_id, element_type="Außenwand", area_m2=side_each, u_w_m2k=wall_u, factor=wall_factor, floor=floor, uid=f"auto_dormer_side_left_{result.input.id}", meta=f"dormer_auto|part=side_left|dormer_id={result.input.id}"))
-        elems.append(ElementModel(room_id=room_id, element_type="Außenwand", area_m2=side_each, u_w_m2k=wall_u, factor=wall_factor, floor=floor, uid=f"auto_dormer_side_right_{result.input.id}", meta=f"dormer_auto|part=side_right|dormer_id={result.input.id}"))
+        elems.append(ElementModel(room_id=room_id, element_type="Außenwand", area_m2=side_each, u_w_m2k=wall_u, factor=wall_factor, floor=floor, uid=f"auto_dormer_side_left_{result.input.id}", meta=f"dormer_auto|part=side_left|boundary=outside|dormer_id={result.input.id}"))
+        elems.append(ElementModel(room_id=room_id, element_type="Außenwand", area_m2=side_each, u_w_m2k=wall_u, factor=wall_factor, floor=floor, uid=f"auto_dormer_side_right_{result.input.id}", meta=f"dormer_auto|part=side_right|boundary=outside|dormer_id={result.input.id}"))
     if result.areas.dormer_roof_m2 > 0:
-        elems.append(ElementModel(room_id=room_id, element_type="Dach", area_m2=result.areas.dormer_roof_m2, u_w_m2k=roof_u, factor=roof_factor, floor=floor, uid=f"auto_dormer_roof_{result.input.id}", meta=f"dormer_auto|part=roof|dormer_id={result.input.id}"))
+        elems.append(ElementModel(room_id=room_id, element_type="Dach", area_m2=result.areas.dormer_roof_m2, u_w_m2k=roof_u, factor=roof_factor, floor=floor, uid=f"auto_dormer_roof_{result.input.id}", meta=f"dormer_auto|part=roof|boundary=outside|dormer_id={result.input.id}"))
     if result.areas.window_area_m2 > 0:
-        elems.append(ElementModel(room_id=room_id, element_type="Fenster", area_m2=result.areas.window_area_m2, u_w_m2k=win_u, factor=1.0, floor=floor, uid=f"auto_dormer_window_{result.input.id}", meta=f"dormer_auto|part=window|dormer_id={result.input.id}"))
+        elems.append(ElementModel(room_id=room_id, element_type="Fenster", area_m2=result.areas.window_area_m2, u_w_m2k=win_u, factor=1.0, floor=floor, uid=f"auto_dormer_window_{result.input.id}", meta=f"dormer_auto|part=window|boundary=outside|dormer_id={result.input.id}"))
     return elems

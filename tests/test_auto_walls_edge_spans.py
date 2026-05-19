@@ -55,3 +55,12 @@ def test_auto_wall_meta_contains_expected_anchor_fields(make_room_rect):
     assert 'a0=' in meta
     assert 'a1=' in meta
     assert 'edge_uid=' in meta
+
+
+def test_auto_wall_builder_accepts_project_outer_wall_u_value(make_room_rect):
+    r = make_room_rect('R1', 0.0, 0.0, 4.0, 3.0)
+    elems = build_auto_walls_shared_merge([r], u_aussenwand_w_m2k=0.28)
+    outer = [e for e in elems if e.element_type == "Aussenwand"]
+
+    assert outer
+    assert all(e.u_w_m2k == 0.28 for e in outer)

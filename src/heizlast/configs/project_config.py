@@ -8,7 +8,8 @@ from .. import PROJECT_SCHEMA_VERSION
 ThicknessMode = Literal["half", "full"]
 FloorAreaMode = Literal["inner", "outer"]
 TBMode = Literal["none", "delta_u", "psi", "percent"]
-GroundMode = Literal["none", "simplified", "perimeter"]
+GroundMode = Literal["none", "simplified", "perimeter", "din_ts"]
+VentilationMode = Literal["natural", "mechanical"]
 RoofType = Literal["satteldach", "pultdach", "walmdach", "krueppelwalmdach", "flachdach", "winkeldach"]
 RoofLineKind = Literal["first", "grat", "kehle"]
 RidgeOrientation = Literal["length", "width"]
@@ -40,6 +41,7 @@ class AtticCfgDTO:
     eave_overhang_m: float = 0.30
     gable_overhang_m: float = 0.30
     ridge_offset_ratio: float = 0.0
+    ridge_height_m: Optional[float] = None
     pult_rise_side: PultRiseSide = "right"
     half_hip_ratio: float = 0.45
     dormer_type: DormerType = "none"
@@ -51,6 +53,8 @@ class AtticCfgDTO:
     roof_window_height_m: float = 1.18
     roof_window_side: RoofWindowSide = "right"
     roof_pitch_deg: float = 35.0
+    roof_boundary: Literal["outside", "unheated_attic"] = "outside"
+    roof_unheated_factor: float = 0.80
     facade_material: FacadeMaterial = "klinker"
     roof_material: RoofMaterial = "ziegel"
     u_roof_w_m2k: float = 0.30
@@ -95,18 +99,31 @@ class GroundModelCfgDTO:
     f_slab: float = 0.40
     f_wall: float = 0.60
     psi_perimeter_w_mk: float = 0.0
+    din_ts_f_slab: float = 0.35
+    din_ts_f_wall: float = 0.50
+    din_ts_source: str = ""
 
 
 @dataclass
 class ProjectCfg:
     cfg_version: int = PROJECT_SCHEMA_VERSION
-    internal_project_version: str = "V31-intern-01"
+    internal_project_version: str = "V33-intern-01"
 
     # Randbedingungen
     t_out_c: float = -10.0
     t_keller_c: float = 14.0
     t_oben_c: float = 12.0
     t_out_source: str = "manual"
+    norm_edition: str = "DIN EN 12831-1:2017-09 / DIN/TS 12831-1:2020-04"
+    t_out_source_detail: str = ""
+    climate_station: str = ""
+    climate_altitude_correction: str = ""
+    thermal_bridge_source: str = ""
+    ground_source: str = ""
+    ventilation_source: str = ""
+    reheat_source: str = ""
+    u_value_source: str = ""
+    reviewer_note: str = ""
 
     # Geometrie
     thickness_mode: ThicknessMode = "full"
@@ -115,15 +132,35 @@ class ProjectCfg:
 
     # Lüftung
     c_air: float = 0.34
+    ventilation_mode: VentilationMode = "natural"
+    min_air_change_1ph: float = 0.0
+    infiltration_air_change_1ph: float = 0.0
+    mech_supply_m3h: float = 0.0
+    mech_exhaust_m3h: float = 0.0
+    heat_recovery_efficiency: float = 0.0
+
+    # Aufheizzuschlag
+    reheat_enabled: bool = False
+    reheat_power_w_m2: float = 0.0
+    reheat_duration_h: float = 2.0
+    reheat_temp_drop_k: float = 0.0
+    reheat_capacity_wh_m2k: float = 20.0
 
     # Wanddicken
     wall_thickness_outer_m: float = 0.455
     wall_thickness_inner_m: float = 0.115
+    wall_heat_transfer_coeff_inside_w_m2k: float = 7.69
+    wall_heat_transfer_coeff_outside_w_m2k: float = 25.0
 
     # Auto-Decken
+    u_aussenwand_w_m2k: float = 0.45
+    u_fenster_w_m2k: float = 2.80
+    u_tuer_w_m2k: float = 1.80
     u_kellerdecke_w_m2k: float = 0.45
     u_eg_geschossdecke_w_m2k: float = 0.30
     u_dg_geschossdecke_w_m2k: float = 0.25
+    u_bodenplatte_w_m2k: float = 0.40
+    u_erdberuehrte_wand_w_m2k: float = 0.60
 
     # Wärmebrücken
     tb: ThermalBridgeCfgDTO = field(default_factory=ThermalBridgeCfgDTO)
@@ -230,6 +267,65 @@ class ProjectCfg:
                 a.setdefault("roof_lines", [])
             d.setdefault("internal_project_version", "V30-intern-01")
             version = 15
+        if version < 17:
+            if "attic" not in d or not isinstance(d.get("attic", {}), dict):
+                d["attic"] = {}
+            a = d.get("attic", {})
+            if isinstance(a, dict):
+                a.setdefault("ridge_height_m", None)
+                a.setdefault("roof_boundary", "outside")
+                a.setdefault("roof_unheated_factor", 0.80)
+            d.setdefault("internal_project_version", "V33-intern-01")
+            version = 17
+        if version < 18:
+            d.setdefault("norm_edition", "DIN EN 12831-1:2017-09 / DIN/TS 12831-1:2020-04")
+            d.setdefault("t_out_source_detail", "")
+            d.setdefault("thermal_bridge_source", "")
+            d.setdefault("ground_source", "")
+            d.setdefault("ventilation_source", "")
+            d.setdefault("reheat_source", "")
+            d.setdefault("reviewer_note", "")
+            d.setdefault("ventilation_mode", "natural")
+            d.setdefault("mech_supply_m3h", 0.0)
+            d.setdefault("mech_exhaust_m3h", 0.0)
+            d.setdefault("heat_recovery_efficiency", 0.0)
+            d.setdefault("reheat_enabled", False)
+            d.setdefault("reheat_power_w_m2", 0.0)
+            version = 18
+        if version < 19:
+            d.setdefault("climate_station", "")
+            d.setdefault("climate_altitude_correction", "")
+            d.setdefault("reheat_duration_h", 2.0)
+            d.setdefault("reheat_temp_drop_k", 0.0)
+            d.setdefault("reheat_capacity_wh_m2k", 20.0)
+            if "ground" not in d or not isinstance(d.get("ground", {}), dict):
+                d["ground"] = {}
+            g = d.get("ground", {})
+            if isinstance(g, dict):
+                g.setdefault("din_ts_f_slab", 0.35)
+                g.setdefault("din_ts_f_wall", 0.50)
+                g.setdefault("din_ts_source", "")
+            version = 19
+        if version < 20:
+            d.setdefault("wall_heat_transfer_coeff_inside_w_m2k", 7.69)
+            d.setdefault("wall_heat_transfer_coeff_outside_w_m2k", 25.0)
+            version = 20
+        if version < 21:
+            d.setdefault("min_air_change_1ph", 0.0)
+            d.setdefault("infiltration_air_change_1ph", 0.0)
+            version = 21
+        if version < 22:
+            d.setdefault("u_bodenplatte_w_m2k", 0.40)
+            d.setdefault("u_erdberuehrte_wand_w_m2k", 0.60)
+            version = 22
+        if version < 23:
+            d.setdefault("u_aussenwand_w_m2k", 0.45)
+            version = 23
+        if version < 24:
+            d.setdefault("u_fenster_w_m2k", 2.80)
+            d.setdefault("u_tuer_w_m2k", 1.80)
+            d.setdefault("u_value_source", "")
+            version = 24
 
         tb_raw = d.get("tb", {}) if isinstance(d.get("tb", {}), dict) else {}
         g_raw = d.get("ground", {}) if isinstance(d.get("ground", {}), dict) else {}
@@ -242,15 +338,43 @@ class ProjectCfg:
             t_keller_c=float(d.get("t_keller_c", 14.0)),
             t_oben_c=float(d.get("t_oben_c", 12.0)),
             t_out_source=str(d.get("t_out_source", "manual")),
+            norm_edition=str(d.get("norm_edition", "DIN EN 12831-1:2017-09 / DIN/TS 12831-1:2020-04")),
+            t_out_source_detail=str(d.get("t_out_source_detail", "")),
+            climate_station=str(d.get("climate_station", "")),
+            climate_altitude_correction=str(d.get("climate_altitude_correction", "")),
+            thermal_bridge_source=str(d.get("thermal_bridge_source", "")),
+            ground_source=str(d.get("ground_source", "")),
+            ventilation_source=str(d.get("ventilation_source", "")),
+            reheat_source=str(d.get("reheat_source", "")),
+            u_value_source=str(d.get("u_value_source", "")),
+            reviewer_note=str(d.get("reviewer_note", "")),
             thickness_mode=str(d.get("thickness_mode", "full")),
             area_shrink_factor=float(d.get("area_shrink_factor", 0.97)),
             floor_area_mode=str(d.get("floor_area_mode", "inner")),
             c_air=float(d.get("c_air", 0.34)),
+            ventilation_mode=str(d.get("ventilation_mode", "natural")),
+            min_air_change_1ph=float(d.get("min_air_change_1ph", 0.0)),
+            infiltration_air_change_1ph=float(d.get("infiltration_air_change_1ph", 0.0)),
+            mech_supply_m3h=float(d.get("mech_supply_m3h", 0.0)),
+            mech_exhaust_m3h=float(d.get("mech_exhaust_m3h", 0.0)),
+            heat_recovery_efficiency=float(d.get("heat_recovery_efficiency", 0.0)),
+            reheat_enabled=bool(d.get("reheat_enabled", False)),
+            reheat_power_w_m2=float(d.get("reheat_power_w_m2", 0.0)),
+            reheat_duration_h=float(d.get("reheat_duration_h", 2.0)),
+            reheat_temp_drop_k=float(d.get("reheat_temp_drop_k", 0.0)),
+            reheat_capacity_wh_m2k=float(d.get("reheat_capacity_wh_m2k", 20.0)),
             wall_thickness_outer_m=float(d.get("wall_thickness_outer_m", 0.455)),
             wall_thickness_inner_m=float(d.get("wall_thickness_inner_m", 0.115)),
+            wall_heat_transfer_coeff_inside_w_m2k=float(d.get("wall_heat_transfer_coeff_inside_w_m2k", 7.69)),
+            wall_heat_transfer_coeff_outside_w_m2k=float(d.get("wall_heat_transfer_coeff_outside_w_m2k", 25.0)),
+            u_aussenwand_w_m2k=float(d.get("u_aussenwand_w_m2k", 0.45)),
+            u_fenster_w_m2k=float(d.get("u_fenster_w_m2k", 2.80)),
+            u_tuer_w_m2k=float(d.get("u_tuer_w_m2k", 1.80)),
             u_kellerdecke_w_m2k=float(d.get("u_kellerdecke_w_m2k", 0.45)),
             u_eg_geschossdecke_w_m2k=float(d.get("u_eg_geschossdecke_w_m2k", 0.30)),
             u_dg_geschossdecke_w_m2k=float(d.get("u_dg_geschossdecke_w_m2k", 0.25)),
+            u_bodenplatte_w_m2k=float(d.get("u_bodenplatte_w_m2k", 0.40)),
+            u_erdberuehrte_wand_w_m2k=float(d.get("u_erdberuehrte_wand_w_m2k", 0.60)),
             tb=ThermalBridgeCfgDTO(
                 mode=str(tb_raw.get("mode", "none")),
                 delta_u_w_m2k=float(tb_raw.get("delta_u_w_m2k", 0.05)),
@@ -267,6 +391,9 @@ class ProjectCfg:
                 f_slab=float(g_raw.get("f_slab", 0.40)),
                 f_wall=float(g_raw.get("f_wall", 0.60)),
                 psi_perimeter_w_mk=float(g_raw.get("psi_perimeter_w_mk", 0.0)),
+                din_ts_f_slab=float(g_raw.get("din_ts_f_slab", 0.35)),
+                din_ts_f_wall=float(g_raw.get("din_ts_f_wall", 0.50)),
+                din_ts_source=str(g_raw.get("din_ts_source", "")),
             ),
             attic=AtticCfgDTO(
                 enabled=bool(a_raw.get("enabled", False)),
@@ -279,6 +406,7 @@ class ProjectCfg:
                 eave_overhang_m=float(a_raw.get("eave_overhang_m", a_raw.get("roof_overhang_m", 0.30))),
                 gable_overhang_m=float(a_raw.get("gable_overhang_m", a_raw.get("roof_overhang_m", 0.30))),
                 ridge_offset_ratio=float(a_raw.get("ridge_offset_ratio", 0.0)),
+                ridge_height_m=(float(a_raw.get("ridge_height_m")) if a_raw.get("ridge_height_m") not in (None, "") else None),
                 pult_rise_side=str(a_raw.get("pult_rise_side", "right") or "right").strip().lower(),
                 half_hip_ratio=float(a_raw.get("half_hip_ratio", 0.45)),
                 dormer_type=str(a_raw.get("dormer_type", "none") or "none").strip().lower(),
@@ -290,6 +418,8 @@ class ProjectCfg:
                 roof_window_height_m=float(a_raw.get("roof_window_height_m", 1.18)),
                 roof_window_side=str(a_raw.get("roof_window_side", "right") or "right").strip().lower(),
                 roof_pitch_deg=float(a_raw.get("roof_pitch_deg", 35.0)),
+                roof_boundary=str(a_raw.get("roof_boundary", "outside") or "outside").strip().lower(),
+                roof_unheated_factor=float(a_raw.get("roof_unheated_factor", 0.80)),
                 facade_material=str(a_raw.get("facade_material", "klinker") or "klinker").strip().lower(),
                 roof_material=str(a_raw.get("roof_material", "ziegel") or "ziegel").strip().lower(),
                 u_roof_w_m2k=float(a_raw.get("u_roof_w_m2k", 0.30)),

@@ -182,11 +182,11 @@ class AtticGeometry:
 
     @property
     def gable_rect_area_m2(self) -> float:
-        return float(self.building_width_m) * float(self.knee_wall_height_m)
+        return float(self.cross_span_m) * float(self.knee_wall_height_m)
 
     @property
     def gable_triangle_area_m2(self) -> float:
-        tri = 0.5 * float(self.building_width_m) * self.roof_rise_m
+        tri = 0.5 * float(self.cross_span_m) * self.roof_rise_m
         if str(self.roof_type).lower() == "krueppelwalmdach":
             return tri * (1.0 - max(0.05, min(0.95, float(self.half_hip_ratio))))
         return tri
@@ -201,7 +201,7 @@ class AtticGeometry:
         if rt in ("satteldach", "pultdach", "krueppelwalmdach"):
             return 2.0 * self.gable_area_total_m2
         if rt == "walmdach":
-            return 0.35 * 2.0 * (float(self.building_width_m) * float(self.knee_wall_height_m) + 0.5 * float(self.building_width_m) * self.roof_rise_m)
+            return 0.35 * 2.0 * (float(self.cross_span_m) * float(self.knee_wall_height_m) + 0.5 * float(self.cross_span_m) * self.roof_rise_m)
         return 0.0
 
     @property

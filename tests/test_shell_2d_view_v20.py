@@ -6,13 +6,13 @@ MISC_MIXIN = ROOT / "src" / "heizlast" / "ui" / "misc_mixin.py"
 DIALOG = ROOT / "src" / "heizlast" / "ui" / "shell_2d_dialog.py"
 
 
-def test_project_menu_and_plan_bar_expose_shell_2d_action():
+def test_project_menu_exposes_shell_2d_action_without_plan_bar_button():
     src = BUILD_MIXIN.read_text(encoding="utf-8")
     assert 'self.act_show_2d_shell = self._make_action(' in src
     assert '"2D Gebäudehülle+"' in src
     assert 'menu.addAction(self.act_show_2d_shell)' in src
-    assert 'self.btn_show_shell_2d = QPushButton("2D Hülle+")' in src
-    assert 'self.btn_show_shell_2d.clicked.connect(self._on_show_2d_shell)' in src
+    assert 'self.btn_show_shell_2d = QPushButton("2D Hülle+")' not in src
+    assert 'self.btn_show_shell_2d.clicked.connect(self._on_show_2d_shell)' not in src
 
 
 def test_misc_mixin_contains_shell_2d_scene_builder_and_launcher():

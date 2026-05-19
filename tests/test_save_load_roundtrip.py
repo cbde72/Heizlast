@@ -56,6 +56,8 @@ def test_project_cfg_roundtrip_preserves_attic_u_values(tmp_path):
     cfg.attic.enabled = True
     cfg.attic.u_roof_w_m2k = 0.19
     cfg.attic.u_gable_w_m2k = 0.23
+    cfg.wall_heat_transfer_coeff_inside_w_m2k = 8.0
+    cfg.wall_heat_transfer_coeff_outside_w_m2k = 24.0
 
     save_project_cfg(path, cfg)
     loaded = load_project_cfg(path)
@@ -64,3 +66,5 @@ def test_project_cfg_roundtrip_preserves_attic_u_values(tmp_path):
     assert loaded.attic.enabled is True
     assert loaded.attic.u_roof_w_m2k == 0.19
     assert loaded.attic.u_gable_w_m2k == 0.23
+    assert loaded.wall_heat_transfer_coeff_inside_w_m2k == 8.0
+    assert loaded.wall_heat_transfer_coeff_outside_w_m2k == 24.0

@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (
 
 
 class NewProjectDialog(QDialog):
-    def __init__(self, parent=None, *, default_dir: str = '', suggested_name: str = 'heizlast_projekt'):
+    def __init__(self, parent=None, *, default_dir: str = '', suggested_name: str = 'heizlast_projekt', guided_default: bool = True):
         super().__init__(parent)
         self.setWindowTitle('Neues Projekt')
         self.setModal(True)
@@ -60,6 +60,18 @@ class NewProjectDialog(QDialog):
         self.chk_open_settings = QCheckBox('Projektparameter nach dem Anlegen direkt öffnen')
         self.chk_open_settings.setChecked(True)
         form.addRow('', self.chk_open_settings)
+
+        self.chk_guided_setup = QCheckBox('Geführten Normstart verwenden')
+        self.chk_guided_setup.setChecked(bool(guided_default))
+        form.addRow('', self.chk_guided_setup)
+
+        self.cb_setup_scope = QComboBox()
+        self.cb_setup_scope.addItems([
+            'Normprüfung, U-Werte, Lüftung, Erdreich',
+            'Nur Normprüfung und U-Werte',
+            'Nur Projektparameter öffnen',
+        ])
+        form.addRow('Start-Assistent', self.cb_setup_scope)
 
         self.chk_save_now = QCheckBox('Leeres Projekt sofort als CSV/JSON anlegen')
         self.chk_save_now.setChecked(True)
@@ -119,5 +131,7 @@ class NewProjectDialog(QDialog):
             'elements_path': str(rooms_path.with_name(f'{name}_elements.csv')),
             'start_floor': self.cb_floor.currentText(),
             'open_settings': self.chk_open_settings.isChecked(),
+            'guided_setup': self.chk_guided_setup.isChecked(),
+            'setup_scope': self.cb_setup_scope.currentText(),
             'save_now': self.chk_save_now.isChecked(),
         }

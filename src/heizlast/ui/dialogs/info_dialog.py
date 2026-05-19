@@ -108,7 +108,7 @@ class InfoDialog(QDialog):
         features.setMinimumHeight(190)
         right_lay.addWidget(features)
 
-        din_title = QLabel("DIN-Konformität")
+        din_title = QLabel("DIN-Prüfstatus")
         din_title.setObjectName("infoSectionTitle")
         right_lay.addWidget(din_title)
 
@@ -116,12 +116,12 @@ class InfoDialog(QDialog):
         din_text.setObjectName("infoDinText")
         din_text.setOpenExternalLinks(False)
         din_text.setHtml(
-            "<p>Das Werkzeug ist auf eine Auslegung nach <b>DIN EN 12831</b> ausgelegt.</p>"
+            "<p>Das Werkzeug ist auf eine <b>DIN-orientierte</b> Auslegung mit Bezug auf DIN EN 12831-1 und DIN/TS 12831-1 ausgelegt; es ersetzt keinen vollständigen Normnachweis.</p>"
             "<p>Unterstützt werden wesentliche Eingangsgrößen und Rechenbausteine wie "
             "Norm-Außentemperatur, Lüftungsansatz, Wärmebrückenansatz, Erdreichmodell "
             "und bauteilbezogene U-Werte.</p>"
-            "<p>Die finale normative Verantwortung bleibt beim Anwender und bei der "
-            "projektspezifischen Parametrierung.</p>"
+            "<p>Der Report weist offene Bausteine über Ampel, Maßnahmenplan und Nachweis-Gates aus. "
+            "Die finale normative Verantwortung bleibt bei der qualifizierten Fachprüfung und projektspezifischen Parametrierung.</p>"
         )
         right_lay.addWidget(din_text, 1)
 

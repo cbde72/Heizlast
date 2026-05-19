@@ -1,5 +1,6 @@
 from typing import List, Optional
 from ..domain.models import RoomModel
+from ..core.config import usage_defaults
 from ..core.polygon_ops import snap_m
 from .graphics import RoomPolygonItem
 from .graphics import WindowLineItem
@@ -13,11 +14,53 @@ from PySide6.QtWidgets import QListWidgetItem
 
 from ..domain.models import ElementModel
 
+try:
+    import shiboken6
+except Exception:  # pragma: no cover - only relevant in broken PySide installs
+    shiboken6 = None
+
+
 class MainWindowSelectionMixin:
+    def _is_valid_qt_object(self, obj) -> bool:
+        if obj is None:
+            return False
+        if shiboken6 is None:
+            return True
+        try:
+            return bool(shiboken6.isValid(obj))
+        except Exception:
+            return False
+
+    def _safe_selected_items(self, scene):
+        if not self._is_valid_qt_object(scene):
+            return []
+        try:
+            return list(scene.selectedItems())
+        except RuntimeError:
+            return []
+
+    def _scene_for_floor(self, floor: str):
+        if floor == "KG":
+            return getattr(self, "scene_KG", None)
+        if floor == "EG":
+            return getattr(self, "scene_EG", None)
+        if floor == "DG":
+            return getattr(self, "scene_DG", None)
+        return None
+
+    def _on_scene_selection_changed_kg(self):
+        self._on_scene_selection_changed("KG")
+
+    def _on_scene_selection_changed_eg(self):
+        self._on_scene_selection_changed("EG")
+
+    def _on_scene_selection_changed_dg(self):
+        self._on_scene_selection_changed("DG")
+
     def _on_scene_selection_changed(self, floor: str):
         """Wird aufgerufen, wenn sich die Auswahl in einer Szene ändert."""
-        scene = self.scene_KG if floor == "KG" else (self.scene_EG if floor == "EG" else self.scene_DG)
-        sel = scene.selectedItems()
+        scene = self._scene_for_floor(floor)
+        sel = self._safe_selected_items(scene)
         rid = None
         picked_elem_uid = None
         for it in sel:
@@ -54,6 +97,8 @@ class MainWindowSelectionMixin:
         r = self.rooms[rid]
         widgets = [self.ed_name, self.cb_floor, self.sp_x, self.sp_y,
                    self.sp_w, self.sp_h, self.sp_height, self.sp_tin, self.sp_n]
+        if hasattr(self, "cb_usage_type"):
+            widgets.append(self.cb_usage_type)
         for w in widgets:
             w.blockSignals(True)
 
@@ -67,6 +112,7 @@ class MainWindowSelectionMixin:
             self.sp_w.setValue(r.w_m)
             self.sp_h.setValue(r.h_m)
             self.sp_height.setValue(r.height_m)
+            self._set_usage_combo_from_room(r)
             self.sp_tin.setValue(r.t_inside_c)
             self.sp_n.setValue(r.air_change_1ph)
             rect_mode = bool(getattr(r, "is_axis_aligned_rect_polygon", lambda: False)())
@@ -79,6 +125,7 @@ class MainWindowSelectionMixin:
             for w in widgets:
                 w.blockSignals(False)
 
+        self._refresh_selected_room_norm_status(r)
         self._populate_room_elements_list()
 
     def _apply_room_form(self):
@@ -104,6 +151,9 @@ class MainWindowSelectionMixin:
             r.move_to(new_x, new_y)
 
         r.height_m = snap_m(self.sp_height.value(), 0.01)
+        if hasattr(self, "cb_usage_type"):
+            usage = self.cb_usage_type.currentData()
+            r.usage_type = str(usage).strip() if usage else None
         r.t_inside_c = self.sp_tin.value()
         r.air_change_1ph = self.sp_n.value()
         self._normalize_room_geometry(r)
@@ -124,10 +174,67 @@ class MainWindowSelectionMixin:
         if self.autowalls_enabled:
              self._rebuild_autowalls_all()
         self._recompute_and_redraw()
+        self._refresh_selected_room_norm_status(r)
         self._populate_room_elements_list()
 
 
     # ---------------- Element-Liste ----------------
+
+    def _set_usage_combo_from_room(self, room: RoomModel) -> None:
+        combo = getattr(self, "cb_usage_type", None)
+        if combo is None:
+            return
+        usage = str(getattr(room, "usage_type", "") or "").strip().upper()
+        idx = combo.findData(usage)
+        combo.setCurrentIndex(idx if idx >= 0 else 0)
+
+    def _on_room_usage_preset_changed(self, _index: int) -> None:
+        combo = getattr(self, "cb_usage_type", None)
+        if combo is None:
+            return
+        usage = str(combo.currentData() or "").strip()
+        defaults = usage_defaults(usage)
+        if not defaults:
+            return
+        self.sp_tin.blockSignals(True)
+        self.sp_n.blockSignals(True)
+        try:
+            self.sp_tin.setValue(float(defaults.get("t_inside_c", self.sp_tin.value())))
+            self.sp_n.setValue(float(defaults.get("air_change_1ph", self.sp_n.value())))
+        finally:
+            self.sp_tin.blockSignals(False)
+            self.sp_n.blockSignals(False)
+
+    def _refresh_selected_room_norm_status(self, room: RoomModel | None = None) -> None:
+        label = getattr(self, "lbl_room_norm_status", None)
+        if label is None:
+            return
+        if room is None:
+            rid = getattr(self, "_selected_room_id", None)
+            room = self.rooms.get(rid) if rid else None
+        if room is None:
+            label.setText("Raumstatus: —")
+            return
+        issues: list[str] = []
+        try:
+            if float(room.area_m2()) <= 0.0:
+                issues.append("Fläche fehlt")
+        except Exception:
+            issues.append("Fläche nicht berechenbar")
+        if float(getattr(room, "height_m", 0.0) or 0.0) <= 0.0:
+            issues.append("Höhe fehlt")
+        if float(getattr(room, "volume_m3", 0.0) or 0.0) <= 0.0:
+            issues.append("Volumen fehlt")
+        if not (5.0 <= float(getattr(room, "t_inside_c", 0.0) or 0.0) <= 35.0):
+            issues.append("T innen prüfen")
+        if float(getattr(room, "air_change_1ph", 0.0) or 0.0) < 0.0:
+            issues.append("Luftwechsel prüfen")
+        if not str(getattr(room, "usage_type", "") or "").strip():
+            issues.append("Nutzung fehlt")
+        if issues:
+            label.setText("Raumstatus: Prüfen · " + "; ".join(issues))
+        else:
+            label.setText("Raumstatus: OK · Raumdaten vollständig")
 
     def _populate_room_elements_list(self):
         """Füllt die Elementliste für den selektierten Raum (inkl. shared elements)."""
@@ -157,6 +264,9 @@ class MainWindowSelectionMixin:
             item = QListWidgetItem(label)
             item.setData(Qt.UserRole, getattr(el, "uid", None))
             self.list_room_elements.addItem(item)
+        filt = getattr(self, "ed_element_filter", None)
+        if filt is not None:
+            self._filter_room_elements_list(filt.text())
 
         #print("metrics.rooms size:", len(getattr(self.metrics, "rooms", {}) or {}))
         #print("main rooms size:", len(self.rooms))
@@ -200,16 +310,14 @@ class MainWindowSelectionMixin:
             self._populate_room_elements_list()
 
     def _selected_graphics_items(self):
-        """Gibt alle ausgewählten Grafik-Items aus beiden Szenen zurück."""
+        """Gibt alle ausgewählten Grafik-Items aus allen Szenen zurück."""
         sel = []
-        try:
-            sel.extend(self.scene_EG.selectedItems())
-        except Exception:
-            pass
-        try:
-            sel.extend(self.scene_DG.selectedItems())
-        except Exception:
-            pass
+        for scene in (
+            getattr(self, "scene_KG", None),
+            getattr(self, "scene_EG", None),
+            getattr(self, "scene_DG", None),
+        ):
+            sel.extend(self._safe_selected_items(scene))
         return sel
 
     def _selected_room_ids(self) -> List[str]:

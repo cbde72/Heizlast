@@ -5,7 +5,8 @@ from heizlast.core.attic_auto import derive_auto_attic_elements
 from heizlast.core.config import VentilationCfg
 from heizlast.core.heatload import calc_heatloads, ensure_auto_decks
 from heizlast.domain.models import RoomModel
-from heizlast.infrastructure.reporting import export_heatload_report_pdf
+from heizlast.infrastructure.reporting import export_din_12831_report_pdf, export_heatload_report_pdf
+from pypdf import PdfReader
 
 
 def _make_attic_project() -> tuple[ProjectCfg, list[RoomModel], list]:
@@ -83,3 +84,45 @@ def test_reporting_pdf_builds_with_auto_attic_elements(tmp_path: Path):
 
     assert pdf_path.exists()
     assert pdf_path.stat().st_size > 5000
+
+
+def test_din_12831_pdf_report_builds_with_room_sheets_and_decks(tmp_path: Path):
+    cfg, rooms, elements = _make_attic_project()
+    results = calc_heatloads(
+        rooms,
+        elements,
+        t_out_c=float(cfg.t_out_c),
+        vent_cfg=VentilationCfg(),
+        thickness_mode=cfg.thickness_mode,
+        area_shrink_factor=float(cfg.area_shrink_factor),
+        floor_area_mode=cfg.floor_area_mode,
+        u_kellerdecke_w_m2k=float(cfg.u_kellerdecke_w_m2k),
+        u_eg_geschossdecke_w_m2k=float(cfg.u_eg_geschossdecke_w_m2k),
+        u_dg_geschossdecke_w_m2k=float(cfg.u_dg_geschossdecke_w_m2k),
+    )
+
+    pdf_path = tmp_path / "din_12831_heizlastnachweis.pdf"
+    export_din_12831_report_pdf(
+        str(pdf_path),
+        rooms=rooms,
+        elements=elements,
+        results=results,
+        t_out_c=float(cfg.t_out_c),
+        project_cfg=cfg,
+        vent_cfg=VentilationCfg(),
+    )
+
+    assert pdf_path.exists()
+    assert pdf_path.stat().st_size > 5000
+
+    reader = PdfReader(str(pdf_path))
+    text = "\n".join(page.extract_text() or "" for page in reader.pages)
+    compact_text = "".join(text.split())
+    assert "RAUMHEIZLAST" in text
+    assert "Auslegungsinnentemperatur" in text
+    assert "ANFG" in text
+    assert "qv,min,i" in text
+    assert "qv,env/min,i" in text
+    assert "KorrigierterU-Wert" in compact_text
+    assert "NORMHEIZLAST" in text
+    assert "Gebäudezusammenfassung" in text

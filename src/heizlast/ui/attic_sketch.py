@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen
-from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QLabel, QSizePolicy, QVBoxLayout, QWidget
 
 from ..core.attic_geometry import AtticGeometry
 
@@ -42,6 +42,7 @@ class AtticSketchWidget(QWidget):
         self.setMouseTracking(True)
         self.setMinimumHeight(220)
         self.setMinimumWidth(260)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
     def set_dormer_preview_state(self, active: bool, *, has_selection: bool = False, dormer_width_m: float = 1.80, min_edge_clearance_m: float = 0.40, draw_mode: bool = False) -> None:
         self._placement_mode_active = bool(active)
@@ -92,8 +93,18 @@ class AtticSketchWidget(QWidget):
             return
 
         g = self._geom
-        draw = QRectF(rect.left(), rect.top() + 18, rect.width() * 0.70, rect.height() - 36)
-        plan = QRectF(draw.right() + 10, rect.top() + 24, rect.right() - draw.right() - 10, max(90.0, rect.height() * 0.50))
+        if rect.width() < 720:
+            header_h = 18.0
+            gap = 12.0
+            available_h = max(120.0, rect.height() - header_h - gap)
+            plan_h = max(80.0, available_h * 0.42)
+            draw_h = max(80.0, available_h - plan_h)
+            draw = QRectF(rect.left(), rect.top() + header_h, rect.width(), draw_h)
+            plan = QRectF(rect.left(), draw.bottom() + gap, rect.width(), max(80.0, rect.bottom() - draw.bottom() - gap))
+        else:
+            draw_w = max(320.0, rect.width() * 0.62)
+            draw = QRectF(rect.left(), rect.top() + 18, draw_w, rect.height() - 36)
+            plan = QRectF(draw.right() + 12, rect.top() + 24, max(180.0, rect.right() - draw.right() - 12), max(120.0, rect.height() * 0.56))
         cross_span = float(g.cross_span_m)
         scale = min(draw.width() / max(cross_span, 1e-9), draw.height() / max(g.total_height_m, 1e-9))
         base_x = draw.left() + (draw.width() - cross_span * scale) / 2.0
@@ -674,6 +685,8 @@ class AtticSketchPanel(QWidget):
         self.info_label = QLabel("Kein Dachprofil aktiv")
         self.info_label.setWordWrap(True)
         self.sketch = AtticSketchWidget(self)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.info_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
         self.sketch.planClicked.connect(self.planClicked)
         self.sketch.dormerDrawFinished.connect(self.dormerDrawFinished)
         self.sketch.dormerDragStarted.connect(self.dormerDragStarted)

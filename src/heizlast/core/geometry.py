@@ -149,11 +149,11 @@ def classify_floor_edge_spans(rooms: List[RoomModel]) -> List[EdgeSpan]:
     return spans
 
 
-def edge_span_to_element(span: EdgeSpan) -> ElementModel:
+def edge_span_to_element(span: EdgeSpan, *, u_aussenwand_w_m2k: float | None = None) -> ElementModel:
     (x0, y0), (x1, y1) = span.endpoints()
     length = span.length_m
     area = length * float(span.height_m)
-    u = DEFAULT_U['Innenwand'] if span.element_type == 'Innenwand' else DEFAULT_U.get('Aussenwand', 0.5)
+    u = DEFAULT_U['Innenwand'] if span.element_type == 'Innenwand' else float(u_aussenwand_w_m2k if u_aussenwand_w_m2k is not None else DEFAULT_U.get('Aussenwand', 0.5))
     factor = DEFAULT_FACTOR['Innenwand'] if span.element_type == 'Innenwand' else DEFAULT_FACTOR.get('Aussenwand', 1.0)
     return ElementModel(
         room_id=span.owner_room_id, element_type=span.element_type, area_m2=area, u_w_m2k=u, factor=factor, floor=span.floor,
@@ -161,8 +161,8 @@ def edge_span_to_element(span: EdgeSpan) -> ElementModel:
     )
 
 
-def build_auto_walls_shared_merge(rooms: List[RoomModel]) -> List[ElementModel]:
-    return [edge_span_to_element(span) for span in classify_floor_edge_spans(rooms)]
+def build_auto_walls_shared_merge(rooms: List[RoomModel], *, u_aussenwand_w_m2k: float | None = None) -> List[ElementModel]:
+    return [edge_span_to_element(span, u_aussenwand_w_m2k=u_aussenwand_w_m2k) for span in classify_floor_edge_spans(rooms)]
 
 
 def nearest_edge_span_for_point(rooms: List[RoomModel], floor: str, x_m: float, y_m: float, *, prefer_outer: bool = True, max_dist: Optional[float] = None, room_id: Optional[str] = None) -> Optional[EdgeSpan]:

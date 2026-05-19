@@ -20,6 +20,7 @@ def test_project_settings_dialog_has_all_tabs_and_sets_schema(qapp):
         "Wärmebrücken",
         "Erdreich",
         "DG Dach",
+        "Normprüfung",
     ]
     dlg.apply_to_cfg(cfg)
     assert cfg.cfg_version == PROJECT_SCHEMA_VERSION
@@ -51,3 +52,24 @@ def test_project_settings_dynamic_enabling_for_roof_and_modes(qapp):
 
     dlg.cb_attic_roof_type.setCurrentText("Flachdach")
     assert not dlg.sp_attic_pitch.isEnabled()
+
+
+def test_project_settings_norm_guidance_and_quick_profiles(qapp):
+    cfg = ProjectCfg()
+    dlg = ProjectSettingsDialog(None, cfg)
+
+    assert hasattr(dlg, "lst_norm_check")
+    assert dlg.lst_norm_check.count() >= 7
+    assert "fehlende Nachweise" in dlg.lbl_norm_check_summary.text()
+
+    dlg.cb_norm_profile.setCurrentText("Neubau")
+    dlg._apply_norm_profile()
+
+    assert dlg.sp_u_aw.value() == pytest.approx(0.240)
+    assert dlg.sp_u_window.value() == pytest.approx(0.950)
+    assert dlg.sp_u_bodenplatte.value() == pytest.approx(0.300)
+    assert dlg.sp_attic_u_roof.value() == pytest.approx(0.180)
+    assert "Schnellprofil Neubau" in dlg.ed_u_source.text()
+
+    rows = [dlg.lst_norm_check.item(i).text() for i in range(dlg.lst_norm_check.count())]
+    assert any("U-Werte Außenwand/Fenster/Tür/Decken/Boden" in row and "[OK]" in row for row in rows)
