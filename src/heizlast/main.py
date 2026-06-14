@@ -25,11 +25,7 @@ def main() -> int:
     app = QApplication.instance() or QApplication(sys.argv)
     try:
         w = MainWindow()
-        w.resize(1400, 900)
-        if not w.isMaximized():
-            w.showMaximized()
-        else:
-            w.show()
+        w.show()
         return app.exec()
     except Exception as exc:
         tb = traceback.format_exc()

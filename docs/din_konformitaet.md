@@ -80,6 +80,11 @@ Dieses Projekt orientiert sich an DIN EN 12831-1:2017-09 und DIN/TS 12831-1:2020
 - Raum-Inspector mit Raumstatus und Nutzungspresets:
   - Nutzung, Solltemperatur und Luftwechsel werden direkt pflegbar
   - fehlende Raumdaten werden sichtbar markiert
+- Bedatungs-Hilfen:
+  - erweiterte Raumtypen-Presets für typische Wohn-, Neben- und unbeheizte Räume
+  - Geschoss-Assistent für Nutzung, Raumhöhe und typische Decken-/Nachbarzonenparameter eines Geschosses
+  - Element-Massenbearbeitung für U-Wert, Faktor, Randbedingung, Quellenstatus und Flächenherkunft
+  - Live-DIN-Ampel im Bauteildialog für fehlende Quelle, Flächenherkunft, Randbedingung und Annahmenstatus
 - Export-Vorprüfung und Export-Auswahl:
   - rote DIN-Bausteine müssen bewusst bestätigt werden
   - Exportumfang ist auswählbar
@@ -94,9 +99,9 @@ Dieses Projekt orientiert sich an DIN EN 12831-1:2017-09 und DIN/TS 12831-1:2020
   - Lüftung/WRG trennt Infiltration, Mindestluftwechsel, Zuluft/Abluft und WRG-Quelle in der Bewertung
   - Wärmebrücken bleiben bei Ersatzansätzen konservativ und verlangen Quelle oder Anschlusswerte
 - Versionsstand der GUI-/Workflow-Erweiterung:
-  - App-Version `2.10.0`
-  - interne Version `Heizlast_V38-intern-01`
-  - Anzeige-Version `37.0.0`
+  - App-Version `2.11.0`
+  - interne Version `Heizlast_V39-intern-01`
+  - Anzeige-Version `39.0.0`
   - Projekt-Schema `26`, da Prüffassung, Erdreich-/Aufheiz-Nachweisbasis und Änderungsprotokoll eigene Projektfelder besitzen
 
 ## Noch vereinfacht

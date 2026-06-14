@@ -62,7 +62,7 @@ def load_rooms(path: str, delimiter: str = CSV_DELIMITER) -> List[RoomModel]:
         n_raw = _opt(row, "air_change_1ph")
         ud = usage_defaults(usage_type) if usage_type else None
         t_in = _f(t_in_raw) if t_in_raw is not None else float((ud or {}).get("t_inside_c", 20.0))
-        n = _f(row.get("air_change_1ph", "0.5"))
+        n = _f(n_raw) if n_raw is not None else float((ud or {}).get("air_change_1ph", 0.5))
         vol = row.get("volume_m3")
         if vol is not None and str(vol).strip():
             vol_m3 = _f(vol)
@@ -74,7 +74,8 @@ def load_rooms(path: str, delimiter: str = CSV_DELIMITER) -> List[RoomModel]:
             x_m=x, y_m=y, w_m=w_m, h_m=h_m,
             height_m=height_m, t_inside_c=t_in,
             air_change_1ph=n, volume_m3=vol_m3,
-            polygon_m=polygon_m
+            polygon_m=polygon_m,
+            usage_type=usage_type,
         )
         rooms.append(rm)
     return rooms

@@ -1,7 +1,7 @@
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QSize, QPointF, QTimer, Signal
-from PySide6.QtGui import QAction, QActionGroup, QKeySequence, QShortcut, QIcon, QPainter, QPen, QBrush, QColor, QPolygonF, QPainterPath, QPixmap
+from PySide6.QtGui import QAction, QActionGroup, QKeySequence, QIcon, QPainter, QPen, QBrush, QColor, QPolygonF, QPainterPath, QPixmap, QGuiApplication
 from PySide6.QtSvg import QSvgRenderer
 from .attic_sketch import AtticSketchPanel
 from .dialogs.project_settings_dialog import RoofLineEditorWidget
@@ -2449,11 +2449,15 @@ class MainWindowBuildMixin:
 
         self.list_room_elements = QListWidget()
         self.list_room_elements.setMinimumHeight(200)
-        self.list_room_elements.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.list_room_elements.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.list_room_elements.itemSelectionChanged.connect(self._on_room_element_selected)
         self.list_room_elements.itemDoubleClicked.connect(self._on_room_element_double_clicked)
         self.list_room_elements.setToolTip("Klick: Element in Grafik hervorheben\nEntf: Element löschen")
         elem_layout.addWidget(self.list_room_elements)
+        self.btn_element_batch_edit = QPushButton("Auswahl bearbeiten")
+        self.btn_element_batch_edit.setToolTip("Setzt U-Wert, Faktor, Randbedingung und Quellenstatus für mehrere markierte Elemente.")
+        self.btn_element_batch_edit.clicked.connect(self._on_batch_edit_elements)
+        elem_layout.addWidget(self.btn_element_batch_edit)
 
         self.dock_elements.setWidget(elem_widget)
         self._configure_side_dock(self.dock_elements, 220)
@@ -2569,11 +2573,15 @@ class MainWindowBuildMixin:
         right.addWidget(QLabel("Elemente des Raums:"))
         self.list_room_elements = QListWidget()
         self.list_room_elements.setMinimumHeight(160)
-        self.list_room_elements.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.list_room_elements.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.list_room_elements.itemSelectionChanged.connect(self._on_room_element_selected)
         self.list_room_elements.setToolTip("Klick: Element in Grafik hervorheben\nEntf: Element löschen")
         self.list_room_elements.itemDoubleClicked.connect(self._on_room_element_double_clicked)
         right.addWidget(self.list_room_elements)
+        self.btn_element_batch_edit = QPushButton("Auswahl bearbeiten")
+        self.btn_element_batch_edit.setToolTip("Setzt U-Wert, Faktor, Randbedingung und Quellenstatus für mehrere markierte Elemente.")
+        self.btn_element_batch_edit.clicked.connect(self._on_batch_edit_elements)
+        right.addWidget(self.btn_element_batch_edit)
 
         # Bezugsfläche für W/m²
         self.cb_area_ref_outer = QCheckBox("W/m² auf Außenfläche beziehen")
@@ -2598,6 +2606,8 @@ class MainWindowBuildMixin:
         self.ed_name = QLineEdit()
         self.cb_floor = QComboBox()
         self.cb_floor.addItems(["KG", "EG", "DG"])
+        self.btn_floor_assistant = QPushButton("Geschoss-Assistent")
+        self.btn_floor_assistant.setToolTip("Setzt Nutzung, Raumhöhe und typische Decken-/Nachbarzonenparameter für das aktuelle Geschoss.")
         self.sp_x = QDoubleSpinBox()
         self.sp_x.setRange(-1000, 1000)
         self.sp_x.setDecimals(2)
@@ -2651,6 +2661,7 @@ class MainWindowBuildMixin:
         form.addRow("ID", self.ed_id)
         form.addRow("Name", self.ed_name)
         form.addRow("Geschoss", self.cb_floor)
+        form.addRow("", self.btn_floor_assistant)
         form.addRow("x [m]", self.sp_x)
         form.addRow("y [m]", self.sp_y)
         form.addRow("Länge w [m]", self.sp_w)
@@ -2673,6 +2684,8 @@ class MainWindowBuildMixin:
             self.cb_area_ref_outer.toggled.connect(self._on_toggle_area_ref_outer_action)
         if getattr(self, "cb_usage_type", None) is not None:
             self.cb_usage_type.currentIndexChanged.connect(self._on_room_usage_preset_changed)
+        if getattr(self, "btn_floor_assistant", None) is not None:
+            self.btn_floor_assistant.clicked.connect(self._on_floor_assistant)
         if getattr(self, "btn_dashboard_norm", None) is not None:
             self.btn_dashboard_norm.clicked.connect(self._on_project_settings_norm)
         if getattr(self, "btn_dashboard_save_version", None) is not None:
@@ -2692,11 +2705,6 @@ class MainWindowBuildMixin:
         self.scene_EG.selectionChanged.connect(self._on_scene_selection_changed_eg)
         self.scene_DG.selectionChanged.connect(self._on_scene_selection_changed_dg)
 
-
-        #
-        # Shortcut für Element löschen in der Liste
-        self._sc_del_elem = QShortcut(QKeySequence.Delete, self.list_room_elements)
-        self._sc_del_elem.activated.connect(self._delete_selected_room_element)
 
     def _on_switch_to_dg_view(self):
         try:
@@ -2772,13 +2780,19 @@ class MainWindowBuildMixin:
         try:
             was_maximized = self._settings.value("main_was_maximized", True, type=bool)
             geom = self._settings.value("main_geometry")
+            restored_geometry = False
             if geom and not was_maximized:
-                self.restoreGeometry(geom)
+                restored_geometry = bool(self.restoreGeometry(geom))
+                self._fit_main_window_to_available_screen(fill=False)
+            elif was_maximized:
+                self._fit_main_window_to_available_screen(fill=True)
+            else:
+                self._fit_main_window_to_available_screen(fill=False)
             state = self._settings.value("main_state")
             if state:
                 self.restoreState(state)
-            if was_maximized:
-                self.showMaximized()
+            if not restored_geometry and not was_maximized:
+                self._fit_main_window_to_available_screen(fill=False)
             QTimer.singleShot(0, self._release_side_dock_width_limits)
         except Exception:
             pass
@@ -2790,6 +2804,37 @@ class MainWindowBuildMixin:
             pass
 
     # ---------------- Hilfsfunktionen ----------------
+
+    def _fit_main_window_to_available_screen(self, *, fill: bool = False) -> None:
+        """Begrenzt Start-/Restore-Geometrie auf den sichtbaren Bildschirmbereich."""
+        try:
+            screen = self.screen() or QGuiApplication.primaryScreen()
+            if screen is None:
+                return
+            available = screen.availableGeometry()
+            if available.width() <= 0 or available.height() <= 0:
+                return
+
+            margin_x = 24
+            margin_y = 48
+            max_w = max(320, available.width() - margin_x)
+            max_h = max(500, available.height() - margin_y)
+            min_w = max(320, self.minimumWidth())
+            min_h = max(500, self.minimumHeight())
+
+            if fill:
+                w = max(min_w, max_w)
+                h = max(min_h, max_h)
+            else:
+                w = min(max(self.width() or 1400, min_w), max_w)
+                h = min(max(self.height() or 900, min_h), max_h)
+
+            self.resize(w, h)
+            x = available.x() + max(0, (available.width() - w) // 2)
+            y = available.y() + max(0, (available.height() - h) // 2)
+            self.move(x, y)
+        except Exception:
+            pass
 
     def closeEvent(self, event):
         try:

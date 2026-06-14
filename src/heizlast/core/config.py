@@ -74,11 +74,18 @@ ROOM_USAGE_DEFAULTS = {
     "KÜCHE": {"t_inside_c": 20.0, "air_change_1ph": 0.7},
     "BAD": {"t_inside_c": 24.0, "air_change_1ph": 0.7},
     "WC": {"t_inside_c": 24.0, "air_change_1ph": 0.7},
+    "DUSCHE": {"t_inside_c": 24.0, "air_change_1ph": 0.7},
     "FLUR": {"t_inside_c": 15.0, "air_change_1ph": 0.5},
     "TREPPENHAUS": {"t_inside_c": 15.0, "air_change_1ph": 0.5},
     "ABSTELL": {"t_inside_c": 15.0, "air_change_1ph": 0.3},
     "KELLER": {"t_inside_c": 12.0, "air_change_1ph": 0.3},
+    "TECHNIK": {"t_inside_c": 15.0, "air_change_1ph": 0.5},
     "HWR": {"t_inside_c": 15.0, "air_change_1ph": 0.5},
+    "BUERO": {"t_inside_c": 20.0, "air_change_1ph": 0.5},
+    "BÜRO": {"t_inside_c": 20.0, "air_change_1ph": 0.5},
+    "ESSEN": {"t_inside_c": 20.0, "air_change_1ph": 0.5},
+    "DACHRAUM": {"t_inside_c": 12.0, "air_change_1ph": 0.3},
+    "UNBEHEIZT": {"t_inside_c": 10.0, "air_change_1ph": 0.2},
 }
 
 def usage_defaults(usage_type: str):

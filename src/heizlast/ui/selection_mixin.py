@@ -5,7 +5,7 @@ from ..core.polygon_ops import snap_m
 from .graphics import RoomPolygonItem
 from .graphics import WindowLineItem
 from ..core.heatload_types import is_opening_type
-from PySide6.QtWidgets import QMessageBox
+from PySide6.QtWidgets import QMessageBox, QDialog, QVBoxLayout, QFormLayout, QComboBox, QDoubleSpinBox, QCheckBox, QDialogButtonBox
 from ..core.element_access import get_room_elements
 from ..core.attic_auto import is_auto_attic_element, auto_attic_marker_label
 from ..core.auto_decks import deck_kind_for_element
@@ -242,6 +242,78 @@ class MainWindowSelectionMixin:
         finally:
             self.sp_tin.blockSignals(False)
             self.sp_n.blockSignals(False)
+
+    def _on_floor_assistant(self) -> None:
+        floor = str(self.cb_floor.currentText() if hasattr(self, "cb_floor") else "").strip() or "EG"
+        rooms_on_floor = [r for r in self.rooms.values() if str(getattr(r, "floor", "") or "") == floor]
+        if not rooms_on_floor:
+            QMessageBox.information(self, "Geschoss-Assistent", f"Keine Räume im Geschoss {floor} gefunden.")
+            return
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Geschoss-Assistent")
+        lay = QVBoxLayout(dlg)
+        form = QFormLayout()
+        lay.addLayout(form)
+
+        cb_usage = QComboBox()
+        cb_usage.addItem("Nutzung nicht ändern", "")
+        for usage in sorted(usage for usage in ("WOHNEN", "SCHLAFEN", "KUECHE", "BAD", "FLUR", "KELLER", "DACHRAUM", "UNBEHEIZT") if usage_defaults(usage)):
+            cb_usage.addItem(usage.title().replace("Kueche", "Küche"), usage)
+        form.addRow(f"Nutzung für leere Räume in {floor}", cb_usage)
+
+        sp_height = QDoubleSpinBox()
+        sp_height.setRange(1.8, 6.0)
+        sp_height.setDecimals(2)
+        sp_height.setSingleStep(0.05)
+        sp_height.setValue(float(getattr(rooms_on_floor[0], "height_m", 2.5) or 2.5))
+        chk_height = QCheckBox("Raumhöhe auf alle Räume setzen")
+        form.addRow("Raumhöhe [m]", sp_height)
+        form.addRow("", chk_height)
+
+        cb_below = QComboBox()
+        cb_below.addItems(["unverändert", "beheizt", "unbeheizter Keller", "Erdreich"])
+        cb_above = QComboBox()
+        cb_above.addItems(["unverändert", "beheizt", "unbeheizter Dachraum", "Außenluft"])
+        form.addRow("Darunter", cb_below)
+        form.addRow("Darüber", cb_above)
+
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        lay.addWidget(bb)
+        bb.accepted.connect(dlg.accept)
+        bb.rejected.connect(dlg.reject)
+        if dlg.exec() != QDialog.Accepted:
+            return
+
+        usage = str(cb_usage.currentData() or "")
+        defaults = usage_defaults(usage)
+        for room in rooms_on_floor:
+            if defaults and not str(getattr(room, "usage_type", "") or "").strip():
+                room.usage_type = usage
+                room.t_inside_c = float(defaults.get("t_inside_c", room.t_inside_c))
+                room.air_change_1ph = float(defaults.get("air_change_1ph", room.air_change_1ph))
+            if chk_height.isChecked():
+                room.height_m = float(sp_height.value())
+                room.recompute_volume()
+
+        cfg = getattr(self, "project_cfg", None)
+        if cfg is not None:
+            below = cb_below.currentText()
+            above = cb_above.currentText()
+            if below == "unbeheizter Keller":
+                cfg.auto_deck_create_eg_kellerdecke = True
+                cfg.auto_deck_boundary_source = cfg.auto_deck_boundary_source or f"Geschoss-Assistent {floor}: darunter Keller"
+            elif below == "Erdreich":
+                cfg.ground.mode = "din_ts" if getattr(cfg.ground, "mode", "simplified") == "none" else cfg.ground.mode
+            if above == "unbeheizter Dachraum":
+                cfg.auto_deck_create_dg_speicherdecke = True
+                cfg.auto_deck_boundary_source = cfg.auto_deck_boundary_source or f"Geschoss-Assistent {floor}: darüber Dachraum"
+            elif above == "Außenluft" and hasattr(cfg, "attic"):
+                cfg.attic.roof_boundary = "outside"
+
+        self._populate_room_form()
+        self._recompute_and_redraw(sync_auto_elements=True)
+        self._mark_dirty("floor_assistant")
 
     def _refresh_selected_room_norm_status(self, room: RoomModel | None = None) -> None:
         label = getattr(self, "lbl_room_norm_status", None)

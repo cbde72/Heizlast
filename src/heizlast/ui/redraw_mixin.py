@@ -126,7 +126,10 @@ class MainWindowRedrawMixin:
                 continue
             res = results.get(rid)
             if res:
-                it.set_heat(res["Q_sum_W"], res["Q_W_per_m2"])
+                if bool(res.get("excluded_from_heatload", False)) and hasattr(it, "set_heat_excluded"):
+                    it.set_heat_excluded(True)
+                else:
+                    it.set_heat(res["Q_sum_W"], res["Q_W_per_m2"])
                 it.set_area(res.get("A_ref_m2", res["A_in_m2"]))
             it.update()
 

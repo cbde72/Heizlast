@@ -1,6 +1,7 @@
 from typing import List, Optional
 import json
 from uuid import uuid4
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
@@ -10,6 +11,7 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox,
     QTextEdit,
     QLabel,
+    QCheckBox,
     QDialogButtonBox,
     QMessageBox,
 )
@@ -23,6 +25,32 @@ from ..domain.models import ElementModel
 from ..core.polygon_ops import snap_m
 
 class MainWindowElementEditMixin:
+    def _element_din_check_text(self, *, element_type: str, area: float, u_value: float, factor: float, meta: dict) -> tuple[str, str]:
+        issues: list[str] = []
+        warnings: list[str] = []
+        if not str(element_type or "").strip():
+            issues.append("Typ fehlt")
+        if float(area or 0.0) <= 0.0:
+            issues.append("Fläche fehlt")
+        if float(u_value or 0.0) <= 0.0 and "innen" not in str(element_type or "").lower():
+            issues.append("U-Wert fehlt")
+        if float(factor or 0.0) < 0.0:
+            issues.append("Faktor prüfen")
+        if not any(str(meta.get(key, "") or "").strip() for key in ("u_source", "u_value_source", "source_u", "source_status")):
+            issues.append("U-Wert-Quelle fehlt")
+        if not any(str(meta.get(key, "") or "").strip() for key in ("area_source", "geometry_source", "source_area")):
+            issues.append("Flächenherkunft fehlt")
+        if not any(str(meta.get(key, "") or "").strip() for key in ("boundary", "boundary_condition")):
+            warnings.append("Randbedingung fehlt")
+        source_text = " ".join(str(meta.get(key, "") or "") for key in ("source_status", "u_source", "source_note")).lower()
+        if any(token in source_text for token in ("geschätzt", "geschaetzt", "manuell", "annahme")):
+            warnings.append("Annahme fachlich bestätigen")
+        if issues:
+            return "✗", "DIN: Rot · " + "; ".join(issues[:4])
+        if warnings:
+            return "△", "DIN: Gelb · " + "; ".join(warnings[:4])
+        return "✓", "DIN: Grün · Quelle, Fläche und Randbedingung dokumentiert"
+
     def _element_transmission_preview_w(self, e: ElementModel) -> float:
         room = getattr(self, "rooms", {}).get(str(getattr(e, "room_id", "") or ""))
         t_in = float(getattr(room, "t_inside_c", 20.0) or 20.0) if room is not None else 20.0
@@ -231,6 +259,10 @@ class MainWindowElementEditMixin:
         lbl_transmission = QLabel()
         lbl_transmission.setObjectName("elementTransmissionPreview")
         form.addRow("Transmission Φ", lbl_transmission)
+        lbl_din = QLabel()
+        lbl_din.setObjectName("elementDinProofPreview")
+        lbl_din.setWordWrap(True)
+        form.addRow("DIN-Ampel", lbl_din)
 
         def _refresh_transmission_preview() -> None:
             room = getattr(self, "rooms", {}).get(str(getattr(e, "room_id", "") or ""))
@@ -239,10 +271,6 @@ class MainWindowElementEditMixin:
             d_t = max(0.0, t_in - t_out)
             phi = float(sp_a.value()) * float(sp_u.value()) * float(sp_f.value()) * d_t
             lbl_transmission.setText(f"{phi:.1f} W  (A · U · f · ΔT, ΔT {d_t:.1f} K)")
-
-        for widget in (sp_u, sp_f, sp_a):
-            widget.valueChanged.connect(_refresh_transmission_preview)
-        _refresh_transmission_preview()
 
         # Meta (JSON)
         meta_raw = getattr(e, "meta", "") or ""
@@ -258,6 +286,34 @@ class MainWindowElementEditMixin:
         ed_source = QLineEdit(str(meta_dict.get("source_note", "") or ""))
         ed_source.setPlaceholderText("Quellenhinweis oder Annahme")
         form.addRow("Quellenhinweis", ed_source)
+
+        def _refresh_din_preview() -> None:
+            try:
+                preview_meta = dict(meta_dict)
+                preview_meta["source_status"] = cb_source.currentText()
+                preview_meta["source_note"] = ed_source.text().strip()
+                if not preview_meta.get("u_source") and cb_source.currentText():
+                    preview_meta["u_source"] = cb_source.currentText()
+                mark, text = self._element_din_check_text(
+                    element_type=ed_type.text().strip(),
+                    area=float(sp_a.value()),
+                    u_value=float(sp_u.value()),
+                    factor=float(sp_f.value()),
+                    meta=preview_meta,
+                )
+                lbl_din.setText(text)
+                color = {"✓": "#1b7f3a", "△": "#9a6a00", "✗": "#b42318"}.get(mark, "#555")
+                lbl_din.setStyleSheet(f"color: {color}; font-weight: 600;")
+            except Exception as exc:
+                lbl_din.setText(f"DIN: Prüfen · {exc}")
+
+        for widget in (sp_u, sp_f, sp_a):
+            widget.valueChanged.connect(lambda _=None: (_refresh_transmission_preview(), _refresh_din_preview()))
+        ed_type.textChanged.connect(lambda _=None: _refresh_din_preview())
+        cb_source.currentTextChanged.connect(lambda _=None: _refresh_din_preview())
+        ed_source.textChanged.connect(lambda _=None: _refresh_din_preview())
+        _refresh_transmission_preview()
+        _refresh_din_preview()
 
         te_meta = QTextEdit()
         te_meta.setMinimumHeight(110)
@@ -288,6 +344,8 @@ class MainWindowElementEditMixin:
             # Meta zurück in ursprüngliches Format serialisieren (JSON bleibt JSON)
             new_meta_dict["source_status"] = cb_source.currentText()
             new_meta_dict["source_note"] = ed_source.text().strip()
+            new_meta_dict.setdefault("u_source", cb_source.currentText())
+            new_meta_dict.setdefault("area_source", "manuell geprüft")
             new_meta_str = self._meta_dump_any(new_meta_dict, meta_fmt)
 
             # Zurückschreiben
@@ -316,6 +374,92 @@ class MainWindowElementEditMixin:
         bb.rejected.connect(dlg.reject)
 
         return dlg.exec() == QDialog.Accepted
+
+    def _on_batch_edit_elements(self) -> None:
+        if not hasattr(self, "list_room_elements"):
+            return
+        items = self.list_room_elements.selectedItems()
+        if not items:
+            QMessageBox.information(self, "Auswahl bearbeiten", "Bitte zuerst ein oder mehrere Elemente markieren.")
+            return
+        elements = [self._find_element_by_uid(item.data(Qt.UserRole)) for item in items if item.data(Qt.UserRole)]
+        elements = [e for e in elements if e is not None]
+        if not elements:
+            QMessageBox.information(self, "Auswahl bearbeiten", "Keine bearbeitbaren Elemente gefunden.")
+            return
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle(f"Auswahl bearbeiten ({len(elements)} Elemente)")
+        lay = QVBoxLayout(dlg)
+        form = QFormLayout()
+        lay.addLayout(form)
+
+        chk_u = QCheckBox("U-Wert setzen")
+        sp_u = QDoubleSpinBox()
+        sp_u.setRange(0.0, 20.0)
+        sp_u.setDecimals(3)
+        sp_u.setSingleStep(0.05)
+        sp_u.setValue(float(getattr(elements[0], "u_w_m2k", 0.0) or 0.0))
+        form.addRow(chk_u, sp_u)
+
+        chk_f = QCheckBox("Faktor setzen")
+        sp_f = QDoubleSpinBox()
+        sp_f.setRange(0.0, 5.0)
+        sp_f.setDecimals(3)
+        sp_f.setSingleStep(0.05)
+        sp_f.setValue(float(getattr(elements[0], "factor", 1.0) or 1.0))
+        form.addRow(chk_f, sp_f)
+
+        chk_boundary = QCheckBox("Randbedingung setzen")
+        cb_boundary = QComboBox()
+        cb_boundary.addItems(["outside", "ground", "basement_unheated", "attic_unheated", "interzone", "adjacent_heated"])
+        form.addRow(chk_boundary, cb_boundary)
+
+        chk_source = QCheckBox("Quellenstatus setzen")
+        cb_source = QComboBox()
+        cb_source.addItems(["Projektwert", "DIN/Normtabelle", "Hersteller-/Bauteilnachweis", "geschätzt", "manuell"])
+        form.addRow(chk_source, cb_source)
+
+        chk_area_source = QCheckBox("Flächenherkunft setzen")
+        ed_area_source = QLineEdit()
+        ed_area_source.setPlaceholderText("z.B. Planaufmaß, Grafik, Import, manuell geprüft")
+        form.addRow(chk_area_source, ed_area_source)
+
+        ed_note = QLineEdit()
+        ed_note.setPlaceholderText("optionaler Quellenhinweis")
+        form.addRow("Hinweis", ed_note)
+
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        lay.addWidget(bb)
+        bb.accepted.connect(dlg.accept)
+        bb.rejected.connect(dlg.reject)
+        if dlg.exec() != QDialog.Accepted:
+            return
+
+        for e in elements:
+            meta, fmt = self._meta_parse_any(getattr(e, "meta", "") or "")
+            if chk_u.isChecked():
+                e.u_w_m2k = float(sp_u.value())
+            if chk_f.isChecked():
+                e.factor = float(sp_f.value())
+            if chk_boundary.isChecked():
+                meta["boundary"] = cb_boundary.currentText()
+            if chk_source.isChecked():
+                meta["source_status"] = cb_source.currentText()
+                meta["u_source"] = cb_source.currentText()
+            if chk_area_source.isChecked():
+                meta["area_source"] = ed_area_source.text().strip() or "manuell geprüft"
+            if ed_note.text().strip():
+                meta["source_note"] = ed_note.text().strip()
+            e.meta = self._meta_dump_any(meta, fmt)
+
+        try:
+            self.metrics.bind(self.rooms, self.elements)
+        except Exception:
+            pass
+        self._recompute_and_redraw()
+        self._populate_room_elements_list()
+        self._mark_dirty("batch_edit_elements")
 
     # ---------------- Element-Hervorhebung ----------------
 

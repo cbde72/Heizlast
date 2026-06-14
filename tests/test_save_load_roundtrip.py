@@ -46,6 +46,43 @@ def test_load_rooms_migrates_missing_polygon_field_via_roommodel(tmp_path):
     assert room.area_m2() == 12.0
 
 
+def test_room_usage_type_roundtrip_and_defaults(tmp_path):
+    from heizlast.core.csv_io import load_rooms, save_rooms
+
+    room = RoomModel(
+        id='K1',
+        floor='KG',
+        name='Keller',
+        x_m=0.0,
+        y_m=0.0,
+        w_m=4.0,
+        h_m=3.0,
+        t_inside_c=10.0,
+        air_change_1ph=0.2,
+        usage_type='UNBEHEIZT',
+    )
+    rooms_path = tmp_path / 'rooms.csv'
+
+    save_rooms(str(rooms_path), [room], delimiter=';')
+    loaded = load_rooms(str(rooms_path), delimiter=';')
+
+    assert loaded[0].usage_type == 'UNBEHEIZT'
+    assert loaded[0].t_inside_c == 10.0
+    assert loaded[0].air_change_1ph == 0.2
+
+    defaults_path = tmp_path / 'rooms_defaults.csv'
+    defaults_path.write_text(
+        'id;floor;name;x_m;y_m;w_m;h_m;polygon_m;length_m;width_m;area_m2;perimeter_m;height_m;t_inside_c;volume_m3;air_change_1ph;usage_type\n'
+        'K2;KG;Keller 2;0,000;0,000;4,000;3,000;;4,000;3,000;12,000;14,000;2,500;;;;UNBEHEIZT\n',
+        encoding='utf-8',
+    )
+    loaded_defaults = load_rooms(str(defaults_path), delimiter=';')
+
+    assert loaded_defaults[0].usage_type == 'UNBEHEIZT'
+    assert loaded_defaults[0].t_inside_c == 10.0
+    assert loaded_defaults[0].air_change_1ph == 0.2
+
+
 
 def test_project_cfg_roundtrip_preserves_attic_u_values(tmp_path):
     from heizlast import PROJECT_SCHEMA_VERSION

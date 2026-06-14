@@ -474,6 +474,15 @@ class RoomPolygonItem(QGraphicsPathItem):
     def set_heat(self, w_total: float, w_per_m2: float):
         self._heat_w = w_total
         self._heat_wpm2 = w_per_m2
+        self._heat_excluded = False
+        self._refresh_temperature_label()
+        self.update()
+
+    def set_heat_excluded(self, excluded: bool = True):
+        self._heat_excluded = bool(excluded)
+        if excluded:
+            self._heat_w = 0.0
+            self._heat_wpm2 = 0.0
         self._refresh_temperature_label()
         self.update()
 
@@ -545,7 +554,7 @@ class RoomPolygonItem(QGraphicsPathItem):
     def paint(self, painter: QPainter, option, widget=None):
         painter.setRenderHint(QPainter.Antialiasing, True)
         painter.setPen(self.pen_sel if self.isSelected() else self.pen_norm)
-        if self.heatmap_enabled_cb():
+        if self.heatmap_enabled_cb() and not getattr(self, "_heat_excluded", False):
             rr, gg, bb, aa = heat_rgba(self._heat_wpm2)
             painter.fillPath(self.path(), QBrush(QColor.fromRgbF(rr, gg, bb, aa)))
         painter.setBrush(Qt.NoBrush)
@@ -558,7 +567,10 @@ class RoomPolygonItem(QGraphicsPathItem):
             painter.restore()
         painter.save()
         painter.setPen(Qt.black)
-        txt = f"{self.model.name}\n{self._area_in_m2:.1f} m²\n{self._heat_w:.0f} W\n{self._heat_wpm2:.0f} W/m²"
+        if getattr(self, "_heat_excluded", False):
+            txt = f"{self.model.name}\n{self._area_in_m2:.1f} m²\nunbeheizt"
+        else:
+            txt = f"{self.model.name}\n{self._area_in_m2:.1f} m²\n{self._heat_w:.0f} W\n{self._heat_wpm2:.0f} W/m²"
         painter.drawText(self.boundingRect().adjusted(6, 6, -6, -6), Qt.AlignLeft | Qt.AlignTop, txt)
         painter.restore()
 

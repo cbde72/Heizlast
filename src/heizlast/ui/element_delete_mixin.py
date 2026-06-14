@@ -3,7 +3,7 @@ from ..core.element_metrics import ElementMetricsService
 from ..core.element_access import meta_rooms
 from ..core.heatload_types import is_opening_type
 
-from PySide6.QtWidgets import QMessageBox
+from PySide6.QtWidgets import QApplication, QMessageBox
 
 from ..domain.models import ElementModel
 
@@ -46,7 +46,13 @@ class MainWindowElementDeleteMixin:
         self._populate_room_elements_list()
 
     def _delete_selection(self):
-        """Löscht die aktuelle Auswahl (Fenster/Türen oder Räume)."""
+        """Löscht die aktuelle Auswahl passend zum aktuellen Fokus."""
+        element_list = getattr(self, "list_room_elements", None)
+        focus = QApplication.focusWidget()
+        if element_list is not None and element_list.selectedItems():
+            if focus is element_list or element_list.isAncestorOf(focus):
+                self._delete_selected_room_element()
+                return
         if self._selected_window_uids():
             self._delete_selected_windows()
             return

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 APP_NAME = "Heizlast Tool"
-APP_INTERNAL_VERSION = "38.0.0"
+APP_INTERNAL_VERSION = "39.0.0"
 APP_VERSION_LABEL = f"Version {APP_INTERNAL_VERSION}"
 
 MAIN_FEATURES = [
@@ -20,6 +20,7 @@ MAIN_FEATURES = [
     "Heizlast-Audit im Dashboard mit Top-Lasttreibern und DG-Dach-/Giebelflächenprüfung",
     "Bauteil-Assistent unterstützt Innenwände für Nachbarzonen und Interzone",
     "Erweiterte DIN-Prüffassung mit harten Gates, Änderungsprotokoll und schärferem Quellen-Audit",
+    "Bedatungs-Hilfen: erweiterte Raumtypen-Presets, Geschoss-Assistent, Element-Massenbearbeitung und Live-DIN-Ampel im Bauteildialog",
 ]
 
 DIN_CONFORMITY = [

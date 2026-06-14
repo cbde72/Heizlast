@@ -377,7 +377,14 @@ class MainWindowComfortMixin:
         return [
             (str(room_id), rr)
             for room_id, rr in (results or {}).items()
-            if isinstance(rr, dict) and "Q_sum_W" in rr
+            if isinstance(rr, dict) and "Q_sum_W" in rr and not bool(rr.get("excluded_from_heatload", False))
+        ]
+
+    def _excluded_room_result_items(self, results: dict) -> list[tuple[str, dict]]:
+        return [
+            (str(room_id), rr)
+            for room_id, rr in (results or {}).items()
+            if isinstance(rr, dict) and bool(rr.get("excluded_from_heatload", False))
         ]
 
     def _add_heat_audit_item(self, text: str, room_id: str | None = None) -> None:
@@ -395,9 +402,15 @@ class MainWindowComfortMixin:
             return
         lst.clear()
         room_results = self._room_result_items(results)
+        excluded_rooms = self._excluded_room_result_items(results)
         if not room_results:
-            self._add_heat_audit_item("△ Noch keine Heizlastberechnung für Audit vorhanden.")
+            if excluded_rooms:
+                self._add_heat_audit_item(f"• {len(excluded_rooms)} unbeheizte Räume aus Heizlastbilanz ausgeschlossen.")
+            else:
+                self._add_heat_audit_item("△ Noch keine Heizlastberechnung für Audit vorhanden.")
             return
+        if excluded_rooms:
+            self._add_heat_audit_item(f"• {len(excluded_rooms)} unbeheizte Räume aus Heizlastbilanz ausgeschlossen.")
 
         total_q = sum(float(rr.get("Q_sum_W", 0.0) or 0.0) for _rid, rr in room_results)
         total_trans = sum(float(rr.get("Q_trans_W", 0.0) or 0.0) for _rid, rr in room_results)

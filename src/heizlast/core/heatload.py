@@ -73,6 +73,7 @@ __all__ = [
     "calc_floor_living_area_by_floor",
     "calc_heatloads",
     "ensure_auto_decks",
+    "is_unheated_room",
     "render_floor_living_area_plot_png",
 ]
 
@@ -84,6 +85,27 @@ __all__ = [
 # ---------------------------------------------------------------------------
 # Geometrie-Helfer
 # ---------------------------------------------------------------------------
+
+UNHEATED_ROOM_USAGE_TYPES = {
+    "UNBEHEIZT",
+    "KELLER",
+    "KELLER_UNBEHEIZT",
+    "UNBEHEIZTER KELLER",
+    "DACHRAUM",
+    "DACHRAUM_UNBEHEIZT",
+    "SPEICHER",
+    "ABSEITE",
+    "GARAGE",
+}
+
+
+def is_unheated_room(room: RoomModel) -> bool:
+    """Return True for rooms that are modelled only as unheated buffer zones."""
+    usage = str(getattr(room, "usage_type", "") or "").strip().upper().replace("-", "_")
+    if usage in UNHEATED_ROOM_USAGE_TYPES:
+        return True
+    meta = str(getattr(room, "meta", "") or "").strip().lower()
+    return "unheated=1" in meta or "heated=0" in meta
 
 def _axis_aligned_line(e: ElementModel) -> Optional[Tuple[str, float, float, float]]:
     """Return (orient, c, a0, a1) for axis-aligned element geometry."""
@@ -718,6 +740,15 @@ def calc_heatloads(
     for rid, room_items in list(e_by_room.items()):
         e_by_room[rid] = _dedupe_room_horizontal_boundaries(rid, room_items)
     ###
+    heated_total_volume = 0.0
+    for room in rooms:
+        if is_unheated_room(room):
+            continue
+        try:
+            geom = _inner_dims_for_room(room, e_by_room.get(room.id, []), thickness_mode=thickness_mode)
+            heated_total_volume += max(0.0, float(geom.v_in_m3) * float(area_shrink_factor or 1.0))
+        except Exception:
+            heated_total_volume += max(float(getattr(room, "volume_m3", 0.0) or 0.0), 0.0)
     out: Dict[str, dict] = {}
 
     # --- Gebäude-Hüllflächen-Auswertung (für Reporting, DIN-Nachweis) ---
@@ -797,6 +828,7 @@ def calc_heatloads(
         # ΔT zur Außenluft
         t_in = float(r.t_inside_c or 0.0)
         dT_out = max(0.0, t_in - float(t_out_c))
+        is_heated_zone = not is_unheated_room(r)
 
         # Transmission Summen
         Q_trans = 0.0
@@ -873,7 +905,7 @@ def calc_heatloads(
             type_sums[ety]["Q_W"] += float(line.get("Q_W", 0.0) or 0.0)
 
             # --- Gebäude-Hüllflächen-Audit: genau 1 Detailzeile pro TRANSMISSION-Line ---
-            if lt == "TRANSMISSION":
+            if lt == "TRANSMISSION" and is_heated_zone:
                 try:
                     bkt = str(line.get("bucket", "") or "")
                     A_br = float(line.get("A_brutto_m2", 0.0) or 0.0)
@@ -1291,8 +1323,8 @@ def calc_heatloads(
         vdot_inf = n_inf * v_room
         Q_vent_natural = c_air * max(vdot_room, vdot_min + vdot_inf) * dT_out
         vent_mode = str(ventilation_mode or "natural").strip().lower()
-        total_volume = sum(max(float(getattr(room, "volume_m3", 0.0) or 0.0), 0.0) for room in rooms)
-        room_share = (v_room / max(total_volume, EPS)) if total_volume > EPS else 0.0
+        total_volume = heated_total_volume
+        room_share = (v_room / max(total_volume, EPS)) if (is_heated_zone and total_volume > EPS) else 0.0
         mech_flow = max(float(mech_supply_m3h or 0.0), float(mech_exhaust_m3h or 0.0))
         hrv_eta = min(1.0, max(0.0, float(heat_recovery_efficiency or 0.0)))
         vdot_mech_room = room_share * mech_flow
@@ -1354,9 +1386,65 @@ def calc_heatloads(
         Q_sum = Q_trans + Q_vent + Q_reheat
         q_W_per_m2 = Q_sum / max(A_ref, EPS)
 
+        if not is_heated_zone:
+            for line in room_lines:
+                raw_q = float(line.get("Q_W", 0.0) or 0.0)
+                if abs(raw_q) > 1e-12:
+                    line["Q_W_raw_excluded"] = raw_q
+                line["Q_W"] = 0.0
+                notes = str(line.get("notes", "") or "")
+                suffix = "unbeheizte Zone: nicht Teil der Heizlastbilanz"
+                line["notes"] = f"{notes}; {suffix}" if notes else suffix
+            for sums in type_sums.values():
+                sums["Q_W"] = 0.0
+
+            Q_trans = 0.0
+            Q_trans_out = 0.0
+            Q_trans_keller = 0.0
+            Q_trans_oben = 0.0
+            Q_trans_interzone = 0.0
+            Q_trans_dachraum = 0.0
+            Q_trans_ground = 0.0
+
+            Q_tb = 0.0
+            Q_tb_out = 0.0
+            Q_tb_keller = 0.0
+            Q_tb_oben = 0.0
+            Q_tb_dachraum = 0.0
+            Q_tb_interzone = 0.0
+            Q_tb_ground = 0.0
+
+            Q_vent = 0.0
+            Q_vent_natural = 0.0
+            Q_vent_mech = 0.0
+            vdot_room = 0.0
+            vdot_min = 0.0
+            vdot_inf = 0.0
+            vdot_mech_room = 0.0
+            vdot_din_room = 0.0
+            Q_reheat = 0.0
+            Q_sum = 0.0
+            q_W_per_m2 = 0.0
+
+            A_env_out = 0.0
+            A_env_keller = 0.0
+            A_env_oben = 0.0
+            A_env_dachraum = 0.0
+            A_env_interzone = 0.0
+            A_env_ground = 0.0
+            L_env_out = 0.0
+            L_env_keller = 0.0
+            L_env_oben = 0.0
+            L_env_interzone = 0.0
+            L_env_dachraum = 0.0
+            L_env_ground = 0.0
+
         out[r.id] = {
             "lines": room_lines,
             "type_sums": type_sums,
+            "is_heated_zone": is_heated_zone,
+            "excluded_from_heatload": not is_heated_zone,
+            "heatload_exclusion_reason": "" if is_heated_zone else "unbeheizte Zone",
             "Q_trans_W": Q_trans,
             "Q_trans_out_W": Q_trans_out,
             "Q_trans_keller_W": Q_trans_keller,

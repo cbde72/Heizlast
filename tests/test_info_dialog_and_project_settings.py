@@ -110,6 +110,9 @@ def test_room_properties_expose_usage_presets_for_norm_room_data():
     assert 'form.addRow("Nutzung", self.cb_usage_type)' in build_src
     assert "self.cb_usage_type.currentIndexChanged.connect(self._on_room_usage_preset_changed)" in build_src
     assert "def _on_room_usage_preset_changed" in selection_src
+    assert "def _on_floor_assistant" in selection_src
+    assert 'self.btn_floor_assistant = QPushButton("Geschoss-Assistent")' in build_src
+    assert "self.btn_floor_assistant.clicked.connect(self._on_floor_assistant)" in build_src
     assert "usage_defaults(usage)" in selection_src
     assert "r.usage_type = str(usage).strip() if usage else None" in selection_src
 
@@ -166,6 +169,11 @@ def test_project_dashboard_backup_room_status_and_export_options_are_wired():
     assert 'form.addRow("Quelle/Status", cb_source)' in element_src
     assert 'def _element_transmission_preview_w(self, e: ElementModel) -> float:' in element_src
     assert 'form.addRow("Transmission Φ", lbl_transmission)' in element_src
+    assert 'form.addRow("DIN-Ampel", lbl_din)' in element_src
+    assert 'def _element_din_check_text' in element_src
+    assert 'def _on_batch_edit_elements(self) -> None:' in element_src
+    assert 'self.btn_element_batch_edit = QPushButton("Auswahl bearbeiten")' in build_src
+    assert 'self.list_room_elements.setSelectionMode(QAbstractItemView.ExtendedSelection)' in build_src
     assert 'Φ: {phi_val:.1f} W' in selection_src
     assert "def _refresh_selected_room_norm_status" in selection_src
     assert 'self.lbl_room_norm_status = QLabel("Raumstatus: —")' in build_src
@@ -238,7 +246,7 @@ def test_new_project_wizard_is_guided_and_versioned():
     assert "self.chk_guided_setup = QCheckBox" in dialog_src
     assert "self.cb_setup_scope = QComboBox()" in dialog_src
     assert "'guided_setup': self.chk_guided_setup.isChecked()" in dialog_src
-    assert '__version__ = "2.10.0"' in init_src
-    assert '__internal_version__ = "Heizlast_V38-intern-01"' in init_src
+    assert '__version__ = "2.11.0"' in init_src
+    assert '__internal_version__ = "Heizlast_V39-intern-01"' in init_src
     assert "PROJECT_SCHEMA_VERSION = 26" in init_src
-    assert 'APP_INTERNAL_VERSION = "38.0.0"' in version_src
+    assert 'APP_INTERNAL_VERSION = "39.0.0"' in version_src
