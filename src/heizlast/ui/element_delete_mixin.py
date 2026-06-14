@@ -1,6 +1,7 @@
 from PySide6.QtCore import Qt
 from ..core.element_metrics import ElementMetricsService
 from ..core.element_access import meta_rooms
+from ..core.heatload_types import is_opening_type
 
 from PySide6.QtWidgets import QMessageBox
 
@@ -45,21 +46,21 @@ class MainWindowElementDeleteMixin:
         self._populate_room_elements_list()
 
     def _delete_selection(self):
-        """Löscht die aktuelle Auswahl (Fenster oder Räume)."""
+        """Löscht die aktuelle Auswahl (Fenster/Türen oder Räume)."""
         if self._selected_window_uids():
             self._delete_selected_windows()
             return
         self._delete_selected_rooms()
 
     def _delete_selected_windows(self):
-        """Löscht ausgewählte Fenster."""
+        """Löscht ausgewählte Fenster/Türen."""
         uids = self._selected_window_uids()
         if not uids:
-            self.statusBar().showMessage("Kein Fenster ausgewählt.", 2500)
+            self.statusBar().showMessage("Kein Fenster oder keine Tür ausgewählt.", 2500)
             return
 
         uid_set = set(uids)
-        self.elements = [e for e in self.elements if not (e.element_type == "Fenster" and e.uid in uid_set)]
+        self.elements = [e for e in self.elements if not (is_opening_type(e.element_type) and e.uid in uid_set)]
         self.metrics = ElementMetricsService(self.rooms, self.elements)
 
         # Grafik-Items entfernen
@@ -70,7 +71,7 @@ class MainWindowElementDeleteMixin:
             self._safe_remove_from_scene(it)
 
         self._recompute_and_redraw()
-        self.statusBar().showMessage(f"Fenster gelöscht: {len(uids)}", 3500)
+        self.statusBar().showMessage(f"Fenster/Türen gelöscht: {len(uids)}", 3500)
 
     def _delete_selected_rooms(self):
         """Löscht ausgewählte Räume und zugehörige Elemente."""
@@ -83,7 +84,7 @@ class MainWindowElementDeleteMixin:
         ret = QMessageBox.question(
             self,
             "Raum löschen",
-            f"Folgende Räume löschen?\n\n{txt}\n\nHinweis: Zugehörige Elemente (inkl. Fenster) werden entfernt.",
+            f"Folgende Räume löschen?\n\n{txt}\n\nHinweis: Zugehörige Elemente (inkl. Fenster/Türen) werden entfernt.",
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No,
         )

@@ -108,8 +108,12 @@ class RoofLineEditorWidget(QWidget):
 
     def paintEvent(self, _event) -> None:
         p = QPainter(self)
+        if not p.isActive():
+            return
         p.setRenderHint(QPainter.Antialiasing, True)
         outer = self.rect().adjusted(10, 10, -10, -10)
+        if outer.width() <= 0 or outer.height() <= 0:
+            return
         p.fillRect(self.rect(), QColor("#fafbfc"))
         p.setPen(QPen(QColor("#d9e0e6"), 1))
         p.setBrush(QBrush(QColor("#ffffff")))
@@ -199,8 +203,8 @@ class DormerEditDialog(QDialog):
         form.setVerticalSpacing(10)
 
         self.ed_id = QLineEdit(str(getattr(self._dormer, "id", "dormer_1") or "dormer_1"))
-        self.cb_type = QComboBox(); self.cb_type.addItems(["Schleppgaube", "Satteldachgaube", "Flachdachgaube"])
-        self.cb_type.setCurrentText({"schleppgaube": "Schleppgaube", "satteldachgaube": "Satteldachgaube", "flachdachgaube": "Flachdachgaube"}.get(str(getattr(self._dormer, "dormer_type", "schleppgaube") or "schleppgaube").strip().lower(), "Schleppgaube"))
+        self.cb_type = QComboBox(); self.cb_type.addItems(["Schleppgaube", "Satteldachgaube", "Flachdachgaube", "Spitzgaube"])
+        self.cb_type.setCurrentText({"schleppgaube": "Schleppgaube", "satteldachgaube": "Satteldachgaube", "flachdachgaube": "Flachdachgaube", "spitzgaube": "Spitzgaube"}.get(str(getattr(self._dormer, "dormer_type", "schleppgaube") or "schleppgaube").strip().lower(), "Schleppgaube"))
         self.cb_side = QComboBox(); self.set_active_sides(active_sides, selected=str(getattr(self._dormer, "roof_side", "right") or "right"))
 
         self.sp_center = QDoubleSpinBox(); self.sp_center.setRange(0.0, 999.0); self.sp_center.setDecimals(2); self.sp_center.setValue(float(getattr(self._dormer, "center_along_m", 0.0)))
@@ -252,7 +256,7 @@ class DormerEditDialog(QDialog):
         self.cb_side.blockSignals(False)
 
     def to_dto(self) -> DormerCfgDTO:
-        dtype = {"Schleppgaube": "schleppgaube", "Satteldachgaube": "satteldachgaube", "Flachdachgaube": "flachdachgaube"}.get(self.cb_type.currentText(), "schleppgaube")
+        dtype = {"Schleppgaube": "schleppgaube", "Satteldachgaube": "satteldachgaube", "Flachdachgaube": "flachdachgaube", "Spitzgaube": "spitzgaube"}.get(self.cb_type.currentText(), "schleppgaube")
         return DormerCfgDTO(
             id=self.ed_id.text().strip() or "dormer_1",
             dormer_type=dtype,
@@ -454,6 +458,16 @@ class ProjectSettingsDialog(QDialog):
         self.sp_u_erdwand = QDoubleSpinBox(); self.sp_u_erdwand.setRange(0.0, 5.0); self.sp_u_erdwand.setDecimals(3); self.sp_u_erdwand.setValue(float(getattr(cfg, "u_erdberuehrte_wand_w_m2k", 0.60)))
         self.ed_u_source = QLineEdit(str(getattr(cfg, "u_value_source", "")))
         self.ed_u_source.setPlaceholderText("Quelle U-Werte, z.B. Energieausweis, Bauteilkatalog, Herstellerdaten")
+        self.cb_auto_deck_confirmed = QCheckBox("Auto-Decken-Annahmen fachlich geprüft")
+        self.cb_auto_deck_confirmed.setChecked(bool(getattr(cfg, "auto_deck_assumptions_confirmed", False)))
+        self.ed_auto_deck_boundary_source = QLineEdit(str(getattr(cfg, "auto_deck_boundary_source", "")))
+        self.ed_auto_deck_boundary_source.setPlaceholderText("Quelle Randbedingungen, z.B. Bestandsaufnahme, Plan, Bauteilnachweis")
+        self.cb_auto_deck_eg_keller = QCheckBox("EG: Kellerdecke automatisch erzeugen")
+        self.cb_auto_deck_eg_keller.setChecked(bool(getattr(cfg, "auto_deck_create_eg_kellerdecke", True)))
+        self.cb_auto_deck_eg_deck = QCheckBox("EG: Geschossdecke zu DG automatisch erzeugen")
+        self.cb_auto_deck_eg_deck.setChecked(bool(getattr(cfg, "auto_deck_create_eg_geschossdecke", True)))
+        self.cb_auto_deck_dg_attic = QCheckBox("DG: Speicherdecke automatisch erzeugen")
+        self.cb_auto_deck_dg_attic.setChecked(bool(getattr(cfg, "auto_deck_create_dg_speicherdecke", True)))
         self.cb_norm_profile = QComboBox()
         self.cb_norm_profile.addItems(["Individuell", "Altbau unsaniert", "Teilsaniert", "Neubau"])
         self.btn_apply_norm_profile = QPushButton("Profil anwenden")
@@ -477,9 +491,17 @@ class ProjectSettingsDialog(QDialog):
             ("U erdberührte Wand [W/m²K]", self.sp_u_erdwand),
             ("Quelle U-Werte", self.ed_u_source),
         ])
+        f4_decks = self._make_form([
+            ("Annahmen bestätigt", self.cb_auto_deck_confirmed),
+            ("Quelle Randbedingungen", self.ed_auto_deck_boundary_source),
+            ("Kellerdecke", self.cb_auto_deck_eg_keller),
+            ("EG-Geschossdecke", self.cb_auto_deck_eg_deck),
+            ("DG-Speicherdecke", self.cb_auto_deck_dg_attic),
+        ])
         self._add_nav_page("Auto-Decken", self._build_tab([
             self._group("Schnellprofil", f4_profile, "Setzt plausible Startwerte für typische Sanierungsstände. Die Werte bleiben Projektannahmen und sollten über die Quelle U-Werte dokumentiert werden."),
             self._group("Projekt-U-Werte", f4, "U-Werte für automatisch abgeleitete Außenwände und Decken sowie Fallbackwerte für erdberührte Bauteile ohne eigenen U-Wert."),
+            self._group("Automatische Decken", f4_decks, "Steuert, welche Decken aus dem Geschossmodell erzeugt werden und ob die daraus folgenden Nachbarzonen als geprüft gelten."),
         ]))
 
         # --- Tab: Wärmebrücken ---
@@ -559,7 +581,7 @@ class ProjectSettingsDialog(QDialog):
         self.sp_attic_ridge_height = QDoubleSpinBox(); self.sp_attic_ridge_height.setRange(0.0, 50.0); self.sp_attic_ridge_height.setDecimals(2); self.sp_attic_ridge_height.setSpecialValueText("auto"); self.sp_attic_ridge_height.setValue(float(getattr(cfg.attic, "ridge_height_m", 0.0) or 0.0))
         self.cb_attic_pult_side = QComboBox(); self.cb_attic_pult_side.addItems(["links ansteigend", "rechts ansteigend"]); self.cb_attic_pult_side.setCurrentText("links ansteigend" if str(getattr(cfg.attic, "pult_rise_side", "right") or "right").strip().lower() == "left" else "rechts ansteigend")
         self.sp_attic_half_hip = QDoubleSpinBox(); self.sp_attic_half_hip.setRange(0.05, 0.95); self.sp_attic_half_hip.setDecimals(2); self.sp_attic_half_hip.setSingleStep(0.05); self.sp_attic_half_hip.setValue(float(getattr(cfg.attic, "half_hip_ratio", 0.45)))
-        self.cb_attic_dormer_type = QComboBox(); self.cb_attic_dormer_type.addItems(["keine", "Schleppgaube", "Satteldachgaube", "Flachdachgaube"]); self.cb_attic_dormer_type.setCurrentText({"none":"keine","schleppgaube":"Schleppgaube","satteldachgaube":"Satteldachgaube","flachdachgaube":"Flachdachgaube"}.get(str(getattr(cfg.attic, "dormer_type", "none") or "none").strip().lower(), "keine"))
+        self.cb_attic_dormer_type = QComboBox(); self.cb_attic_dormer_type.addItems(["keine", "Schleppgaube", "Satteldachgaube", "Flachdachgaube", "Spitzgaube"]); self.cb_attic_dormer_type.setCurrentText({"none":"keine","schleppgaube":"Schleppgaube","satteldachgaube":"Satteldachgaube","flachdachgaube":"Flachdachgaube","spitzgaube":"Spitzgaube"}.get(str(getattr(cfg.attic, "dormer_type", "none") or "none").strip().lower(), "keine"))
         self.sp_attic_dormer_width = QDoubleSpinBox(); self.sp_attic_dormer_width.setRange(0.5, 8.0); self.sp_attic_dormer_width.setDecimals(2); self.sp_attic_dormer_width.setValue(float(getattr(cfg.attic, "dormer_width_m", 1.80)))
         self.sp_attic_dormer_height = QDoubleSpinBox(); self.sp_attic_dormer_height.setRange(0.3, 4.0); self.sp_attic_dormer_height.setDecimals(2); self.sp_attic_dormer_height.setValue(float(getattr(cfg.attic, "dormer_height_m", 1.20)))
         self.sp_attic_dormer_offset = QDoubleSpinBox(); self.sp_attic_dormer_offset.setRange(-0.80, 0.80); self.sp_attic_dormer_offset.setDecimals(2); self.sp_attic_dormer_offset.setSingleStep(0.05); self.sp_attic_dormer_offset.setValue(float(getattr(cfg.attic, "dormer_offset_ratio", 0.0)))
@@ -1204,7 +1226,7 @@ class ProjectSettingsDialog(QDialog):
 
     def _attic_cfg_from_widgets(self) -> AtticCfgDTO:
         _roof_rev = {"Satteldach": "satteldach", "Pultdach": "pultdach", "Walmdach": "walmdach", "Krüppelwalmdach": "krueppelwalmdach", "Flachdach": "flachdach", "Winkel-/Kehldach": "winkeldach"}
-        _dormer_rev = {"keine": "none", "Schleppgaube": "schleppgaube", "Satteldachgaube": "satteldachgaube", "Flachdachgaube": "flachdachgaube"}
+        _dormer_rev = {"keine": "none", "Schleppgaube": "schleppgaube", "Satteldachgaube": "satteldachgaube", "Flachdachgaube": "flachdachgaube", "Spitzgaube": "spitzgaube"}
         return AtticCfgDTO(
             enabled=bool(self.cb_attic_enabled.isChecked()),
             building_width_m=float(self.sp_attic_width.value()),
@@ -1292,7 +1314,7 @@ class ProjectSettingsDialog(QDialog):
         return ("front", "back") if self.cb_attic_ridge_orientation.currentText() == "quer" else ("left", "right")
 
     def _friendly_dormer_label(self, dormer: DormerCfgDTO) -> str:
-        tmap = {"schleppgaube": "Schleppgaube", "satteldachgaube": "Satteldachgaube", "flachdachgaube": "Flachdachgaube"}
+        tmap = {"schleppgaube": "Schleppgaube", "satteldachgaube": "Satteldachgaube", "flachdachgaube": "Flachdachgaube", "spitzgaube": "Spitzgaube"}
         smap = {"left": "links", "right": "rechts", "front": "vorne", "back": "hinten"}
         pitch = "auto" if dormer.roof_pitch_deg is None else f"{float(dormer.roof_pitch_deg):.1f}°"
         return (
@@ -1321,7 +1343,7 @@ class ProjectSettingsDialog(QDialog):
         side = self._active_dormer_sides()[-1]
         return DormerCfgDTO(
             id=f"gaube_{idx}",
-            dormer_type={"Schleppgaube": "schleppgaube", "Satteldachgaube": "satteldachgaube", "Flachdachgaube": "flachdachgaube"}.get(self.cb_attic_dormer_type.currentText(), "schleppgaube"),
+            dormer_type={"Schleppgaube": "schleppgaube", "Satteldachgaube": "satteldachgaube", "Flachdachgaube": "flachdachgaube", "Spitzgaube": "spitzgaube"}.get(self.cb_attic_dormer_type.currentText(), "schleppgaube"),
             roof_side=side,
             center_along_m=max(0.0, float(self.sp_attic_length.value()) / 2.0),
             width_m=float(self.sp_attic_dormer_width.value()),
@@ -1467,6 +1489,11 @@ class ProjectSettingsDialog(QDialog):
         cfg.u_bodenplatte_w_m2k = float(self.sp_u_bodenplatte.value())
         cfg.u_erdberuehrte_wand_w_m2k = float(self.sp_u_erdwand.value())
         cfg.u_value_source = self.ed_u_source.text().strip()
+        cfg.auto_deck_assumptions_confirmed = bool(self.cb_auto_deck_confirmed.isChecked())
+        cfg.auto_deck_boundary_source = self.ed_auto_deck_boundary_source.text().strip()
+        cfg.auto_deck_create_eg_kellerdecke = bool(self.cb_auto_deck_eg_keller.isChecked())
+        cfg.auto_deck_create_eg_geschossdecke = bool(self.cb_auto_deck_eg_deck.isChecked())
+        cfg.auto_deck_create_dg_speicherdecke = bool(self.cb_auto_deck_dg_attic.isChecked())
 
         cfg.tb.mode = self.cb_tb_mode.currentText()
         cfg.tb.delta_u_w_m2k = float(self.sp_tb_du.value())
@@ -1502,7 +1529,7 @@ class ProjectSettingsDialog(QDialog):
         cfg.attic.ridge_height_m = float(self.sp_attic_ridge_height.value()) if float(self.sp_attic_ridge_height.value()) > 0.0 else None
         cfg.attic.pult_rise_side = "left" if self.cb_attic_pult_side.currentText() == "links ansteigend" else "right"
         cfg.attic.half_hip_ratio = float(self.sp_attic_half_hip.value())
-        _dormer_rev = {"keine": "none", "Schleppgaube": "schleppgaube", "Satteldachgaube": "satteldachgaube", "Flachdachgaube": "flachdachgaube"}
+        _dormer_rev = {"keine": "none", "Schleppgaube": "schleppgaube", "Satteldachgaube": "satteldachgaube", "Flachdachgaube": "flachdachgaube", "Spitzgaube": "spitzgaube"}
         cfg.attic.dormer_type = _dormer_rev.get(self.cb_attic_dormer_type.currentText(), "none")
         cfg.attic.dormer_width_m = float(self.sp_attic_dormer_width.value())
         cfg.attic.dormer_height_m = float(self.sp_attic_dormer_height.value())

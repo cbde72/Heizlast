@@ -1,6 +1,6 @@
 import json
 from ..domain.models import RoomModel
-from ..core.geometry import orthogonalize_points, room_polygon
+from ..core.geometry import classify_floor_edge_spans, orthogonalize_points, room_polygon
 from ..domain.services.room_operation_service import RoomOperationRecord
 from ..domain.house_state import HouseState
 from ..core.polygon_ops import serialize_polygon_m, validate_orthogonal_polygon, simplify_orthogonal_polygon, snap_m
@@ -23,19 +23,165 @@ except Exception:
     Poly3DCollection = None
 from .graphics import PX_PER_M
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QPen,QBrush
+from PySide6.QtGui import QPen, QBrush, QColor, QPainterPath
 from PySide6.QtCore import QPointF
 
 from ..domain.models import ElementModel
 from .. import APP_NAME, __version__, __internal_version__, PROJECT_SCHEMA_VERSION
 from .dialogs.info_dialog import InfoDialog
 from .dialogs.wall_elevation_dialog import WallElevationDialog, WallOpeningViewModel
-from ..core.wall_openings import wall_openings_for_element
+from ..core.wall_openings import opening_geometry_from_element, wall_openings_for_element
+from ..core.heatload_types import is_door_type, is_window_type
 from .gl_3d_shell_dialog import Shell3DDialog
 from .shell_2d_dialog import Shell2DDialog
 from .house_side_dialog import HouseSideDialog
+from .room_3d_dialog import Room3DDialog
+from ..core.element_access import get_room_elements
+from ..core.anchors import dump_meta, parse_meta
 
 class MainWindowMiscMixin:
+
+    def _on_show_3d_room(self) -> None:
+        """Open or refresh the non-modal 3D preview for the selected room."""
+        dlg = getattr(self, "_room_3d_dialog", None)
+        if dlg is None:
+            dlg = Room3DDialog(self)
+            self._room_3d_dialog = dlg
+        rid = getattr(self, "_selected_room_id", None)
+        room = self.rooms.get(rid) if rid else None
+        elements = get_room_elements(getattr(self, "elements", []) or [], rid) if rid else []
+        dlg.set_room(room, elements)
+        dlg.show()
+        dlg.raise_()
+        dlg.activateWindow()
+
+    def _is_roof_gable_heat_transfer_element(self, element: ElementModel) -> bool:
+        et = str(getattr(element, "element_type", "") or "").strip().lower()
+        return et in {"dach", "giebelwand"} or et.replace(" ", "") in {"giebelwand"}
+
+    def _set_roof_gable_element_zeroed(self, element: ElementModel, enabled: bool) -> None:
+        meta = parse_meta(getattr(element, "meta", "") or "")
+        if enabled:
+            if meta.get("zero_roof_gable_transfer") != "1":
+                meta["zero_roof_gable_prev_factor"] = f"{float(getattr(element, 'factor', 1.0) or 0.0):.12g}"
+                if "ov_f" in meta:
+                    meta["zero_roof_gable_prev_ov_f"] = str(meta.get("ov_f", ""))
+                    meta["zero_roof_gable_had_ov_f"] = "1"
+                else:
+                    meta["zero_roof_gable_had_ov_f"] = "0"
+            meta["zero_roof_gable_transfer"] = "1"
+            meta["ov_f"] = "0"
+            element.factor = 0.0
+            element.meta = dump_meta(meta)
+            return
+
+        if meta.get("zero_roof_gable_transfer") == "1":
+            try:
+                element.factor = float(meta.get("zero_roof_gable_prev_factor", getattr(element, "factor", 1.0)) or 1.0)
+            except Exception:
+                element.factor = 1.0
+            if meta.get("zero_roof_gable_had_ov_f") == "1":
+                meta["ov_f"] = str(meta.get("zero_roof_gable_prev_ov_f", element.factor))
+            else:
+                meta.pop("ov_f", None)
+        for key in (
+            "zero_roof_gable_transfer",
+            "zero_roof_gable_prev_factor",
+            "zero_roof_gable_prev_ov_f",
+            "zero_roof_gable_had_ov_f",
+        ):
+            meta.pop(key, None)
+        element.meta = dump_meta(meta)
+
+    def _apply_zero_roof_gable_transfer_to_elements(self, enabled: bool) -> None:
+        for element in list(getattr(self, "elements", []) or []):
+            if self._is_roof_gable_heat_transfer_element(element):
+                self._set_roof_gable_element_zeroed(element, enabled)
+
+    def _sync_zero_roof_gable_transfer_action(self) -> None:
+        action = getattr(self, "act_zero_roof_gable_transfer", None)
+        if action is None:
+            return
+        enabled = bool(getattr(getattr(getattr(self, "project_cfg", None), "attic", None), "zero_roof_gable_transmission", False))
+        action.blockSignals(True)
+        action.setChecked(enabled)
+        action.blockSignals(False)
+        action.setText("0W" if enabled else "Dach/Giebel 0")
+        action.setToolTip(
+            "Aktiv: Dach- und Giebelwand-Transmission ist auf 0 W gesetzt."
+            if enabled
+            else "Gelber Prüfschalter: setzt Dach- und Giebelwand-Transmission auf 0."
+        )
+        toolbar = getattr(self, "tb_main", None)
+        if toolbar is not None:
+            try:
+                btn = toolbar.widgetForAction(action)
+                if btn is not None:
+                    btn.setObjectName("btnZeroRoofGableTransfer")
+                    btn.setText("0W" if enabled else "")
+                    btn.setToolButtonStyle(Qt.ToolButtonTextUnderIcon if enabled else Qt.ToolButtonIconOnly)
+                    btn.setMinimumWidth(44 if enabled else 30)
+                    btn.setStyleSheet(
+                        "QToolButton#btnZeroRoofGableTransfer { background: #facc15; color: #111827; border: 1px solid #ca8a04; border-radius: 4px; padding: 3px; }"
+                        "QToolButton#btnZeroRoofGableTransfer:checked { background: #f59e0b; border: 2px solid #92400e; }"
+                    )
+                    btn.update()
+            except Exception:
+                pass
+
+    def _refresh_views_after_zero_roof_gable_transfer(self) -> None:
+        try:
+            self._refresh_attic_preview()
+        except Exception:
+            pass
+        try:
+            if getattr(self, "_selected_room_id", None):
+                self._populate_room_elements_list()
+        except Exception:
+            pass
+        try:
+            self._update_room_3d_dialog_selection()
+        except Exception:
+            pass
+        for scene_name in ("scene_KG", "scene_EG", "scene_DG"):
+            try:
+                scene = getattr(self, scene_name, None)
+                if scene is not None:
+                    scene.update()
+            except Exception:
+                pass
+        for view_name in ("view_KG", "view_EG", "view_DG"):
+            try:
+                view = getattr(self, view_name, None)
+                if view is not None:
+                    view.viewport().update()
+            except Exception:
+                pass
+        try:
+            self._update_statusbar_summary()
+        except Exception:
+            pass
+
+    def _on_toggle_zero_roof_gable_transfer(self, checked: bool) -> None:
+        cfg = getattr(self, "project_cfg", None)
+        attic = getattr(cfg, "attic", None) if cfg is not None else None
+        if attic is not None:
+            attic.zero_roof_gable_transmission = bool(checked)
+        self._apply_zero_roof_gable_transfer_to_elements(bool(checked))
+        self._sync_zero_roof_gable_transfer_action()
+        self._recompute_and_redraw(sync_auto_elements=True)
+        try:
+            self._rebuild_elements_graphics()
+        except Exception:
+            pass
+        self._refresh_views_after_zero_roof_gable_transfer()
+        try:
+            self.statusBar().showMessage(
+                "Dach/Giebel-Transmission auf 0 W gesetzt." if checked else "Dach/Giebel-Transmission wieder aktiviert.",
+                3000,
+            )
+        except Exception:
+            pass
 
     def _is_wall_like_element(self, element: ElementModel) -> bool:
         et = str(getattr(element, "element_type", "") or "").strip().lower()
@@ -938,15 +1084,24 @@ class MainWindowMiscMixin:
         if all_pts:
             xs = [float(p[0]) for p in all_pts]
             ys = [float(p[1]) for p in all_pts]
+            min_x = min(xs)
+            min_y = min(ys)
+            max_x = max(xs)
+            max_y = max(ys)
             building_width = max(3.0, max(xs) - min(xs))
             building_depth = max(3.0, max(ys) - min(ys))
         else:
             attic = getattr(getattr(self, "project_cfg", None), "attic", None)
+            min_x = 0.0
+            min_y = 0.0
             building_width = max(3.0, float(getattr(attic, "building_width_m", 10.0) or 10.0))
             building_depth = max(3.0, float(getattr(attic, "building_length_m", 10.0) or 10.0))
+            max_x = min_x + building_width
+            max_y = min_y + building_depth
 
         roof_type = self._current_roof_type()
         roof_height = self._roof_peak_height()
+        attic = getattr(getattr(self, "project_cfg", None), "attic", None)
         roof_style = self._roof_material_style()
         material_style = self._facade_material_style()
         roof_color = "#b24a3a"
@@ -964,18 +1119,136 @@ class MainWindowMiscMixin:
             "building_width_m": building_width,
             "building_depth_m": building_depth,
             "levels": [
-                {"label": "Keller", "z0_m": -kg_h, "z1_m": 0.0},
-                {"label": "Erdgeschoss", "z0_m": 0.0, "z1_m": eg_h},
-                {"label": "Obergeschoss", "z0_m": eg_h, "z1_m": eg_h + og_h},
+                {"floor": "KG", "label": "Keller", "z0_m": -kg_h, "z1_m": 0.0},
+                {"floor": "EG", "label": "Erdgeschoss", "z0_m": 0.0, "z1_m": eg_h},
+                {"floor": "DG", "label": "Obergeschoss", "z0_m": eg_h, "z1_m": eg_h + og_h},
             ],
             "roof_type": roof_type,
             "roof_name": f"Dach · {self._roof_display_name(roof_type)}",
             "roof_height_m": roof_height,
             "roof_overhang_m": float(self._roof_profile_params().get("roof_overhang_m", 0.30) or 0.30),
+            "ridge_orientation": str(getattr(attic, "ridge_orientation", "length") or "length").strip().lower() if attic is not None else "length",
+            "origin_x_m": float(min_x),
+            "origin_y_m": float(min_y),
+            "windows": self._collect_house_side_windows(min_x, min_y, max_x, max_y),
+            "projection_edges": self._collect_house_side_projection_edges(min_x, min_y, max_x, max_y),
+            "dormers": self._collect_house_side_dormers(attic),
             "roof_color": roof_color,
             "facade_color": facade_color,
             "px_per_m": 78.0,
         }
+
+    def _collect_house_side_windows(self, min_x: float, min_y: float, max_x: float, max_y: float) -> list[dict]:
+        out: list[dict] = []
+        tol = 0.15
+        for e in list(getattr(self, "elements", []) or []):
+            element_type = str(getattr(e, "element_type", "") or "")
+            is_door = is_door_type(element_type)
+            if not (is_window_type(element_type) or is_door):
+                continue
+            if None in (getattr(e, "x0_m", None), getattr(e, "y0_m", None), getattr(e, "x1_m", None), getattr(e, "y1_m", None)):
+                continue
+            try:
+                x0 = float(e.x0_m)
+                y0 = float(e.y0_m)
+                x1 = float(e.x1_m)
+                y1 = float(e.y1_m)
+                dx = x1 - x0
+                dy = y1 - y0
+                floor = str(getattr(e, "floor", "") or "").strip().upper()
+                if not floor:
+                    room = getattr(self, "rooms", {}).get(str(getattr(e, "room_id", "") or ""))
+                    floor = str(getattr(room, "floor", "EG") or "EG").strip().upper()
+                sill_m, height_m = opening_geometry_from_element(e, default_sill_m=0.90)
+                length_m = max(0.10, float(getattr(e, "length_m", 0.0) or e.compute_length() or 0.0))
+                if abs(dx) >= abs(dy):
+                    y_mid = 0.5 * (y0 + y1)
+                    view = "front" if abs(y_mid - min_y) <= abs(y_mid - max_y) else "back"
+                    x_center = 0.5 * (x0 + x1) - min_x
+                    width_m = max(0.10, abs(dx) if abs(dx) > 1e-9 else length_m)
+                    secondary_plane = abs(y_mid - (min_y if view == "front" else max_y)) > tol
+                else:
+                    x_mid = 0.5 * (x0 + x1)
+                    view = "left" if abs(x_mid - min_x) <= abs(x_mid - max_x) else "right"
+                    x_center = 0.5 * (y0 + y1) - min_y
+                    width_m = max(0.10, abs(dy) if abs(dy) > 1e-9 else length_m)
+                    secondary_plane = abs(x_mid - (min_x if view == "left" else max_x)) > tol
+                out.append({
+                    "view": view,
+                    "floor": floor,
+                    "center_m": float(x_center),
+                    "width_m": float(width_m),
+                    "sill_m": float(sill_m),
+                    "height_m": float(height_m),
+                    "secondary_plane": bool(secondary_plane),
+                    "opening_type": "door" if is_door else "window",
+                    "label": element_type.strip() or ("Tür" if is_door else "Fenster"),
+                })
+            except Exception:
+                continue
+        return out
+
+    def _collect_house_side_projection_edges(self, min_x: float, min_y: float, max_x: float, max_y: float) -> list[dict]:
+        rooms = list((getattr(self, "rooms", {}) or {}).values())
+        if not rooms:
+            return []
+        out: list[dict] = []
+        tol = 0.05
+        mid_x = 0.5 * (float(min_x) + float(max_x))
+        mid_y = 0.5 * (float(min_y) + float(max_y))
+        try:
+            spans = classify_floor_edge_spans(rooms)
+        except Exception:
+            spans = []
+        for span in spans:
+            if getattr(span, "element_type", "") != "Aussenwand":
+                continue
+            floor = str(getattr(span, "floor", "") or "").strip().upper()
+            if span.orient == "V":
+                c = float(span.c)
+                if c <= float(min_x) + tol or c >= float(max_x) - tol:
+                    continue
+                y_mid = 0.5 * (float(span.a0) + float(span.a1))
+                out.append({
+                    "view": "front" if y_mid <= mid_y else "back",
+                    "floor": floor,
+                    "pos_m": c - float(min_x),
+                })
+            elif span.orient == "H":
+                c = float(span.c)
+                if c <= float(min_y) + tol or c >= float(max_y) - tol:
+                    continue
+                x_mid = 0.5 * (float(span.a0) + float(span.a1))
+                out.append({
+                    "view": "left" if x_mid <= mid_x else "right",
+                    "floor": floor,
+                    "pos_m": c - float(min_y),
+                })
+        return out
+
+    def _collect_house_side_dormers(self, attic) -> list[dict]:
+        if attic is None:
+            return []
+        out: list[dict] = []
+        for dormer in list(getattr(attic, "dormers", []) or []):
+            try:
+                out.append({
+                    "id": str(getattr(dormer, "id", "gaube") or "gaube"),
+                    "type": str(getattr(dormer, "dormer_type", "schleppgaube") or "schleppgaube").strip().lower(),
+                    "side": str(getattr(dormer, "roof_side", "right") or "right").strip().lower(),
+                    "center_along_m": float(getattr(dormer, "center_along_m", 0.0) or 0.0),
+                    "width_m": max(0.20, float(getattr(dormer, "width_m", 1.80) or 1.80)),
+                    "depth_m": max(0.20, float(getattr(dormer, "depth_m", 1.20) or 1.20)),
+                    "front_height_m": max(0.20, float(getattr(dormer, "front_height_m", 1.20) or 1.20)),
+                    "window_count": max(0, int(getattr(dormer, "window_count", 1) or 0)),
+                    "window_width_m": max(0.0, float(getattr(dormer, "window_width_m", 1.00) or 1.00)),
+                    "window_height_m": max(0.0, float(getattr(dormer, "window_height_m", 1.00) or 1.00)),
+                    "sill_height_m": max(0.0, float(getattr(dormer, "sill_height_m", 0.80) or 0.80)),
+                    "roof_pitch_deg": getattr(dormer, "roof_pitch_deg", None),
+                })
+            except Exception:
+                continue
+        return out
 
     def _on_show_house_side_view(self) -> None:
         scene_data = self._collect_house_side_scene_data()
@@ -1299,6 +1572,9 @@ class MainWindowMiscMixin:
         if getattr(self, 'act_add_window', None) is not None:
             self.act_add_window.setChecked(False)
             self._add_window_mode = False
+        if getattr(self, 'act_add_door', None) is not None:
+            self.act_add_door.setChecked(False)
+            self._add_door_mode = False
         for view in (getattr(self, "view_KG", None), getattr(self, "view_EG", None), getattr(self, "view_DG", None)):
             if view is None:
                 continue
@@ -1312,9 +1588,9 @@ class MainWindowMiscMixin:
         try:
             msg = {
                 'select': 'Auswahlmodus aktiv: Räume und Elemente können selektiert und verschoben werden.',
-                'rect': 'Zeichnen aktiv: Rechteck-Raum per Ziehen aufspannen.',
-                'l': 'Zeichnen aktiv: L-Raum mit drei Klickpunkten definieren.',
-                'poly': 'Zeichnen aktiv: Polygonraum mit orthogonalen Klickpunkten definieren.',
+                'rect': 'Zeichnen aktiv: Rechteck-Raum per Ziehen aufspannen. Esc bricht ab.',
+                'l': 'Zeichnen aktiv: L-Raum mit drei Klickpunkten definieren. Esc bricht ab.',
+                'poly': 'Zeichnen aktiv: Polygonraum per Klickpunkten. Startpunkt/Doppelklick/Rechtsklick schließt, Backspace entfernt, Esc bricht ab.',
                 'split': 'Teilen aktiv: selektierten Raum mit einer Linie teilen.',
             }.get(tool)
             if msg:
@@ -1397,6 +1673,7 @@ class MainWindowMiscMixin:
 
     def _cancel_l_room_preview(self):
         self._l_room_points_scene = []
+        self._polygon_points_scene = []
         try:
             if getattr(self, '_preview_polygon', None) is not None:
                 self._safe_remove_from_scene(self._preview_polygon)
@@ -1604,26 +1881,40 @@ class MainWindowMiscMixin:
         self._preview_polygon = None
         self._polygon_points_scene = []
 
-    def _update_polygon_room_preview(self, scene, current_pos=None):
+    def _orthogonal_preview_point(self, last: QPointF, current_pos: QPointF) -> QPointF:
+        dx = current_pos.x() - last.x()
+        dy = current_pos.y() - last.y()
+        if abs(dx) >= abs(dy):
+            return QPointF(current_pos.x(), last.y())
+        return QPointF(last.x(), current_pos.y())
+
+    def _is_near_polygon_start(self, p: QPointF, threshold_px: float = 14.0) -> bool:
         pts = list(getattr(self, '_polygon_points_scene', []) or [])
+        if len(pts) < 3:
+            return False
+        first = pts[0]
+        return ((p.x() - first.x()) ** 2 + (p.y() - first.y()) ** 2) ** 0.5 <= threshold_px
+
+    def _update_polygon_room_preview(self, scene, current_pos=None, points=None):
+        pts = list(points if points is not None else (getattr(self, '_polygon_points_scene', []) or []))
         if current_pos is not None and pts:
-            last = pts[-1]
-            dx = current_pos.x() - last.x()
-            dy = current_pos.y() - last.y()
-            if abs(dx) >= abs(dy):
-                current_pos = QPointF(current_pos.x(), last.y())
-            else:
-                current_pos = QPointF(last.x(), current_pos.y())
-            pts.append(current_pos)
+            pts.append(self._orthogonal_preview_point(pts[-1], current_pos))
         if len(pts) < 2:
+            try:
+                if getattr(self, '_preview_polygon', None) is not None:
+                    self._safe_remove_from_scene(self._preview_polygon)
+            except Exception:
+                pass
+            self._preview_polygon = None
             return
-        from PySide6.QtGui import QPainterPath
         path = QPainterPath()
         path.moveTo(pts[0])
         for p in pts[1:]:
             path.lineTo(p)
+        if len(pts) >= 3:
+            path.closeSubpath()
         if self._preview_polygon is None:
-            self._preview_polygon = scene.addPath(path, QPen(Qt.darkGray, 1, Qt.DashLine), QBrush(Qt.transparent))
+            self._preview_polygon = scene.addPath(path, QPen(QColor(40, 90, 150), 2, Qt.DashLine), QBrush(QColor(70, 130, 200, 35)))
             self._preview_polygon.setZValue(100)
         else:
             self._preview_polygon.setPath(path)
@@ -1640,8 +1931,8 @@ class MainWindowMiscMixin:
         return True
 
     def eventFilter(self, obj, event):
-        """Filtert Mausereignisse für das Zeichnen von Räumen und Einfügen von Fenstern."""
-        if event.type() not in (event.Type.MouseButtonPress, event.Type.MouseMove, event.Type.MouseButtonRelease, event.Type.MouseButtonDblClick):
+        """Filtert Mausereignisse für das Zeichnen von Räumen und Einfügen von Öffnungen."""
+        if event.type() not in (event.Type.MouseButtonPress, event.Type.MouseMove, event.Type.MouseButtonRelease, event.Type.MouseButtonDblClick, event.Type.KeyPress):
             return super().eventFilter(obj, event)
 
         view = (self.view_KG if obj is self.view_KG.viewport() else (self.view_EG if obj is self.view_EG.viewport() else (self.view_DG if obj is self.view_DG.viewport() else None)))
@@ -1650,22 +1941,49 @@ class MainWindowMiscMixin:
 
         scene, floor = ((self.scene_KG, "KG") if view is self.view_KG else ((self.scene_EG, "EG") if view is self.view_EG else (self.scene_DG, "DG")))
 
+        if event.type() == event.Type.KeyPress:
+            if event.key() == Qt.Key_Escape:
+                self._cancel_polygon_room_preview()
+                self._cancel_l_room_preview()
+                self._cancel_split_preview()
+                if getattr(self, '_preview_room', None) is not None:
+                    self._safe_remove_from_scene(self._preview_room)
+                    self._preview_room = None
+                if getattr(self, '_preview_room_label', None) is not None:
+                    self._safe_remove_from_scene(self._preview_room_label)
+                    self._preview_room_label = None
+                self._start_pos_scene = None
+                return True
+            if self._polygon_room_mode and event.key() in (Qt.Key_Backspace, Qt.Key_Delete):
+                if self._polygon_points_scene:
+                    self._polygon_points_scene.pop()
+                    if not self._polygon_points_scene:
+                        self._cancel_polygon_room_preview()
+                    else:
+                        self._update_polygon_room_preview(scene)
+                return True
+            if self._polygon_room_mode and event.key() in (Qt.Key_Return, Qt.Key_Enter):
+                return self._finish_polygon_room(floor)
+
         if event.type() == event.Type.MouseButtonPress:
-            if event.button() == Qt.LeftButton and self._add_window_mode and not (event.modifiers() & Qt.ShiftModifier):
+            opening_kind = ""
+            if getattr(self, "_add_window_mode", False):
+                opening_kind = "window"
+            elif getattr(self, "_add_door_mode", False):
+                opening_kind = "door"
+            if event.button() == Qt.LeftButton and opening_kind and not (event.modifiers() & Qt.ShiftModifier):
                 p = self._snap_scene_point_for_drawing(floor, view.mapToScene(event.position().toPoint()))
-                self._add_window_at(floor, p)
+                self._add_opening_at(floor, p, opening_kind=opening_kind)
                 return True
 
             if self._polygon_room_mode:
                 p = self._snap_scene_point_for_drawing(floor, view.mapToScene(event.position().toPoint()))
                 if event.button() == Qt.LeftButton:
+                    if self._is_near_polygon_start(p):
+                        return self._finish_polygon_room(floor)
                     if self._polygon_points_scene:
                         last = self._polygon_points_scene[-1]
-                        dx = p.x() - last.x(); dy = p.y() - last.y()
-                        if abs(dx) >= abs(dy):
-                            p = QPointF(p.x(), last.y())
-                        else:
-                            p = QPointF(last.x(), p.y())
+                        p = self._orthogonal_preview_point(last, p)
                     self._polygon_points_scene.append(p)
                     self._update_polygon_room_preview(scene)
                     return True
@@ -1696,6 +2014,8 @@ class MainWindowMiscMixin:
                 self._start_pos_scene = (floor, p0)
                 self._preview_room = scene.addRect(0, 0, 1, 1, QPen(Qt.darkGray, 1, Qt.DashLine), QBrush(Qt.transparent))
                 self._preview_room.setZValue(100)
+                self._preview_room_label = scene.addText("")
+                self._preview_room_label.setZValue(101)
                 return True
 
         if event.type() == event.Type.MouseMove:
@@ -1713,8 +2033,7 @@ class MainWindowMiscMixin:
                     poly = self._build_l_room_polygon(pts)
                     if poly:
                         qpts = [QPointF(x * PX_PER_M, y * PX_PER_M) for x, y in poly]
-                        self._polygon_points_scene = qpts
-                        self._update_polygon_room_preview(scene)
+                        self._update_polygon_room_preview(scene, points=qpts)
                 return True
             if self._split_start_scene and self._preview_split_line:
                 f0, p0 = self._split_start_scene
@@ -1738,6 +2057,11 @@ class MainWindowMiscMixin:
                 x1 = max(p0.x(), p1.x())
                 y1 = max(p0.y(), p1.y())
                 self._preview_room.setRect(x0, y0, max(1.0, x1 - x0), max(1.0, y1 - y0))
+                if getattr(self, '_preview_room_label', None) is not None:
+                    w_m = abs(p1.x() - p0.x()) / PX_PER_M
+                    h_m = abs(p1.y() - p0.y()) / PX_PER_M
+                    self._preview_room_label.setPlainText(f"{w_m:.2f} × {h_m:.2f} m")
+                    self._preview_room_label.setPos(x0 + 6.0, y0 + 6.0)
                 return True
 
         if event.type() == event.Type.MouseButtonDblClick:
@@ -1745,11 +2069,7 @@ class MainWindowMiscMixin:
                 p = self._snap_scene_point_for_drawing(floor, view.mapToScene(event.position().toPoint()))
                 if self._polygon_points_scene:
                     last = self._polygon_points_scene[-1]
-                    dx = p.x() - last.x(); dy = p.y() - last.y()
-                    if abs(dx) >= abs(dy):
-                        p = QPointF(p.x(), last.y())
-                    else:
-                        p = QPointF(last.x(), p.y())
+                    p = self._orthogonal_preview_point(last, p)
                     self._polygon_points_scene.append(p)
                 return self._finish_polygon_room(floor)
 
@@ -1784,6 +2104,9 @@ class MainWindowMiscMixin:
                 p1 = self._snap_scene_point_for_drawing(floor, view.mapToScene(event.position().toPoint()))
                 self._safe_remove_from_scene(self._preview_room)
                 self._preview_room = None
+                if getattr(self, '_preview_room_label', None) is not None:
+                    self._safe_remove_from_scene(self._preview_room_label)
+                    self._preview_room_label = None
                 self._start_pos_scene = None
 
                 x0 = min(p0.x(), p1.x()) / PX_PER_M

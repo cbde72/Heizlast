@@ -23,6 +23,15 @@ DIN_BOUNDARY_CONDITIONS: dict[str, BoundaryCondition] = {
     "interzone": BoundaryCondition("interzone", "interzone", "Interzone", 0.00, "Interzone mit t_adj_c"),
 }
 
+BOUNDARY_KEY_ALIASES = {
+    "basement": "basement_unheated",
+    "keller": "basement_unheated",
+    "unheated_basement": "basement_unheated",
+    "attic": "attic_unheated",
+    "dachraum": "attic_unheated",
+    "speicher": "attic_unheated",
+}
+
 
 BUCKET_TO_CANONICAL = {
     "out": "external",
@@ -53,6 +62,7 @@ def parse_meta(meta: Optional[str]) -> dict[str, str]:
 def boundary_from_meta(meta: Optional[str]) -> BoundaryCondition | None:
     parts = parse_meta(meta)
     key = (parts.get("boundary") or parts.get("boundary_condition") or "").strip().lower()
+    key = BOUNDARY_KEY_ALIASES.get(key, key)
     return DIN_BOUNDARY_CONDITIONS.get(key) if key else None
 
 

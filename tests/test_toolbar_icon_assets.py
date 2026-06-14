@@ -6,7 +6,7 @@ def test_icon_asset_set_is_present_and_build_mixin_references_auto_walls_icon():
     icons_dir = root / "src" / "heizlast" / "assets" / "icons"
     expected = {
         "select", "draw_floorplan", "rect_room", "l_room", "polygon_room",
-        "split_room", "merge_rooms", "subtract_rooms", "window_insert",
+        "split_room", "merge_rooms", "subtract_rooms", "window_insert", "door_insert",
         "auto_walls", "auto_keller", "project_settings", "view_3d",
         "regen", "delete_selection",
     }

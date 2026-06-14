@@ -63,3 +63,33 @@ def test_build_dormer_results_and_auto_elements_from_cfg():
     assert dormer_cutout_area_total(results) > 0.0
     elems = dormer_to_auto_elements(results[0], room_id="r1")
     assert {e.element_type for e in elems} == {"Außenwand", "Dach", "Fenster"}
+
+
+def test_pointed_dormer_spitzgaube_produces_own_geometry_and_auto_elements():
+    roof = RoofContext(roof_type="satteldach", ridge_direction="length", building_length_m=10.0, building_width_m=8.0)
+    result = DormerGeometry(roof).build(DormerInput(id="spitz_1", dormer_type="pointed", roof_side="right", center_along_m=5.0, width_m=1.6, depth_m=1.2, front_height_m=1.4))
+    assert result.areas.front_wall_gross_m2 > 0.0
+    assert result.areas.side_walls_gross_m2 > 0.0
+    assert result.areas.dormer_roof_m2 > 0.0
+    assert result.areas.cutout_main_roof_m2 > 0.0
+
+    cfg = ProjectCfg.from_json_dict({
+        "attic": {
+            "enabled": True,
+            "building_width_m": 8.0,
+            "building_length_m": 10.0,
+            "ridge_orientation": "length",
+            "dormers": [{
+                "id": "spitz_1",
+                "dormer_type": "spitzgaube",
+                "roof_side": "right",
+                "center_along_m": 5.0,
+                "width_m": 1.6,
+                "depth_m": 1.2,
+                "front_height_m": 1.4,
+            }],
+        }
+    })
+    results = build_dormer_results_from_attic_cfg(cfg.attic)
+    assert len(results) == 1
+    assert results[0].input.dormer_type == "pointed"

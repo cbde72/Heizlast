@@ -6,7 +6,7 @@ from ..core.config import DEFAULT_FACTOR, DEFAULT_U
 from ..core.attic_auto import derive_auto_attic_elements
 from ..core.dormer_auto_elements import build_dormer_results_from_attic_cfg, dormer_cutout_area_total
 
-from ..configs.project_config import save_project_cfg, DormerCfgDTO
+from ..configs.project_config import save_project_cfg, DormerCfgDTO, RoofLineCfgDTO
 from ..domain.models import ElementModel
 from ..ui.dialogs.project_settings_dialog import ProjectSettingsDialog, DormerEditDialog
 
@@ -156,6 +156,7 @@ class MainWindowSettingsMixin:
         self._refresh_roof_editor_dormer_actions()
         self._sync_roof_editor_facet_list()
         self._sync_roof_editor_summary()
+        self._sync_roof_assistant_state()
 
     def _sync_roof_editor_summary(self) -> None:
         geom_getter = getattr(self, "_current_attic_geometry", None)
@@ -184,6 +185,234 @@ class MainWindowSettingsMixin:
                 widget.setText(value)
         self._sync_roof_editor_balance()
         self._sync_roof_editor_validation()
+        self._sync_roof_assistant_state()
+
+    def _roof_assistant_footprint_from_rooms(self) -> None:
+        attic = getattr(getattr(self, "project_cfg", None), "attic", None)
+        if attic is None:
+            return
+        rooms = list(getattr(self, "rooms", {}).values())
+        if not rooms:
+            QMessageBox.warning(self, "Dach-Assistent", "Es sind noch keine Räume vorhanden, aus denen der Gebäudegrundriss abgeleitet werden kann.")
+            return
+
+        for preferred_floor in ("EG", "DG"):
+            selected = [r for r in rooms if str(getattr(r, "floor", "") or "").strip().upper() == preferred_floor]
+            if selected:
+                rooms = selected
+                break
+
+        try:
+            minx = min(float(getattr(r, "x_m", 0.0) or 0.0) for r in rooms)
+            miny = min(float(getattr(r, "y_m", 0.0) or 0.0) for r in rooms)
+            maxx = max(float(getattr(r, "x_m", 0.0) or 0.0) + float(getattr(r, "w_m", 0.0) or 0.0) for r in rooms)
+            maxy = max(float(getattr(r, "y_m", 0.0) or 0.0) + float(getattr(r, "h_m", 0.0) or 0.0) for r in rooms)
+        except Exception:
+            QMessageBox.warning(self, "Dach-Assistent", "Der Gebäudegrundriss konnte nicht zuverlässig aus den Räumen ermittelt werden.")
+            return
+
+        attic.enabled = True
+        attic.building_width_m = max(0.50, float(maxx - minx))
+        attic.building_length_m = max(0.50, float(maxy - miny))
+        if float(getattr(attic, "building_width_m", 0.0) or 0.0) > float(getattr(attic, "building_length_m", 0.0) or 0.0):
+            attic.ridge_orientation = "width"
+
+        self._persist_project_cfg_if_possible()
+        self._recompute_and_redraw()
+        self._refresh_attic_preview()
+        self._sync_roof_editor_tab_widgets()
+        try:
+            self.statusBar().showMessage("Dach-Assistent: Gebäudegrundriss übernommen.", 3000)
+        except Exception:
+            pass
+        self._set_roof_assistant_step(2)
+
+    def _apply_roof_assistant_profile(self, roof_type: str) -> None:
+        self._set_attic_roof_type(roof_type)
+        self._sync_roof_assistant_state()
+        self._set_roof_assistant_step(3)
+
+    def _apply_roof_assistant_standard_values(self) -> None:
+        attic = getattr(getattr(self, "project_cfg", None), "attic", None)
+        if attic is None:
+            return
+        roof_type = str(getattr(attic, "roof_type", "satteldach") or "satteldach").strip().lower()
+        presets = {
+            "satteldach": (38.0, 1.00, 0.35),
+            "pultdach": (18.0, 0.80, 0.25),
+            "walmdach": (30.0, 0.70, 0.40),
+            "krueppelwalmdach": (42.0, 1.10, 0.38),
+            "flachdach": (2.0, 0.00, 0.12),
+            "winkeldach": (35.0, 0.95, 0.32),
+        }
+        pitch, knee, overhang = presets.get(roof_type, presets["satteldach"])
+        attic.enabled = True
+        attic.roof_pitch_deg = float(pitch)
+        attic.knee_wall_height_m = float(knee)
+        attic.roof_overhang_m = float(overhang)
+        attic.eave_overhang_m = float(overhang)
+        attic.gable_overhang_m = float(overhang)
+        attic.u_roof_w_m2k = min(float(getattr(attic, "u_roof_w_m2k", 0.30) or 0.30), 0.24)
+        attic.u_gable_w_m2k = min(float(getattr(attic, "u_gable_w_m2k", 0.45) or 0.45), 0.35)
+
+        self._persist_project_cfg_if_possible()
+        self._recompute_and_redraw()
+        self._refresh_attic_preview()
+        self._sync_roof_editor_tab_widgets()
+        try:
+            self.statusBar().showMessage("Dach-Assistent: plausible Geometrie- und U-Wert-Startwerte gesetzt.", 3500)
+        except Exception:
+            pass
+        self._set_roof_assistant_step(4)
+
+    def _set_roof_assistant_step(self, step: int) -> None:
+        cards = list(getattr(self, "_roof_assistant_step_cards", []) or [])
+        total = max(1, len(cards) or 5)
+        step = max(1, min(int(step or 1), total))
+        self._roof_assistant_current_step = step
+        for idx, card in enumerate(cards, 1):
+            try:
+                card.setVisible(idx == step)
+            except Exception:
+                pass
+        label = getattr(self, "lbl_roof_assistant_current", None)
+        if label is not None:
+            label.setText(f"Schritt {step} von {total}")
+        prev_btn = getattr(self, "btn_roof_assistant_prev", None)
+        if prev_btn is not None:
+            prev_btn.setEnabled(step > 1)
+        next_btn = getattr(self, "btn_roof_assistant_next", None)
+        if next_btn is not None:
+            next_btn.setEnabled(step < total)
+
+    def _toggle_roof_assistant_profile_drag(self, checked: bool) -> None:
+        panel = getattr(self, "roof_editor_preview_panel", None)
+        if panel is not None and hasattr(panel, "set_roof_profile_adjust_state"):
+            panel.set_roof_profile_adjust_state(bool(checked))
+        try:
+            msg = "Schrägen-Modus aktiv: Ziehpunkte in der Live-Vorschau bewegen." if checked else "Schrägen-Modus beendet."
+            self.statusBar().showMessage(msg, 3500)
+        except Exception:
+            pass
+
+    def _on_roof_assistant_profile_changed(self, payload: dict) -> None:
+        attic = getattr(getattr(self, "project_cfg", None), "attic", None)
+        if attic is None or not isinstance(payload, dict):
+            return
+        if "roof_pitch_deg" in payload:
+            attic.roof_pitch_deg = float(payload.get("roof_pitch_deg", getattr(attic, "roof_pitch_deg", 35.0)) or 0.0)
+        if "knee_wall_height_m" in payload:
+            attic.knee_wall_height_m = float(payload.get("knee_wall_height_m", getattr(attic, "knee_wall_height_m", 1.0)) or 0.0)
+        self._persist_project_cfg_if_possible()
+        self._recompute_and_redraw()
+        self._refresh_attic_preview()
+        self._sync_roof_editor_tab_widgets()
+
+    def _open_roof_assistant_lines_step(self) -> None:
+        combo = getattr(self, "cb_roof_tab_line_kind", None)
+        if combo is not None:
+            combo.setCurrentText("First")
+        editor = getattr(self, "roof_line_editor_tab", None)
+        if editor is not None:
+            editor.setFocus()
+        try:
+            self.statusBar().showMessage("Dach-Assistent: Linieneditor aktiv. In der Draufsicht Start- und Endpunkt setzen.", 4500)
+        except Exception:
+            pass
+
+    def _suggest_roof_assistant_lines(self) -> None:
+        attic = getattr(getattr(self, "project_cfg", None), "attic", None)
+        if attic is None:
+            return
+        roof_type = str(getattr(attic, "roof_type", "satteldach") or "satteldach").strip().lower()
+        ridge = str(getattr(attic, "ridge_orientation", "length") or "length").strip().lower()
+        if roof_type == "winkeldach":
+            lines = [
+                RoofLineCfgDTO("first", 0.18, 0.50, 0.58, 0.50),
+                RoofLineCfgDTO("first", 0.58, 0.50, 0.58, 0.82),
+                RoofLineCfgDTO("kehle", 0.58, 0.50, 0.82, 0.28),
+            ]
+        elif ridge == "width":
+            lines = [RoofLineCfgDTO("first", 0.50, 0.18, 0.50, 0.82)]
+        else:
+            lines = [RoofLineCfgDTO("first", 0.18, 0.50, 0.82, 0.50)]
+        attic.roof_lines = lines
+        editor = getattr(self, "roof_line_editor_tab", None)
+        if editor is not None:
+            editor.set_lines(lines)
+        self._persist_project_cfg_if_possible()
+        self._recompute_and_redraw()
+        self._refresh_attic_preview()
+        self._sync_roof_editor_tab_widgets()
+        try:
+            self.statusBar().showMessage("Dach-Assistent: Dachlinien-Vorschlag erzeugt.", 3500)
+        except Exception:
+            pass
+        self._set_roof_assistant_step(5)
+
+    def _run_roof_assistant_check(self) -> None:
+        attic = getattr(getattr(self, "project_cfg", None), "attic", None)
+        if attic is None:
+            return
+        attic.enabled = True
+        self._persist_project_cfg_if_possible()
+        self._recompute_and_redraw()
+        self._refresh_attic_preview()
+        self._sync_roof_editor_tab_widgets()
+        self._sync_roof_assistant_state()
+        text = getattr(getattr(self, "lbl_roof_validation", None), "text", lambda: "Dachprüfung aktualisiert.")()
+        try:
+            self.statusBar().showMessage(f"Dach-Assistent: {text}", 5000)
+        except Exception:
+            pass
+
+    def _sync_roof_assistant_state(self) -> None:
+        attic = getattr(getattr(self, "project_cfg", None), "attic", None)
+        if attic is None:
+            return
+        width = float(getattr(attic, "building_width_m", 0.0) or 0.0)
+        length = float(getattr(attic, "building_length_m", 0.0) or 0.0)
+        roof_type = str(getattr(attic, "roof_type", "") or "").strip().lower()
+        pitch = float(getattr(attic, "roof_pitch_deg", 0.0) or 0.0)
+        knee = float(getattr(attic, "knee_wall_height_m", 0.0) or 0.0)
+        lines = list(getattr(attic, "roof_lines", []) or [])
+        dormers = list(getattr(attic, "dormers", []) or [])
+        windows = int(getattr(attic, "roof_window_count", 0) or 0)
+
+        step_1_done = bool(getattr(attic, "enabled", False)) and width > 0.5 and length > 0.5
+        step_2_done = roof_type in {"satteldach", "pultdach", "walmdach", "krueppelwalmdach", "flachdach", "winkeldach"}
+        step_3_done = pitch >= 0.0 and float(getattr(attic, "u_roof_w_m2k", 0.0) or 0.0) > 0.0
+        step_4_done = bool(lines or dormers or windows or roof_type not in {"winkeldach"})
+        validation = getattr(getattr(self, "lbl_roof_validation", None), "text", lambda: "")()
+        step_5_done = bool(validation and "Prüfen:" not in validation)
+
+        status_rows = (
+            ("lbl_roof_assistant_step_1", step_1_done, f"1. Grundriss: {width:.2f} x {length:.2f} m" if step_1_done else "1. Grundriss: offen"),
+            ("lbl_roof_assistant_step_2", step_2_done, f"2. Dachform: {self._roof_display_name(roof_type)}" if step_2_done else "2. Dachform: offen"),
+            ("lbl_roof_assistant_step_3", step_3_done, f"3. Geometrie: {pitch:.1f}°, Kniestock {knee:.2f} m" if step_3_done else "3. Geometrie: offen"),
+            ("lbl_roof_assistant_step_4", step_4_done, f"4. Öffnungen/Linien: {len(lines)} Linien, {len(dormers)} Gauben, {windows} Fenster" if step_4_done else "4. Öffnungen/Linien: offen"),
+            ("lbl_roof_assistant_step_5", step_5_done, "5. Prüfung: aktuell" if step_5_done else "5. Prüfung: offen"),
+        )
+        done = 0
+        for attr, ok, text in status_rows:
+            done += 1 if ok else 0
+            widget = getattr(self, attr, None)
+            if widget is not None:
+                widget.setText(("✓ " if ok else "○ ") + text)
+
+        progress = getattr(self, "roof_assistant_progress", None)
+        if progress is not None:
+            progress.setValue(done)
+        label = getattr(self, "lbl_roof_assistant_status", None)
+        if label is not None:
+            if done >= 5:
+                label.setText("Dach-Assistent vollständig: Dachflächen, Schrägen, Öffnungen und Bilanz sind aktualisiert.")
+            elif not step_1_done:
+                label.setText("Starten Sie mit Schritt 1: Gebäudegrundriss aus den vorhandenen Räumen übernehmen.")
+            elif not step_3_done:
+                label.setText("Geometrie und U-Werte sind der nächste wichtige Schritt für eine belastbare Heizlast.")
+            else:
+                label.setText("Dach-Assistent aktiv: die nächsten offenen Schritte sind in der Liste markiert.")
 
     def _sync_roof_editor_balance(self) -> None:
         attic = getattr(getattr(self, "project_cfg", None), "attic", None)
@@ -299,7 +528,7 @@ class MainWindowSettingsMixin:
         if badge is not None:
             badge.setText(f"{len(lines)} Linien")
     def _friendly_roof_editor_dormer_label(self, dormer: DormerCfgDTO) -> str:
-        tmap = {"schleppgaube": "Schleppgaube", "satteldachgaube": "Satteldachgaube", "flachdachgaube": "Flachdachgaube"}
+        tmap = {"schleppgaube": "Schleppgaube", "satteldachgaube": "Satteldachgaube", "flachdachgaube": "Flachdachgaube", "spitzgaube": "Spitzgaube"}
         smap = {"left": "links", "right": "rechts", "front": "vorne", "back": "hinten"}
         pitch = "auto" if getattr(dormer, "roof_pitch_deg", None) is None else f"{float(getattr(dormer, 'roof_pitch_deg', 0.0)):.1f}°"
         return (
@@ -352,8 +581,55 @@ class MainWindowSettingsMixin:
                 draw_mode=draw_mode,
             )
             panel.set_selected_dormer_state(self._selected_roof_editor_dormer_preview_payload())
+            panel.set_selected_roof_side_state(getattr(self, "_roof_editor_selected_roof_surface", None))
         except Exception:
             pass
+        self._sync_roof_surface_context_actions()
+
+    def _roof_surface_display_name(self, side: str) -> str:
+        return {"left": "links", "right": "rechts", "front": "vorne", "back": "hinten"}.get(str(side), str(side))
+
+    def _sync_roof_surface_context_actions(self) -> None:
+        payload = getattr(self, "_roof_editor_selected_roof_surface", None)
+        has_surface = isinstance(payload, dict) and bool(payload.get("side"))
+        label = getattr(self, "lbl_roof_selected_surface", None)
+        if label is not None:
+            if has_surface:
+                label.setText(f"Dachfläche: {self._roof_surface_display_name(str(payload.get('side')))} · Pos {float(payload.get('along_m', 0.0) or 0.0):.2f} m")
+            else:
+                label.setText("Dachfläche: keine Auswahl")
+        attic = getattr(getattr(self, "project_cfg", None), "attic", None)
+        roof_type = str(getattr(attic, "roof_type", "satteldach") or "satteldach").strip().lower() if attic is not None else "satteldach"
+        for attr in ("btn_roof_surface_add_dormer", "btn_roof_surface_add_window", "btn_roof_surface_add_line"):
+            widget = getattr(self, attr, None)
+            if widget is not None:
+                widget.setEnabled(bool(has_surface and attic is not None and (attr == "btn_roof_surface_add_line" or roof_type != "flachdach")))
+
+    def _select_roof_editor_surface(self, payload: dict) -> None:
+        self._roof_editor_selected_roof_surface = dict(payload or {})
+        side = str((payload or {}).get("side", "") or "")
+        hint = getattr(self, "lbl_roof_dormer_place_hint", None)
+        if hint is not None and side:
+            hint.setText(f"Dachfläche '{self._roof_surface_display_name(side)}' ausgewählt: nun Gaube, Dachfenster oder Dachlinie über die Kontextleiste starten.")
+        self._sync_roof_editor_preview_interaction_state()
+
+    def _start_roof_surface_dormer_workflow(self) -> None:
+        payload = getattr(self, "_roof_editor_selected_roof_surface", None)
+        if not isinstance(payload, dict):
+            return
+        self._set_roof_editor_draw_mode(True)
+        tab = getattr(self, "roof_editor_param_tabs", None)
+        if tab is not None:
+            tab.setCurrentIndex(2)
+
+    def _start_roof_surface_window_workflow(self) -> None:
+        payload = getattr(self, "_roof_editor_selected_roof_surface", None)
+        if not isinstance(payload, dict):
+            return
+        self._set_roof_editor_window_place_mode(True)
+
+    def _start_roof_surface_line_workflow(self) -> None:
+        self._open_roof_assistant_lines_step()
 
     def _refresh_roof_editor_dormer_actions(self) -> None:
         attic = getattr(getattr(self, "project_cfg", None), "attic", None)
@@ -593,20 +869,40 @@ class MainWindowSettingsMixin:
         ridge_orientation = str((payload or {}).get("ridge_orientation", getattr(attic, "ridge_orientation", "length")) or getattr(attic, "ridge_orientation", "length")).strip().lower()
         side = str((payload or {}).get("draw_side", (payload or {}).get("side", self._roof_editor_active_dormer_sides()[-1])) or self._roof_editor_active_dormer_sides()[-1])
         if ridge_orientation == "width":
-            start_v = float((payload or {}).get("draw_start_x_m", 0.0) or 0.0)
-            end_v = float((payload or {}).get("x_m", start_v) or start_v)
-        else:
             start_v = float((payload or {}).get("draw_start_y_m", 0.0) or 0.0)
             end_v = float((payload or {}).get("y_m", start_v) or start_v)
+            start_depth_v = float((payload or {}).get("draw_start_x_m", 0.0) or 0.0)
+            end_depth_v = float((payload or {}).get("x_m", start_depth_v) or start_depth_v)
+        else:
+            start_v = float((payload or {}).get("draw_start_x_m", 0.0) or 0.0)
+            end_v = float((payload or {}).get("x_m", start_v) or start_v)
+            start_depth_v = float((payload or {}).get("draw_start_y_m", 0.0) or 0.0)
+            end_depth_v = float((payload or {}).get("y_m", start_depth_v) or start_depth_v)
         width_m = max(0.30, abs(end_v - start_v))
+        depth_m = max(0.20, abs(end_depth_v - start_depth_v))
         center_target = 0.5 * (float((payload or {}).get("draw_start_along_m", 0.0) or 0.0) + float((payload or {}).get("along_m", 0.0) or 0.0))
+        clamp_probe = DormerCfgDTO(
+            id=str(getattr(created, "id", f"gaube_{len(list(getattr(attic, 'dormers', []) or [])) + 1}") or f"gaube_{len(list(getattr(attic, 'dormers', []) or [])) + 1}"),
+            dormer_type=str(getattr(created, "dormer_type", "schleppgaube") or "schleppgaube"),
+            roof_side=side,
+            center_along_m=float(getattr(created, "center_along_m", 0.0) or 0.0),
+            width_m=width_m,
+            depth_m=depth_m,
+            front_height_m=float(getattr(created, "front_height_m", 1.20) or 1.20),
+            window_count=int(getattr(created, "window_count", 1) or 0),
+            window_width_m=float(getattr(created, "window_width_m", 1.20) or 1.20),
+            window_height_m=float(getattr(created, "window_height_m", 1.20) or 1.20),
+            sill_height_m=float(getattr(created, "sill_height_m", 0.90) or 0.90),
+            roof_pitch_deg=getattr(created, "roof_pitch_deg", None),
+            min_edge_clearance_m=float(getattr(created, "min_edge_clearance_m", 0.40) or 0.40),
+        )
         created = DormerCfgDTO(
             id=str(getattr(created, "id", f"gaube_{len(list(getattr(attic, 'dormers', []) or [])) + 1}") or f"gaube_{len(list(getattr(attic, 'dormers', []) or [])) + 1}"),
             dormer_type=str(getattr(created, "dormer_type", "schleppgaube") or "schleppgaube"),
             roof_side=side,
-            center_along_m=self._clamp_roof_editor_dormer_center(created, center_target),
+            center_along_m=self._clamp_roof_editor_dormer_center(clamp_probe, center_target),
             width_m=width_m,
-            depth_m=float(getattr(created, "depth_m", 1.40) or 1.40),
+            depth_m=depth_m,
             front_height_m=float(getattr(created, "front_height_m", 1.20) or 1.20),
             window_count=int(getattr(created, "window_count", 1) or 0),
             window_width_m=float(getattr(created, "window_width_m", 1.20) or 1.20),
@@ -651,7 +947,12 @@ class MainWindowSettingsMixin:
             except Exception:
                 pass
             return
-        if attic is None or bool(getattr(self, "_roof_editor_draw_dormer_active", False)) or not bool(getattr(self, "_roof_editor_place_dormer_active", False)):
+        if attic is None:
+            return
+        if bool(getattr(self, "_roof_editor_draw_dormer_active", False)):
+            return
+        if not bool(getattr(self, "_roof_editor_place_dormer_active", False)):
+            self._select_roof_editor_surface(payload)
             return
         roof_type = str(getattr(attic, "roof_type", "satteldach") or "satteldach").strip().lower()
         if roof_type == "flachdach":
@@ -1381,3 +1682,14 @@ def load_project_from_paths(self, rooms_csv_path, elements_csv_path=None):
                 fn()
             except Exception:
                 pass
+    for name in ("view_KG", "view_EG", "view_DG"):
+        view = getattr(self, name, None)
+        if view is None:
+            continue
+        try:
+            if hasattr(view, "fit_content"):
+                view.fit_content()
+            else:
+                view.fit_all()
+        except Exception:
+            pass

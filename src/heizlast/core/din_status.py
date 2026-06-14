@@ -11,7 +11,7 @@ ANNEX_DIN_CONFORMITY_ROWS = [
     ["Normbaustein", "DIN-Anforderung (Kurz)", "Tool-Umsetzung", "Status"],
     ["Raumweise Heizlast", "Phi_HL,Raum", "raumweise Q_sum_W", "✓"],
     ["Transmission", "Summe(U*A*dT*f)", "implementiert", "✓"],
-    ["Öffnungsabzug", "A_eff = A_Wand - A_Fenster", "geometrisch", "✓"],
+    ["Öffnungsabzug", "A_eff = A_Wand - A_Öffnungen", "geometrisch", "✓"],
     ["Innen-/Außenmaß", "normativ definierte Maße", "Umschaltung A_trans", "△"],
     ["Lüftung", "Norm-Lüftungswärmeverlust", "raumweise n, Mindestluftwechsel und Infiltration als Volumenstrombilanz", "△"],
     ["Mechanische Lüftung", "Volumenströme, WRG", "mechanischer Restwärmeverlust mit WRG, Infiltration und ungedecktem Mindestvolumenstrom", "△"],
@@ -117,6 +117,93 @@ def _has_deck_elements(elements: list[ElementModel] | None) -> bool:
         if "decke" in et and any(token in et for token in ("keller", "geschoss", "zwischen", "speicher", "dach")):
             return True
     return False
+
+
+def _meta_dict(e: ElementModel) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for chunk in str(getattr(e, "meta", "") or "").split("|"):
+        if "=" not in chunk:
+            continue
+        key, value = chunk.split("=", 1)
+        out[key.strip()] = value.strip()
+    return out
+
+
+def _deck_neighbor_zone_assessment(elements: list[ElementModel] | None) -> tuple[str, str]:
+    deck_elements: list[ElementModel] = []
+    for e in elements or []:
+        if _has_deck_elements([e]):
+            deck_elements.append(e)
+    if not deck_elements:
+        return "△", "keine Decken-Elemente im Prüfumfang erkannt; Projektaufbau prüfen"
+
+    missing_required: list[str] = []
+    missing_sources: list[str] = []
+    unconfirmed_auto: list[str] = []
+    missing_temperature: list[str] = []
+
+    for e in deck_elements:
+        meta = _meta_dict(e)
+        ref = _element_ref(e)
+        boundary = str(meta.get("boundary") or meta.get("boundary_condition") or "").strip()
+        adj_floor = str(meta.get("adj_floor") or "").strip()
+        deck_kind = str(meta.get("deck_kind") or "").strip()
+        if not boundary and not adj_floor and not deck_kind:
+            missing_required.append(ref)
+
+        if not str(meta.get("u_source") or "").strip():
+            missing_sources.append(ref)
+        if not str(meta.get("area_source") or "").strip():
+            missing_sources.append(ref)
+        if not str(meta.get("t_source") or "").strip():
+            missing_sources.append(ref)
+
+        is_auto = "auto_deck=1" in str(getattr(e, "meta", "") or "") or str(getattr(e, "uid", "") or "").startswith("deck_")
+        if is_auto and str(meta.get("assumptions_confirmed") or "").strip() not in {"1", "true", "True", "ja", "yes"}:
+            unconfirmed_auto.append(ref)
+
+        kind_text = (deck_kind + " " + adj_floor + " " + boundary + " " + _element_type_norm(e)).lower()
+        if any(token in kind_text for token in ("keller", "speicher", "dach", "oben", "attic", "unheated")):
+            if not (str(meta.get("t_adj_c") or "").strip() or str(meta.get("t_source") or "").strip()):
+                missing_temperature.append(ref)
+
+    if missing_required:
+        return "✗", "Decken ohne eindeutige Nachbarzone/Randbedingung: " + ", ".join(missing_required[:5])
+    if missing_temperature:
+        return "✗", "Decken zu unbeheizten Bereichen ohne Temperaturbezug: " + ", ".join(missing_temperature[:5])
+
+    issues: list[str] = []
+    if missing_sources:
+        issues.append("Quellen/Flächenherkunft fehlen bei: " + ", ".join(sorted(set(missing_sources))[:5]))
+    if unconfirmed_auto:
+        issues.append("Auto-Decken-Annahmen nicht bestätigt bei: " + ", ".join(unconfirmed_auto[:5]))
+    if issues:
+        return "△", "; ".join(issues)
+    return "✓", "Decken mit Nachbarzone, Temperaturbezug, Flächen-/U-Wert-Quelle und bestätigten Auto-Annahmen dokumentiert"
+
+
+def _interzone_temperature_assessment(elements: list[ElementModel] | None) -> tuple[str, str]:
+    if elements is None:
+        return "△", "Bauteilliste nicht an DIN-Prüfung übergeben"
+
+    missing: list[str] = []
+    checked = 0
+    for e in elements or []:
+        if not _is_transmission_element(e):
+            continue
+        meta = _meta_dict(e)
+        boundary = str(meta.get("boundary") or meta.get("boundary_condition") or "").strip().lower()
+        if boundary not in {"interzone", "adjacent_heated"}:
+            continue
+        checked += 1
+        if not str(meta.get("t_adj_c") or "").strip():
+            missing.append(_element_ref(e))
+
+    if missing:
+        return "△", "Interzone/Nachbarraum ohne t_adj_c; rechnerisch 0 K Fallback, fachlich prüfen: " + ", ".join(missing[:5])
+    if checked:
+        return "✓", "Interzone/Nachbarräume mit angrenzender Solltemperatur t_adj_c dokumentiert"
+    return "✓", "keine expliziten Interzone-Bauteile im Prüfumfang"
 
 
 def _element_ref(e: ElementModel) -> str:
@@ -364,13 +451,8 @@ def assess_din_status(
     source_status = "△" if (_has_text(norm_edition) and _has_text(t_source_detail) and (_has_text(climate_station) or _has_text(climate_altitude))) else "✗"
     u_source_status = "△" if _has_text(u_value_source) else "✗"
     u_source_text = "U-Wert-Quelle dokumentiert" if _has_text(u_value_source) else "Quelle der Bauteil-U-Werte fehlt"
-    has_decks = _has_deck_elements(elements)
-    deck_status = "✓" if has_decks else "△"
-    deck_text = (
-        "Decken mit eigenen Buckets für Keller, Interzone und Dachraum/Speicher ausgewiesen"
-        if has_decks
-        else "keine Decken-Elemente im Prüfumfang erkannt; Projektaufbau prüfen"
-    )
+    deck_status, deck_text = _deck_neighbor_zone_assessment(elements)
+    interzone_status, interzone_text = _interzone_temperature_assessment(elements)
     room_data_status, room_data_text = _room_data_assessment(rooms, results)
     element_data_status, element_data_text = _element_data_assessment(elements)
     detail_status, detail_text = _transmission_detail_assessment(results)
@@ -385,7 +467,8 @@ def assess_din_status(
         ["Transmission", "Summe(U*A*dT*f)", "implementiert und Ergebnisanteile vorhanden" if has_transmission else "keine Transmissionsanteile gefunden", trans_status],
         ["Transmissionsdetails", "Prüffähige Rechenzeilen mit Randbedingung und Bauteilrolle", detail_text, detail_status],
         ["Decken / Nachbarzonen", "Kellerdecke, Zwischendecke, Speicherdecke mit passender Nachbarzone", deck_text, deck_status],
-        ["Öffnungsabzug", "A_eff = A_Wand - A_Fenster", "geometrisch im Rechenkern", "✓"],
+        ["Interzone / Nachbarräume", "angrenzende Solltemperatur dokumentieren", interzone_text, interzone_status],
+        ["Öffnungsabzug", "A_eff = A_Wand - A_Öffnungen", "geometrisch/ankerbasiert im Rechenkern", "✓"],
         ["Innen-/Außenmaß", "normativ definierte Maße", f"Projektmodus: {floor_area_mode or 'nicht gesetzt'}", measure_status],
         ["Lüftung", "Norm-Lüftungswärmeverlust", f"Grundmodell n*V*dT mit c_air={c_air:.3f}", vent_status],
         ["Mechanische Lüftung", "Volumenströme, WRG", mech_text, mech_status],
@@ -403,6 +486,7 @@ def assess_din_status(
         ["Bauteildaten", element_data_status, element_data_text],
         ["Temperaturzonen", "△", "Außenluft, Erdreich, unbeheizter Keller/Dachraum/Abseite und Interzone werden als Buckets ausgewiesen."],
         ["Decken / Nachbarzonen", deck_status, deck_text],
+        ["Interzone / Nachbarräume", interzone_status, interzone_text],
         ["DIN/TS-Faktoren unbeheizt", "△", "Default-Faktoren vorhanden; projektspezifische Prüfung und Quellenhinweis bleiben erforderlich."],
         ["Transmissions-Buckets", detail_status if has_transmission else "✗", detail_text if has_transmission else "keine Transmissionsanteile gefunden."],
         ["Lüftung / WRG", mech_status if ventilation_mode == "mechanical" else vent_status, mech_text],
@@ -432,6 +516,8 @@ def assess_din_status(
         action_rows.append(["2", "Bauteildaten", "△", "Längen-/Höhengeometrie der Bauteile ergänzen, damit Öffnungen und Hüllflächen prüfbar bleiben."])
     if detail_status == "△":
         action_rows.append(["2", "Transmissionsdetails", "△", "Transmissions-Rechenzeilen mit boundary_bucket, boundary_label und surface_role ausweisen."])
+    if interzone_status != "✓":
+        action_rows.append(["2", "Interzone / Nachbarräume", interzone_status, interzone_text])
     if tb_status == "✗":
         action_rows.append(["2", "Wärmebrücken", "✗", "Im Psi-Modus Element-Psi-Werte oder einen dokumentierten Default-Psi hinterlegen."])
 

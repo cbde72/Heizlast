@@ -10,7 +10,6 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox,
     QTextEdit,
     QLabel,
-    QPushButton,
     QDialogButtonBox,
     QMessageBox,
 )
@@ -19,10 +18,22 @@ from PySide6.QtWidgets import (
 from ..core.anchors import dump_meta, parse_edge_anchor, parse_line_token, parse_meta, update_edge_anchor_meta
 from ..core.element_access import get_room_elements
 from ..core.geometry import classify_floor_edge_spans, nearest_edge_span_for_point
+from ..core.heatload_types import is_opening_type
 from ..domain.models import ElementModel
 from ..core.polygon_ops import snap_m
 
 class MainWindowElementEditMixin:
+    def _element_transmission_preview_w(self, e: ElementModel) -> float:
+        room = getattr(self, "rooms", {}).get(str(getattr(e, "room_id", "") or ""))
+        t_in = float(getattr(room, "t_inside_c", 20.0) or 20.0) if room is not None else 20.0
+        t_out = float(getattr(getattr(self, "project_cfg", None), "t_out_c", getattr(self, "t_out_c", -10.0)) or -10.0)
+        d_t = max(0.0, t_in - t_out)
+        area = max(0.0, float(getattr(e, "area_m2", 0.0) or 0.0))
+        u_val = max(0.0, float(getattr(e, "u_w_m2k", 0.0) or 0.0))
+        raw_factor = getattr(e, "factor", None)
+        factor = max(0.0, 1.0 if raw_factor is None else float(raw_factor))
+        return area * u_val * factor * d_t
+
     def _project_u_default_for_element(self, element_type: str) -> float:
         cfg = getattr(self, "project_cfg", None)
         et = str(element_type or "").lower()
@@ -64,7 +75,7 @@ class MainWindowElementEditMixin:
         lay.addLayout(form)
 
         cb_type = QComboBox()
-        cb_type.addItems(["Außenwand", "Innenwand", "Fenster", "Tür", "Dach", "Kellerdecke", "Geschossdecke", "Speicherdecke", "Bodenplatte", "Erdberührte Wand"])
+        cb_type.addItems(["Außenwand", "Innenwand", "Fenster", "Tür", "Haustür", "Terrassentür", "Dach", "Kellerdecke", "Geschossdecke", "Speicherdecke", "Bodenplatte", "Erdberührte Wand"])
         form.addRow("Bauteiltyp", cb_type)
 
         cb_boundary = QComboBox()
@@ -129,7 +140,7 @@ class MainWindowElementEditMixin:
         boundary_map = {
             "Außenluft": "outside",
             "Erdreich": "ground",
-            "unbeheizter Keller": "basement",
+            "unbeheizter Keller": "basement_unheated",
             "unbeheizter Dachraum": "attic_unheated",
             "Nachbarzone/Interzone": "interzone",
         }
@@ -216,6 +227,22 @@ class MainWindowElementEditMixin:
         sp_L.setSingleStep(0.1)
         sp_L.setValue(float(getattr(e, "length_m", 0.0) or 0.0))
         form.addRow("Länge [m]", sp_L)
+
+        lbl_transmission = QLabel()
+        lbl_transmission.setObjectName("elementTransmissionPreview")
+        form.addRow("Transmission Φ", lbl_transmission)
+
+        def _refresh_transmission_preview() -> None:
+            room = getattr(self, "rooms", {}).get(str(getattr(e, "room_id", "") or ""))
+            t_in = float(getattr(room, "t_inside_c", 20.0) or 20.0) if room is not None else 20.0
+            t_out = float(getattr(getattr(self, "project_cfg", None), "t_out_c", getattr(self, "t_out_c", -10.0)) or -10.0)
+            d_t = max(0.0, t_in - t_out)
+            phi = float(sp_a.value()) * float(sp_u.value()) * float(sp_f.value()) * d_t
+            lbl_transmission.setText(f"{phi:.1f} W  (A · U · f · ΔT, ΔT {d_t:.1f} K)")
+
+        for widget in (sp_u, sp_f, sp_a):
+            widget.valueChanged.connect(_refresh_transmission_preview)
+        _refresh_transmission_preview()
 
         # Meta (JSON)
         meta_raw = getattr(e, "meta", "") or ""
@@ -307,7 +334,7 @@ class MainWindowElementEditMixin:
         for win in self.elements:
             if getattr(win, 'room_id', None) != room_id:
                 continue
-            if str(getattr(win, 'element_type', '')) != 'Fenster':
+            if not is_opening_type(getattr(win, 'element_type', '')):
                 continue
             if not win.has_geometry():
                 continue

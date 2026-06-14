@@ -32,6 +32,7 @@ normative Detailmodellierung (ψ-Katalog, Anschlussdetails) ohne passende Eingab
 import re
 from typing import Dict, List, Optional, Tuple
 
+from .anchors import parse_edge_anchor
 from .auto_decks import (
     DEFAULT_U_DG_GESCHOSSDECKE_W_M2K,
     DEFAULT_U_EG_GESCHOSSDECKE_W_M2K,
@@ -50,12 +51,15 @@ from .heatload_types import (
     OUTER_WALL_TYPES,
     WALL_THICKNESS_INNER_M,
     WALL_THICKNESS_OUTER_M,
-    WINDOW_TYPES,
+    is_door_type,
+    is_opening_type,
+    is_window_type,
     FloorAreaMode,
     RoomInnerGeometry,
     ThermalBridgeCfg,
     ThicknessMode,
     meta_get_float as _meta_get_float,
+    normalize_element_type,
 )
 from ..domain.models import ElementModel, RoomModel
 
@@ -99,12 +103,87 @@ def _window_height_m(w: ElementModel) -> float:
     """Prefer height_m else infer from area/length."""
     if w.height_m is not None and float(w.height_m) > 0:
         return float(w.height_m)
-    L = w.compute_length()
+    L = _opening_width_m(w)
     if L is None or L <= EPS:
         return 0.0
     if w.area_m2 is None:
         return 0.0
     return max(0.0, float(w.area_m2) / max(float(L), EPS))
+
+
+def _positive_float(value: object) -> Optional[float]:
+    try:
+        v = float(value)
+    except Exception:
+        return None
+    return v if v > EPS else None
+
+
+def _opening_width_m(w: ElementModel) -> Optional[float]:
+    direct = _positive_float(getattr(w, "length_m", None))
+    if direct is not None:
+        return direct
+    try:
+        computed = _positive_float(w.compute_length())
+    except Exception:
+        computed = None
+    if computed is not None:
+        return computed
+    try:
+        anchor = parse_edge_anchor(getattr(w, "meta", None))
+        anchored = _positive_float(anchor.get("w"))
+    except Exception:
+        anchored = None
+    if anchored is not None:
+        return anchored
+    height = _positive_float(getattr(w, "height_m", None))
+    area = _positive_float(getattr(w, "area_m2", None))
+    if height is not None and area is not None:
+        return area / max(height, EPS)
+    return None
+
+
+def _opening_height_m(w: ElementModel) -> float:
+    if not is_door_type(getattr(w, "element_type", "")):
+        return _window_height_m(w)
+    if w.height_m is not None and float(w.height_m) > 0:
+        return float(w.height_m)
+    L = _opening_width_m(w)
+    if L is not None and L > EPS and w.area_m2 is not None and float(w.area_m2) > EPS:
+        return max(0.01, float(w.area_m2) / max(float(L), EPS))
+    return 2.01
+
+
+def _anchored_opening_interval_on_wall(
+    wall: ElementModel,
+    opening: ElementModel,
+    orient: str,
+    wa0: float,
+    wa1: float,
+) -> Optional[Tuple[float, float, float]]:
+    wall_uid = str(getattr(wall, "uid", "") or "")
+    if not wall_uid:
+        return None
+    try:
+        anchor = parse_edge_anchor(getattr(opening, "meta", None))
+    except Exception:
+        return None
+    if str(anchor.get("parent") or "") != wall_uid:
+        return None
+    anchor_orient = str(anchor.get("orient") or "").strip().lower()[:1]
+    if anchor_orient and anchor_orient != orient:
+        return None
+    center_s = _positive_float(anchor.get("s"))
+    width = _opening_width_m(opening)
+    height = _opening_height_m(opening)
+    if center_s is None or width is None or width <= EPS or height <= EPS:
+        return None
+    center_abs = float(wa0) + float(center_s)
+    a0c = max(float(wa0), center_abs - 0.5 * float(width))
+    a1c = min(float(wa1), center_abs + 0.5 * float(width))
+    if a1c - a0c <= EPS:
+        return None
+    return a0c, a1c, height
 
 
 def _opening_area_on_wall_segment(wall: ElementModel, windows: List[ElementModel]) -> float:
@@ -116,6 +195,12 @@ def _opening_area_on_wall_segment(wall: ElementModel, windows: List[ElementModel
 
     intervals: List[Tuple[float, float, float]] = []  # (a0, a1, h)
     for w in windows:
+        if not is_opening_type(getattr(w, "element_type", "")):
+            continue
+        anchored = _anchored_opening_interval_on_wall(wall, w, orient, wa0, wa1)
+        if anchored is not None:
+            intervals.append(anchored)
+            continue
         ww = _axis_aligned_line(w)
         if ww is None:
             continue
@@ -128,7 +213,7 @@ def _opening_area_on_wall_segment(wall: ElementModel, windows: List[ElementModel
         a1c = min(max(a0, a1), wa1)
         if a1c - a0c <= EPS:
             continue
-        h = _window_height_m(w)
+        h = _opening_height_m(w)
         if h <= EPS:
             continue
         intervals.append((a0c, a1c, h))
@@ -223,8 +308,7 @@ def _inner_dims_for_room(
 # ---------------------------------------------------------------------------
 
 def _norm_str(s: str) -> str:
-    s = (s or "").strip().lower()
-    return s.replace("ä","ae").replace("ö","oe").replace("ü","ue").replace("ß","ss")
+    return normalize_element_type(s)
 
 ''' alt
 def _is_kellerdecke(et: str) -> bool:
@@ -424,6 +508,9 @@ def _deltaT_and_bucket(
     if ("dach" in s_et and "decke" in s_et) or ("speicher" in s_et):
         return max(0.0, t_in - float(t_oben_c)), "dachraum"
 
+    if _norm_str(et) in INNER_WALL_TYPES or "innenwand" in _norm_str(et):
+        return 0.0, "interzone"
+
     return max(0.0, t_in - float(t_out_c)), "out"
 
 
@@ -453,6 +540,12 @@ def calc_heatloads(
     u_kellerdecke_w_m2k: float = DEFAULT_U_KELLERDECKE_W_M2K,
     u_eg_geschossdecke_w_m2k: float = DEFAULT_U_EG_GESCHOSSDECKE_W_M2K,
     u_dg_geschossdecke_w_m2k: float = DEFAULT_U_DG_GESCHOSSDECKE_W_M2K,
+    u_value_source: str = "",
+    auto_deck_assumptions_confirmed: bool = False,
+    auto_deck_boundary_source: str = "",
+    auto_deck_create_eg_kellerdecke: bool = True,
+    auto_deck_create_eg_geschossdecke: bool = True,
+    auto_deck_create_dg_speicherdecke: bool = True,
     u_bodenplatte_w_m2k: float = 0.40,
     u_erdberuehrte_wand_w_m2k: float = 0.60,
     ventilation_mode: str = "natural",
@@ -483,6 +576,14 @@ def calc_heatloads(
             u_kellerdecke_w_m2k=float(u_kellerdecke_w_m2k),
             u_eg_geschossdecke_w_m2k=float(u_eg_geschossdecke_w_m2k),
             u_dg_geschossdecke_w_m2k=float(u_dg_geschossdecke_w_m2k),
+            t_keller_c=float(t_keller_c),
+            t_oben_c=float(t_oben_c),
+            u_value_source=str(u_value_source or ""),
+            boundary_source=str(auto_deck_boundary_source or ""),
+            auto_deck_assumptions_confirmed=bool(auto_deck_assumptions_confirmed),
+            create_eg_kellerdecke=bool(auto_deck_create_eg_kellerdecke),
+            create_eg_geschossdecke=bool(auto_deck_create_eg_geschossdecke),
+            create_dg_speicherdecke=bool(auto_deck_create_dg_speicherdecke),
         )
 
     tb = tb_cfg or ThermalBridgeCfg()
@@ -648,7 +749,7 @@ def calc_heatloads(
 
     for r in rooms:
         room_elements = e_by_room.get(r.id, [])
-        room_windows = [e for e in room_elements if (e.element_type or "").strip() in WINDOW_TYPES]
+        room_windows = [e for e in room_elements if is_opening_type(getattr(e, "element_type", ""))]
 
         floor_key = _norm_floor(getattr(r, 'floor', '') or '')
 
@@ -802,7 +903,7 @@ def calc_heatloads(
 
         for e in room_elements:
             U = float(e.u_w_m2k or 0.0)
-            f = float(e.factor or 1.0)
+            f = 1.0 if getattr(e, "factor", None) is None else float(e.factor)
             et = (e.element_type or "").strip()
 
             is_ground, ground_kind = _is_ground_element(e)
@@ -840,23 +941,22 @@ def calc_heatloads(
                         e.u_w_m2k = U
                     except Exception:
                         pass
-            elif et in WINDOW_TYPES and U <= EPS:
+            elif is_window_type(et) and U <= EPS:
                 U = float(u_fenster_w_m2k or DEFAULT_U.get("Fenster", 2.80))
                 try:
                     e.u_w_m2k = U
                 except Exception:
                     pass
-            elif _norm_str(et) in {"tuer", "tür", "aussentuer", "außentuer", "haustuer", "haustür"} and U <= EPS:
-                U = float(u_tuer_w_m2k or 1.80)
+            elif is_door_type(et) and U <= EPS:
+                U = float(u_tuer_w_m2k or DEFAULT_U.get(et, DEFAULT_U.get("Tür", 1.80)))
                 try:
                     e.u_w_m2k = U
                 except Exception:
                     pass
 
             # Decken/Bodenflächen explizit aus Raumfläche (damit inner/outer sicher wirkt)
-            if _is_kellerdecke(et) or _is_geschossdecke(et):
-                A = (A_in_eff if floor_area_mode == "inner" else A_out_eff)
-                _acc_env(bucket, A, 0.0)
+            if _is_kellerdecke(et) or _is_geschossdecke(et) or _is_speicherdecke(et):
+                A = (geom_in.a_in_m2 if floor_area_mode == "inner" else A_out)
 
             # Außenwand: aus Geometrie ableiten + Öffnungen abziehen
             if et in OUTER_WALL_TYPES and e.has_geometry():
@@ -948,25 +1048,30 @@ def calc_heatloads(
                     Q_trans_out += Q_e
 
             else:
-                # Fenster: ggf. aus Geometrie ableiten
-                if et in WINDOW_TYPES and e.has_geometry():
-                    Lw = float(e.compute_length() or 0.0)
-                    hw = _window_height_m(e)
-                    if Lw > EPS and hw > EPS:
+                # Fenster/Türen: ggf. aus Geometrie oder Wandanker ableiten
+                if is_opening_type(et):
+                    Lw = float(_opening_width_m(e) or 0.0)
+                    hw = _opening_height_m(e)
+                    if A <= EPS and Lw > EPS and hw > EPS:
                         A = max(A, Lw * hw)
+                    try:
+                        if float(getattr(e, "area_m2", 0.0) or 0.0) <= EPS and A > EPS:
+                            e.area_m2 = A
+                    except Exception:
+                        pass
                     A *= scale
                     _acc_env(bucket, A, Lw * scale)
                     L_env_used = Lw * scale
 
                 # Wände ohne explizite Fläche: aus Länge*Höhe ableiten
-                elif et not in WINDOW_TYPES and e.has_geometry() and A <= EPS:
+                elif not is_opening_type(et) and e.has_geometry() and A <= EPS:
                     Lg = float(e.compute_length() or 0.0)
                     if Lg > EPS:
                         A = Lg * room_h
                     A *= scale
                     L_env_used = Lg * scale
                     _acc_env(bucket, A, L_env_used)
-                elif et not in WINDOW_TYPES:
+                elif not is_opening_type(et):
                     # wenn A gesetzt ist, aber Element auf Raumkante liegt, trotzdem skalieren
                     A *= scale
                     L_env_used = float(e.compute_length() or 0.0) * scale if e.has_geometry() else 0.0

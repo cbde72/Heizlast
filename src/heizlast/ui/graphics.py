@@ -317,6 +317,11 @@ class RoomPolygonItem(QGraphicsPathItem):
         self._mouse_move_guard_active = False
         self.vertex_handles: list[PolygonVertexHandleItem] = []
         self.edge_handles: list[PolygonEdgeHandleItem] = []
+        self.temp_label = QGraphicsSimpleTextItem(self)
+        self.temp_label.setBrush(QBrush(QColor(70, 30, 30)))
+        self.temp_label.setZValue(8)
+        self.temp_label.setFlag(QGraphicsItem.ItemIsSelectable, False)
+        self.temp_label.setAcceptedMouseButtons(Qt.NoButton)
         self._rebuild_path_from_model()
         self._refresh_edit_handles()
 
@@ -339,7 +344,15 @@ class RoomPolygonItem(QGraphicsPathItem):
         path.closeSubpath()
         self.setPath(path)
         self.setPos(min_x * PX_PER_M, min_y * PX_PER_M)
+        self._refresh_temperature_label()
         self._refresh_edit_handles()
+
+    def _refresh_temperature_label(self) -> None:
+        t_inside = float(getattr(self.model, "t_inside_c", 0.0) or 0.0)
+        self.temp_label.setText(f"{t_inside:.1f} °C")
+        rect = self.boundingRect()
+        label_rect = self.temp_label.boundingRect()
+        self.temp_label.setPos(rect.left() + 6.0, rect.bottom() - label_rect.height() - 6.0)
 
     def _refresh_edit_handles(self) -> None:
         self.model.ensure_polygon()
@@ -461,6 +474,7 @@ class RoomPolygonItem(QGraphicsPathItem):
     def set_heat(self, w_total: float, w_per_m2: float):
         self._heat_w = w_total
         self._heat_wpm2 = w_per_m2
+        self._refresh_temperature_label()
         self.update()
 
     def set_area(self, a_inner: float):
@@ -817,8 +831,6 @@ class ElementLineItem(QGraphicsLineItem):
         L = self.element.length_m
         if L is None:
             L = self.element.compute_length()
-            print(f"[DEBUG][graphics-sync] uid={self.element.uid} computed_length={L}")
-
             self.element.length_m = L
         # keep existing multi-line style (conservative)
         try:
@@ -885,8 +897,6 @@ class ElementLineItem(QGraphicsLineItem):
         try:
             L = self.element.compute_length()
             if L is not None:
-                print(f"[DEBUG][graphics-move] uid={self.element.uid} moved_length={L}")
-
                 self.element.length_m = float(L)
             if getattr(self.element, "height_m", None) is not None and L is not None:
                 self.element.area_m2 = float(L) * float(self.element.height_m)

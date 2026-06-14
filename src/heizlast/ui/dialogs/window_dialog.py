@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from PySide6.QtWidgets import (
     QDialog, QDialogButtonBox, QFormLayout, QLabel,
-    QDoubleSpinBox, QVBoxLayout
+    QComboBox, QDoubleSpinBox, QVBoxLayout
 )
 
 class WindowDialog(QDialog):
@@ -22,18 +22,33 @@ class WindowDialog(QDialog):
         center_x_m: float = 0.0,
         center_y_m: float = 0.0,
         orient: str = "H",
+        title: str = "Fenster anlegen",
+        element_label: str = "Fenster",
+        element_types: list[str] | tuple[str, ...] | None = None,
+        default_element_type: str = "Fenster",
     ):
         super().__init__(parent)
-        self.setWindowTitle("Fenster anlegen")
+        self.setWindowTitle(title)
         self.setModal(True)
+        self._default_element_type = str(default_element_type or element_label or "Fenster")
+        self.cb_type = None
 
         root = QVBoxLayout(self)
 
-        info = QLabel(f"Orientierung: {'horizontal' if orient=='H' else 'vertikal'} (automatisch von der Wand)")
+        info = QLabel(f"{element_label}: Orientierung {'horizontal' if orient=='H' else 'vertikal'} (automatisch von der Wand)")
         info.setWordWrap(True)
         root.addWidget(info)
 
         form = QFormLayout()
+        if element_types:
+            self.cb_type = QComboBox()
+            for item in element_types:
+                self.cb_type.addItem(str(item))
+            idx = self.cb_type.findText(self._default_element_type)
+            if idx >= 0:
+                self.cb_type.setCurrentIndex(idx)
+            form.addRow("Typ:", self.cb_type)
+
         self.sp_len = QDoubleSpinBox(); self.sp_len.setRange(0.20, 10.0); self.sp_len.setDecimals(2); self.sp_len.setSingleStep(0.05); self.sp_len.setValue(length_m)
         self.sp_h   = QDoubleSpinBox(); self.sp_h.setRange(0.20, 5.0);  self.sp_h.setDecimals(2);   self.sp_h.setSingleStep(0.05);   self.sp_h.setValue(height_m)
         self.sp_u   = QDoubleSpinBox(); self.sp_u.setRange(0.0, 10.0);  self.sp_u.setDecimals(3);   self.sp_u.setSingleStep(0.10);   self.sp_u.setValue(u_w_m2k)
@@ -64,4 +79,5 @@ class WindowDialog(QDialog):
             "factor": float(self.sp_f.value()),
             "center_x_m": float(self.sp_cx.value()),
             "center_y_m": float(self.sp_cy.value()),
+            "element_type": self.cb_type.currentText() if self.cb_type is not None else self._default_element_type,
         }

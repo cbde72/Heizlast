@@ -16,6 +16,8 @@ def test_project_settings_contains_dormer_list_ui_hooks():
     assert 'self.btn_dormer_add.clicked.connect(self._add_dormer)' in src
     assert 'self.lst_dormers.itemDoubleClicked.connect(lambda _item: self._edit_selected_dormer())' in src
     assert 'cfg.attic.dormers = [DormerCfgDTO(**{k: getattr(d, k) for k in DormerCfgDTO.__dataclass_fields__.keys()}) for d in self._dormers]' in src
+    assert '"Spitzgaube"' in src
+    assert '"spitzgaube"' in src
 
 
 def test_project_cfg_v28_schema_upgrade_keeps_dormers_list():
@@ -39,3 +41,25 @@ def test_project_cfg_v28_schema_upgrade_keeps_dormers_list():
     assert cfg.cfg_version == PROJECT_SCHEMA_VERSION
     assert len(cfg.attic.dormers) == 1
     assert cfg.attic.dormers[0].id == "gaube_1"
+
+
+def test_project_cfg_accepts_spitzgaube_dormer_type():
+    cfg = ProjectCfg.from_json_dict({
+        "attic": {
+            "enabled": True,
+            "dormer_type": "spitzgaube",
+            "dormers": [
+                {
+                    "id": "spitz_1",
+                    "dormer_type": "spitzgaube",
+                    "roof_side": "right",
+                    "center_along_m": 4.5,
+                    "width_m": 1.6,
+                    "depth_m": 1.2,
+                    "front_height_m": 1.4,
+                }
+            ],
+        },
+    })
+    assert cfg.attic.dormer_type == "spitzgaube"
+    assert cfg.attic.dormers[0].dormer_type == "spitzgaube"

@@ -130,6 +130,25 @@ def test_attic_auto_unheated_roof_boundary_applies_factor_to_roof_only():
     assert all(abs(e.factor - 1.0) < 1e-12 for e in elems if e.element_type == 'Giebelwand')
 
 
+def test_attic_zero_roof_gable_transmission_sets_roof_and_gable_factors_to_zero():
+    room = RoomModel(id='DG1', floor='DG', name='DG', x_m=0.0, y_m=0.0, w_m=8.0, h_m=10.0)
+    cfg = AtticCfgDTO(
+        enabled=True,
+        building_width_m=8.0,
+        building_length_m=10.0,
+        knee_wall_height_m=1.0,
+        roof_pitch_deg=35.0,
+        roof_boundary="unheated_attic",
+        roof_unheated_factor=0.8,
+        zero_roof_gable_transmission=True,
+    )
+
+    elems = derive_auto_attic_elements([room], cfg)
+
+    assert elems
+    assert all(e.factor == 0.0 for e in elems if e.element_type in {'Dach', 'Giebelwand'})
+
+
 def test_rebuild_auto_attic_removes_previous_dormer_elements():
     room = RoomModel(id='DG1', floor='DG', name='DG', x_m=0.0, y_m=0.0, w_m=8.0, h_m=10.0)
     cfg = AtticCfgDTO(

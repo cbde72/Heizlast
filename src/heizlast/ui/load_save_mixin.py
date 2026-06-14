@@ -1,10 +1,11 @@
 from pathlib import Path
 from datetime import datetime
+from contextlib import contextmanager
 from ..domain.models import RoomModel
 from ..core.polygon_ops import snap_m
 
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtWidgets import QDialog, QDialogButtonBox, QLabel, QListWidget, QListWidgetItem, QFileDialog, QMessageBox, QPushButton, QVBoxLayout
+from PySide6.QtWidgets import QApplication, QDialog, QDialogButtonBox, QLabel, QListWidget, QListWidgetItem, QFileDialog, QMessageBox, QPushButton, QVBoxLayout
 from .dialogs.new_project_dialog import NewProjectDialog
 
 from ..core.config import CSV_DELIMITER
@@ -13,6 +14,47 @@ from ..core.element_metrics import ElementMetricsService
 from ..configs.project_config import ProjectCfg, load_project_cfg, save_project_cfg
 
 class MainWindowLoadSaveMixin:
+    def _push_busy_cursor(self, message: str = "") -> None:
+        depth = int(getattr(self, "_busy_cursor_depth", 0) or 0)
+        self._busy_cursor_depth = depth + 1
+        if depth == 0:
+            try:
+                QApplication.setOverrideCursor(Qt.WaitCursor)
+            except Exception:
+                pass
+        if message:
+            try:
+                self.statusBar().showMessage(message)
+            except Exception:
+                pass
+        try:
+            QApplication.processEvents()
+        except Exception:
+            pass
+
+    def _pop_busy_cursor(self) -> None:
+        depth = int(getattr(self, "_busy_cursor_depth", 0) or 0)
+        if depth <= 1:
+            self._busy_cursor_depth = 0
+            try:
+                QApplication.restoreOverrideCursor()
+            except Exception:
+                pass
+        else:
+            self._busy_cursor_depth = depth - 1
+        try:
+            QApplication.processEvents()
+        except Exception:
+            pass
+
+    @contextmanager
+    def _busy_cursor(self, message: str = ""):
+        self._push_busy_cursor(message)
+        try:
+            yield
+        finally:
+            self._pop_busy_cursor()
+
     def _timestamp_slug(self) -> str:
         return datetime.now().strftime("%Y%m%d_%H%M%S")
 
@@ -26,11 +68,12 @@ class MainWindowLoadSaveMixin:
         backup_rooms = base_dir / f"{stem}_{reason}_{stamp}.csv"
         backup_elements = self._derive_elements_path(backup_rooms)
         try:
-            base_dir.mkdir(parents=True, exist_ok=True)
-            save_rooms(str(backup_rooms), list(self.rooms.values()), delimiter=CSV_DELIMITER)
-            save_elements(str(backup_elements), self.elements, delimiter=CSV_DELIMITER)
-            cfg_path = self._project_json_path_for_rooms(backup_rooms)
-            save_project_cfg(cfg_path, self.project_cfg)
+            with self._busy_cursor("Backup wird geschrieben..."):
+                base_dir.mkdir(parents=True, exist_ok=True)
+                save_rooms(str(backup_rooms), list(self.rooms.values()), delimiter=CSV_DELIMITER)
+                save_elements(str(backup_elements), self.elements, delimiter=CSV_DELIMITER)
+                cfg_path = self._project_json_path_for_rooms(backup_rooms)
+                save_project_cfg(cfg_path, self.project_cfg)
             return backup_rooms
         except Exception:
             return None
@@ -48,9 +91,10 @@ class MainWindowLoadSaveMixin:
             return
         elements_path = self._derive_elements_path(version_path)
         try:
-            save_rooms(str(version_path), list(self.rooms.values()), delimiter=CSV_DELIMITER)
-            save_elements(str(elements_path), self.elements, delimiter=CSV_DELIMITER)
-            save_project_cfg(self._project_json_path_for_rooms(version_path), self.project_cfg)
+            with self._busy_cursor("Version wird gespeichert..."):
+                save_rooms(str(version_path), list(self.rooms.values()), delimiter=CSV_DELIMITER)
+                save_elements(str(elements_path), self.elements, delimiter=CSV_DELIMITER)
+                save_project_cfg(self._project_json_path_for_rooms(version_path), self.project_cfg)
             self.statusBar().showMessage(f"Version gespeichert: {version_path.name}", 4500)
         except Exception as exc:
             QMessageBox.critical(self, "Version speichern", str(exc))
@@ -151,6 +195,7 @@ class MainWindowLoadSaveMixin:
         try:
             self._last_project_dir = str(rooms_path.parent)
             self._settings.setValue("last_project_dir", self._last_project_dir)
+            self._settings.setValue("last_project_file", str(rooms_path))
         except Exception:
             self._last_project_dir = str(rooms_path.parent)
         self._add_recent_file(rooms_path)
@@ -158,6 +203,34 @@ class MainWindowLoadSaveMixin:
             self._update_statusbar_summary()
         except Exception:
             pass
+
+    def _startup_project_candidates(self) -> list[Path]:
+        candidates: list[Path] = []
+        try:
+            last_file = self._settings.value("last_project_file", "", type=str) or ""
+        except Exception:
+            last_file = ""
+        if str(last_file).strip():
+            candidates.append(Path(str(last_file)))
+        for path_text in self._recent_files():
+            path = Path(path_text)
+            if path not in candidates:
+                candidates.append(path)
+        return candidates
+
+    def _load_last_project_on_startup(self) -> None:
+        """Lädt beim Programmstart das zuletzt geöffnete Projekt, falls es noch existiert."""
+        if getattr(self, "_project_rooms_path", None) is not None:
+            return
+        for rooms_path in self._startup_project_candidates():
+            if not rooms_path.exists():
+                continue
+            if self._load_project_from_path(rooms_path, quiet=True):
+                try:
+                    self.statusBar().showMessage(f"Letztes Projekt geladen: {rooms_path.name}", 4500)
+                except Exception:
+                    pass
+                return
 
     def _recent_files(self) -> list[str]:
         try:
@@ -329,6 +402,8 @@ class MainWindowLoadSaveMixin:
             self.act_area_ref_outer.blockSignals(True)
             self.act_area_ref_outer.setChecked(bool(want_outer))
             self.act_area_ref_outer.blockSignals(False)
+        if hasattr(self, "_sync_zero_roof_gable_transfer_action"):
+            self._sync_zero_roof_gable_transfer_action()
 
         self._rebuild_all_graphics()
         if hasattr(self, "_refresh_attic_preview"):
@@ -387,7 +462,7 @@ class MainWindowLoadSaveMixin:
             return
         self._load_project_from_path(Path(path))
 
-    def _load_project_from_path(self, rooms_path: Path) -> bool:
+    def _load_project_from_path(self, rooms_path: Path, *, quiet: bool = False) -> bool:
         elements_path = self._derive_elements_path(rooms_path)
         blocked_scenes = []
         frozen_views = []
@@ -425,55 +500,82 @@ class MainWindowLoadSaveMixin:
                 except Exception:
                     pass
 
-        try:
-            rooms = load_rooms(str(rooms_path), delimiter=CSV_DELIMITER)
-            elements = load_elements(str(elements_path), delimiter=CSV_DELIMITER) if elements_path.exists() else []
-        except Exception as e:
-            QMessageBox.critical(self, "Load error", str(e))
-            return False
-
-        self.rooms = {r.id: r for r in rooms}
-        self.elements = elements
-        self._selected_room_id = None
-        try:
-            if hasattr(self, "list_room_elements"):
-                self.list_room_elements.clear()
-        except Exception:
-            pass
-
-        if hasattr(self, "metrics") and self.metrics is not None:
-            self.metrics.bind(self.rooms, self.elements)
-        else:
-            self.metrics = ElementMetricsService(self.rooms, self.elements)
-        self._project_rooms_path = rooms_path
-        self._project_elements_path = elements_path
-
-        cfg_path = self._project_json_path_for_rooms(rooms_path)
-        if cfg_path.exists():
+        def _fit_loaded_plan_views() -> None:
+            for name in ("view_KG", "view_EG", "view_DG"):
+                view = getattr(self, name, None)
+                if view is None:
+                    continue
+                try:
+                    if hasattr(view, "fit_content"):
+                        view.fit_content()
+                    else:
+                        view.fit_all()
+                except Exception:
+                    try:
+                        view.fit_all()
+                    except Exception:
+                        pass
             try:
-                self.project_cfg = load_project_cfg(cfg_path)
+                current = self._current_plan_view() if hasattr(self, "_current_plan_view") else None
+                if current is not None and hasattr(current, "fit_content"):
+                    current.fit_content()
             except Exception:
-                self.project_cfg = ProjectCfg()
-        else:
-            self.project_cfg = ProjectCfg()
+                pass
 
-        self.t_out_c = float(self.project_cfg.t_out_c)
-        want_outer = (self.project_cfg.floor_area_mode == "outer")
-        if hasattr(self, "cb_area_ref_outer"):
-            self.cb_area_ref_outer.blockSignals(True)
-            self.cb_area_ref_outer.setChecked(bool(want_outer))
-            self.cb_area_ref_outer.blockSignals(False)
-        if hasattr(self, "act_area_ref_outer"):
-            self.act_area_ref_outer.blockSignals(True)
-            self.act_area_ref_outer.setChecked(bool(want_outer))
-            self.act_area_ref_outer.blockSignals(False)
-
-        _freeze_load_painting()
         try:
-            self._remember_project_path(rooms_path)
-            self._rebuild_rooms_graphics()
-        finally:
-            _thaw_load_painting()
+            with self._busy_cursor("Projekt wird geladen..."):
+                rooms = load_rooms(str(rooms_path), delimiter=CSV_DELIMITER)
+                elements = load_elements(str(elements_path), delimiter=CSV_DELIMITER) if elements_path.exists() else []
+
+                self.rooms = {r.id: r for r in rooms}
+                self.elements = elements
+                self._selected_room_id = None
+                try:
+                    if hasattr(self, "list_room_elements"):
+                        self.list_room_elements.clear()
+                except Exception:
+                    pass
+
+                if hasattr(self, "metrics") and self.metrics is not None:
+                    self.metrics.bind(self.rooms, self.elements)
+                else:
+                    self.metrics = ElementMetricsService(self.rooms, self.elements)
+                self._project_rooms_path = rooms_path
+                self._project_elements_path = elements_path
+
+                cfg_path = self._project_json_path_for_rooms(rooms_path)
+                if cfg_path.exists():
+                    try:
+                        self.project_cfg = load_project_cfg(cfg_path)
+                    except Exception:
+                        self.project_cfg = ProjectCfg()
+                else:
+                    self.project_cfg = ProjectCfg()
+
+                self.t_out_c = float(self.project_cfg.t_out_c)
+                want_outer = (self.project_cfg.floor_area_mode == "outer")
+                if hasattr(self, "cb_area_ref_outer"):
+                    self.cb_area_ref_outer.blockSignals(True)
+                    self.cb_area_ref_outer.setChecked(bool(want_outer))
+                    self.cb_area_ref_outer.blockSignals(False)
+                if hasattr(self, "act_area_ref_outer"):
+                    self.act_area_ref_outer.blockSignals(True)
+                    self.act_area_ref_outer.setChecked(bool(want_outer))
+                    self.act_area_ref_outer.blockSignals(False)
+                if hasattr(self, "_sync_zero_roof_gable_transfer_action"):
+                    self._sync_zero_roof_gable_transfer_action()
+
+                _freeze_load_painting()
+                try:
+                    self._remember_project_path(rooms_path)
+                    self._rebuild_rooms_graphics()
+                finally:
+                    _thaw_load_painting()
+        except Exception as e:
+            if not quiet:
+                QMessageBox.critical(self, "Load error", str(e))
+            return False
+        QTimer.singleShot(0, _fit_loaded_plan_views)
 
         if hasattr(self, "_mark_clean"):
             self._mark_clean()
@@ -483,6 +585,7 @@ class MainWindowLoadSaveMixin:
         def _finish_deferred_load_updates() -> None:
             if getattr(self, "_project_rooms_path", None) != rooms_path:
                 return
+            self._push_busy_cursor("Projekt wird fertig aktualisiert...")
             try:
                 self._recompute_and_redraw(sync_auto_elements=True, mark_dirty=False, update_din_status=True)
                 self._rebuild_elements_graphics()
@@ -502,6 +605,10 @@ class MainWindowLoadSaveMixin:
                 self._update_statusbar_summary()
             except Exception:
                 pass
+            try:
+                _fit_loaded_plan_views()
+            finally:
+                self._pop_busy_cursor()
 
         QTimer.singleShot(100, _finish_deferred_load_updates)
         return True
@@ -509,21 +616,22 @@ class MainWindowLoadSaveMixin:
     def _save_to_paths(self, rooms_path: Path, elements_path: Path) -> bool:
         """Speichert die Daten in den angegebenen Pfaden."""
         try:
-            save_rooms(str(rooms_path), list(self.rooms.values()), delimiter=CSV_DELIMITER)
-            save_elements(str(elements_path), self.elements, delimiter=CSV_DELIMITER)
-            self._project_rooms_path = rooms_path
-            self._project_elements_path = elements_path
-            self._remember_project_path(rooms_path)
+            with self._busy_cursor("Projekt wird gespeichert..."):
+                save_rooms(str(rooms_path), list(self.rooms.values()), delimiter=CSV_DELIMITER)
+                save_elements(str(elements_path), self.elements, delimiter=CSV_DELIMITER)
+                self._project_rooms_path = rooms_path
+                self._project_elements_path = elements_path
+                self._remember_project_path(rooms_path)
 
-            try:
-                cfg_path = self._project_json_path_for_rooms(rooms_path)
-                save_project_cfg(cfg_path, self.project_cfg)
-            except Exception:
-                pass
+                try:
+                    cfg_path = self._project_json_path_for_rooms(rooms_path)
+                    save_project_cfg(cfg_path, self.project_cfg)
+                except Exception:
+                    pass
 
-            self._update_statusbar_summary()
-            if hasattr(self, "_mark_clean"):
-                self._mark_clean()
+                self._update_statusbar_summary()
+                if hasattr(self, "_mark_clean"):
+                    self._mark_clean()
             self.statusBar().showMessage(f"Gespeichert: {rooms_path.name}", 3500)
             return True
         except Exception as e:

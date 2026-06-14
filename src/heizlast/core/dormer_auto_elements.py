@@ -11,9 +11,11 @@ _DORMER_TYPE_MAP = {
     "schleppgaube": "shed",
     "satteldachgaube": "gable",
     "flachdachgaube": "flat",
+    "spitzgaube": "pointed",
     "shed": "shed",
     "gable": "gable",
     "flat": "flat",
+    "pointed": "pointed",
 }
 
 

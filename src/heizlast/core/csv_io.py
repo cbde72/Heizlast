@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import List, Optional
 from ..domain.models import ElementModel
 from .config import CSV_DELIMITER, CSV_ENCODING ,  DEFAULT_U, usage_defaults
+from .heatload_types import is_door_type
 from ..domain.models import RoomModel
 
 def _f(x: str) -> float:
@@ -156,6 +157,8 @@ def save_elements(path: str, elements: List[ElementModel], delimiter: str = CSV_
                             U_def = DEFAULT_U.get("Aussenwand", None)
                         elif "fenster" in et.lower():
                             U_def = DEFAULT_U.get("Fenster", None)
+                        elif is_door_type(et):
+                            U_def = DEFAULT_U.get("Tür", None)
                         elif "keller" in et.lower() and "deck" in et.lower():
                             U_def = DEFAULT_U.get("Kellerdecke", None)
                         elif "geschoss" in et.lower() and "deck" in et.lower():

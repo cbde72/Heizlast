@@ -22,7 +22,7 @@ from ..core.config import VentilationCfg
 from ..core.din_status import din_status_summary
 from ..core.ground_model import GroundModelCfg
 from ..core.heatload import calc_heatloads, ensure_auto_decks
-from ..core.heatload_types import ThermalBridgeCfg
+from ..core.heatload_types import ThermalBridgeCfg, is_opening_type
 from ..core.attic_auto import rebuild_auto_attic_elements
 from ..domain.models import ElementModel
 
@@ -40,10 +40,12 @@ class MainWindowRedrawMixin:
 
         if self._selected_room_id == room.id:
             self._populate_room_form()
+            self._update_room_3d_dialog_selection()
 
     def _on_element_geometry_changed(self, element: ElementModel):
         """Wird aufgerufen, wenn sich die Geometrie eines Elements ändert."""
         self._recompute_and_redraw()
+        self._update_room_3d_dialog_selection()
 
     # ---------------- Neuberechnung und Zeichnung ----------------
 
@@ -62,6 +64,14 @@ class MainWindowRedrawMixin:
                     u_kellerdecke_w_m2k=float(cfg.u_kellerdecke_w_m2k),
                     u_eg_geschossdecke_w_m2k=float(cfg.u_eg_geschossdecke_w_m2k),
                     u_dg_geschossdecke_w_m2k=float(cfg.u_dg_geschossdecke_w_m2k),
+                    t_keller_c=float(cfg.t_keller_c),
+                    t_oben_c=float(cfg.t_oben_c),
+                    u_value_source=str(getattr(cfg, "u_value_source", "")),
+                    boundary_source=str(getattr(cfg, "auto_deck_boundary_source", "")),
+                    auto_deck_assumptions_confirmed=bool(getattr(cfg, "auto_deck_assumptions_confirmed", False)),
+                    create_eg_kellerdecke=bool(getattr(cfg, "auto_deck_create_eg_kellerdecke", True)),
+                    create_eg_geschossdecke=bool(getattr(cfg, "auto_deck_create_eg_geschossdecke", True)),
+                    create_dg_speicherdecke=bool(getattr(cfg, "auto_deck_create_dg_speicherdecke", True)),
                 )
             except Exception:
                 pass
@@ -128,7 +138,10 @@ class MainWindowRedrawMixin:
         self._apply_room_debug_overlay(results)
         self._update_statusbar_summary()
         if mark_dirty and hasattr(self, "_mark_dirty"):
-            self._mark_dirty("recompute")
+            try:
+                self._mark_dirty("recompute", refresh_ui=False)
+            except TypeError:
+                self._mark_dirty("recompute")
 
     def _update_din_status_from_results(self, *, results: dict | None = None, vent_cfg: VentilationCfg | None = None) -> None:
         """Aktualisiert nur die DIN-Ampel; kann nach dem schnellen Laden verzögert laufen."""
@@ -170,7 +183,7 @@ class MainWindowRedrawMixin:
             uid = e.uid or str(uuid.uuid4())
             e.uid = uid
             self.metrics.ensure_metrics(e)
-            if e.element_type == "Fenster":
+            if is_opening_type(e.element_type):
                 orient = "H"
                 c = 0.0
                 a0 = 0.0
@@ -227,6 +240,7 @@ class MainWindowRedrawMixin:
 
         if self._selected_room_id:
             self._populate_room_elements_list()
+            self._update_room_3d_dialog_selection()
 
     def _rebuild_eg_shadow_in_dg(self) -> None:
         """Zeichnet EG-Grundriss im DG als graue gestrichelte Kontur."""

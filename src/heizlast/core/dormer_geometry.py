@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from math import radians, sqrt, tan
 from typing import Literal, Optional
 
-DormerType = Literal["shed", "gable", "flat"]
+DormerType = Literal["shed", "gable", "flat", "pointed"]
 RoofSide = Literal["left", "right", "front", "back"]
 RidgeDirection = Literal["length", "width"]
 
@@ -127,6 +127,8 @@ class DormerGeometry:
             return self._build_shed_dormer(d)
         if d.dormer_type == "gable":
             return self._build_gable_dormer(d)
+        if d.dormer_type == "pointed":
+            return self._build_pointed_dormer(d)
         raise ValueError(f"Unbekannter Gaubentyp: {d.dormer_type}")
 
     def _build_flat_dormer(self, d: DormerInput) -> DormerResult:
@@ -166,6 +168,18 @@ class DormerGeometry:
         roof_area = 2.0 * d.depth_m * roof_slope_len
         cutout_area = d.width_m * d.depth_m
         return self._build_result(d, window_area, front_gross, front_net, side_gross, roof_area, cutout_area, ridge_length_m=d.depth_m, rise_m=rise)
+
+    def _build_pointed_dormer(self, d: DormerInput) -> DormerResult:
+        height = float(d.front_height_m)
+        half_width = float(d.width_m) / 2.0
+        window_area = d.window_count * d.window_width_m * d.window_height_m
+        front_gross = 0.5 * d.width_m * height
+        front_net = max(0.0, front_gross - window_area)
+        side_gross = d.depth_m * height
+        roof_slope_len = sqrt(half_width ** 2 + height ** 2)
+        roof_area = d.depth_m * roof_slope_len
+        cutout_area = 0.5 * d.width_m * d.depth_m
+        return self._build_result(d, window_area, front_gross, front_net, side_gross, roof_area, cutout_area, ridge_length_m=d.depth_m, rise_m=height)
 
     def _build_result(self, d: DormerInput, window_area: float, front_gross: float, front_net: float, side_gross: float, roof_area: float, cutout_area: float, *, ridge_length_m: float, rise_m: float) -> DormerResult:
         preview = DormerPreviewGeometry(

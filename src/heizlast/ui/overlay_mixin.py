@@ -10,6 +10,7 @@ except Exception:
 
 from typing import Dict, Optional
 from ..domain.models import ElementModel
+from ..core.heatload_types import is_opening_type
 
 
 class MainWindowOverlayMixin:
@@ -28,10 +29,9 @@ class MainWindowOverlayMixin:
             if el is None:
                 continue
 
-            et = (el.element_type or "").strip().lower()
-
             show = True
-            if et == "fenster":
+            et = (el.element_type or "").strip().lower()
+            if is_opening_type(el.element_type):
                 show = bool(self.show_window_labels)
             elif et in ("aussenwand", "außenwand"):
                 show = bool(self.show_outerwall_labels)

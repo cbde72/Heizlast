@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Iterable, List
 
 from .anchors import parse_edge_anchor, parse_meta
+from .heatload_types import is_door_type, is_window_type
 from ..domain.models import ElementModel, RoomModel
 
 
@@ -24,6 +25,36 @@ def _safe_float(v, default: float = 0.0) -> float:
         return float(v)
     except Exception:
         return float(default)
+
+
+def _positive_float(v) -> float | None:
+    try:
+        value = float(v)
+    except Exception:
+        return None
+    return value if value > 1e-9 else None
+
+
+def _opening_width_m(element: ElementModel, anchor: dict[str, object] | None = None) -> float:
+    direct = _positive_float(getattr(element, "length_m", None))
+    if direct is not None:
+        return direct
+    try:
+        computed = _positive_float(element.compute_length())
+    except Exception:
+        computed = None
+    if computed is not None:
+        return computed
+    if anchor is None:
+        anchor = parse_edge_anchor(getattr(element, "meta", None))
+    anchored = _positive_float((anchor or {}).get("w"))
+    if anchored is not None:
+        return anchored
+    area = _positive_float(getattr(element, "area_m2", None))
+    height = _positive_float(getattr(element, "height_m", None))
+    if area is not None and height is not None:
+        return area / max(height, 1e-9)
+    return 0.0
 
 
 def _meta_float(parts: dict[str, str], *keys: str, default: float | None = None) -> float | None:
@@ -80,27 +111,27 @@ def wall_openings_for_element(
 
     for e in list(elements or []):
         et_raw = str(getattr(e, "element_type", "") or "")
-        et = et_raw.strip().lower()
-        is_window = et == "fenster"
-        is_door = ("tür" in et) or ("tuer" in et) or ("door" in et)
+        is_window = is_window_type(et_raw)
+        is_door = is_door_type(et_raw)
         if not (is_window or is_door):
             continue
 
         anchor = parse_edge_anchor(getattr(e, "meta", None))
+        width_m = _opening_width_m(e, anchor)
         parent_uid = str(anchor.get("parent") or "")
         if wall_uid and parent_uid == wall_uid:
-            offset = float(anchor.get("s") or 0.0) - 0.5 * float(getattr(e, "length_m", 0.0) or 0.0)
+            offset = float(anchor.get("s") or 0.0) - 0.5 * width_m
         else:
             if getattr(e, "room_id", None) != getattr(wall, "room_id", None):
                 continue
             ex0 = float(min(getattr(e, "x0_m", 0.0) or 0.0, getattr(e, "x1_m", 0.0) or 0.0))
             ey0 = float(min(getattr(e, "y0_m", 0.0) or 0.0, getattr(e, "y1_m", 0.0) or 0.0))
             if horizontal:
-                if abs(float(getattr(e, "y0_m", 0.0) or 0.0) - float(getattr(wall, "y0_m", 0.0) or 0.0)) > 1e-6:
+                if abs(float(getattr(e, "y0_m", 0.0) or 0.0) - float(getattr(wall, "y0_m", 0.0) or 0.0)) > 1e-3:
                     continue
                 offset = ex0 - wx0
             else:
-                if abs(float(getattr(e, "x0_m", 0.0) or 0.0) - float(getattr(wall, "x0_m", 0.0) or 0.0)) > 1e-6:
+                if abs(float(getattr(e, "x0_m", 0.0) or 0.0) - float(getattr(wall, "x0_m", 0.0) or 0.0)) > 1e-3:
                     continue
                 offset = ey0 - wy0
 
@@ -110,7 +141,7 @@ def wall_openings_for_element(
         )
         openings.append(WallOpeningData(
             offset_m=max(0.0, float(offset)),
-            width_m=max(0.01, float(getattr(e, "length_m", 0.0) or 0.0)),
+            width_m=max(0.01, float(width_m)),
             sill_m=sill_m,
             height_m=max(0.01, float(height_m)),
             label=et_raw or ("Tür" if is_door else "Fenster"),

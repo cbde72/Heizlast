@@ -15,19 +15,36 @@ from .dialogs.window_dialog import WindowDialog
 class MainWindowWindowInsertMixin:
     def _on_add_window_toggle(self, checked: bool):
         """Schaltet den Fenster-Einfügemodus um."""
-        self._add_window_mode = bool(checked)
+        self._set_opening_insert_mode("window", checked)
+
+    def _on_add_door_toggle(self, checked: bool):
+        """Schaltet den Tür-Einfügemodus um."""
+        self._set_opening_insert_mode("door", checked)
+
+    def _set_opening_insert_mode(self, mode: str, checked: bool):
+        """Aktiviert genau einen Einfügemodus für Wandöffnungen."""
+        active_mode = mode if checked else ""
+        self._add_window_mode = active_mode == "window"
+        self._add_door_mode = active_mode == "door"
+
         if checked and hasattr(self, 'act_polygon_room'):
             try:
                 self.act_polygon_room.setChecked(False)
             except Exception:
                 pass
-        if hasattr(self, "act_add_window") and self.act_add_window.isChecked() != bool(checked):
-            self.act_add_window.blockSignals(True)
-            self.act_add_window.setChecked(bool(checked))
-            self.act_add_window.blockSignals(False)
 
-        # Im Fenster-Modus dürfen vorhandene Graphics-Items keine Klicks "abfangen".
-        disable_item_hits = bool(checked)
+        for attr, expected in (("act_add_window", "window"), ("act_add_door", "door")):
+            action = getattr(self, attr, None)
+            if action is None:
+                continue
+            want_checked = active_mode == expected
+            if action.isChecked() != want_checked:
+                action.blockSignals(True)
+                action.setChecked(want_checked)
+                action.blockSignals(False)
+
+        # Im Einfügemodus dürfen vorhandene Graphics-Items keine Klicks "abfangen".
+        disable_item_hits = bool(active_mode)
         for item in list(getattr(self, "room_items", {}).values()) + list(getattr(self, "element_items", {}).values()):
             try:
                 item.setAcceptedMouseButtons(Qt.NoButton if disable_item_hits else Qt.LeftButton)
@@ -46,7 +63,7 @@ class MainWindowWindowInsertMixin:
             if view is None:
                 continue
             try:
-                view.viewport().setCursor(Qt.CrossCursor if checked else Qt.ArrowCursor)
+                view.viewport().setCursor(Qt.CrossCursor if active_mode else Qt.ArrowCursor)
             except Exception:
                 pass
 
@@ -56,16 +73,27 @@ class MainWindowWindowInsertMixin:
             except Exception:
                 pass
 
-        if checked:
+        if active_mode == "window":
             self.statusBar().showMessage("Fenster-Modus aktiv: auf eine Außenwand klicken, dann Dialog ausfüllen.")
+        elif active_mode == "door":
+            self.statusBar().showMessage("Tür-Modus aktiv: auf eine Außenwand klicken, dann Dialog ausfüllen.")
         else:
             self.statusBar().clearMessage()
 
 
     def _add_window_at(self, floor: str, scene_pos) -> None:
+        self._add_opening_at(floor, scene_pos, opening_kind="window")
+
+    def _add_door_at(self, floor: str, scene_pos) -> None:
+        self._add_opening_at(floor, scene_pos, opening_kind="door")
+
+    def _add_opening_at(self, floor: str, scene_pos, *, opening_kind: str) -> None:
         # NICHT snappen für die Suche (sonst springt der Punkt weg)
         x_m_raw = float(scene_pos.x() / PX_PER_M)
         y_m_raw = float(scene_pos.y() / PX_PER_M)
+
+        is_door = opening_kind == "door"
+        label = "Tür" if is_door else "Fenster"
 
         rooms = [r for r in self.rooms.values() if getattr(r, 'floor', None) == floor]
         wall = nearest_edge_span_for_point(rooms, floor, x_m_raw, y_m_raw, prefer_outer=True, max_dist=0.8)
@@ -85,7 +113,7 @@ class MainWindowWindowInsertMixin:
             else:
                 msg += f"Keine Wandelemente im Geschoss {floor} gefunden."
 
-            QMessageBox.information(self, "Fenster einfügen", msg)
+            QMessageBox.information(self, f"{label} einfügen", msg)
             return
             #
 
@@ -101,19 +129,25 @@ class MainWindowWindowInsertMixin:
             cx = c
             cy = max(a_min, min(y_m_raw, a_max))
 
+        default_type = "Tür" if is_door else "Fenster"
         dlg = WindowDialog(
             self,
-            length_m=1.20,
-            height_m=1.30,
-            u_w_m2k=DEFAULT_U.get("Fenster", 2.8),
-            factor=DEFAULT_FACTOR.get("Fenster", 1.0),
+            length_m=1.00 if is_door else 1.20,
+            height_m=2.01 if is_door else 1.30,
+            u_w_m2k=DEFAULT_U.get(default_type, 1.8 if is_door else 2.8),
+            factor=DEFAULT_FACTOR.get(default_type, 1.0),
             center_x_m=cx,
             center_y_m=cy,
-            orient=orient
+            orient=orient,
+            title=f"{label} anlegen",
+            element_label=label,
+            element_types=("Tür", "Haustür", "Terrassentür") if is_door else None,
+            default_element_type=default_type,
         )
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
         v = dlg.values()
+        element_type = str(v.get("element_type") or default_type).strip() or default_type
         L = max(0.20, float(v["length_m"]))
         H = max(0.20, float(v["height_m"]))
         U = float(v["u_w_m2k"])
@@ -140,9 +174,10 @@ class MainWindowWindowInsertMixin:
             x0 = x1 = c
 
         rid = span.owner_room_id
-        uid = f"win_{uuid.uuid4().hex[:10]}"
+        uid_prefix = "door" if is_door else "win"
+        uid = f"{uid_prefix}_{uuid.uuid4().hex[:10]}"
 
-        # s = Fenstermitte entlang der Wand, gemessen ab a_min
+        # s = Öffnungsmitte entlang der Wand, gemessen ab a_min
         if orient == "H":
             s = cx - a_min
         else:
@@ -162,7 +197,7 @@ class MainWindowWindowInsertMixin:
 
         e = ElementModel(
             room_id=rid,
-            element_type="Fenster",
+            element_type=element_type,
             area_m2=L * H,
             u_w_m2k=U,
             factor=F,

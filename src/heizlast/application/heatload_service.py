@@ -25,6 +25,14 @@ class HeatloadComputationService:
                 u_kellerdecke_w_m2k=float(cfg.u_kellerdecke_w_m2k),
                 u_eg_geschossdecke_w_m2k=float(cfg.u_eg_geschossdecke_w_m2k),
                 u_dg_geschossdecke_w_m2k=float(cfg.u_dg_geschossdecke_w_m2k),
+                t_keller_c=float(cfg.t_keller_c),
+                t_oben_c=float(cfg.t_oben_c),
+                u_value_source=str(getattr(cfg, "u_value_source", "")),
+                boundary_source=str(getattr(cfg, "auto_deck_boundary_source", "")),
+                auto_deck_assumptions_confirmed=bool(getattr(cfg, "auto_deck_assumptions_confirmed", False)),
+                create_eg_kellerdecke=bool(getattr(cfg, "auto_deck_create_eg_kellerdecke", True)),
+                create_eg_geschossdecke=bool(getattr(cfg, "auto_deck_create_eg_geschossdecke", True)),
+                create_dg_speicherdecke=bool(getattr(cfg, "auto_deck_create_dg_speicherdecke", True)),
             )
         except Exception:
             pass
@@ -49,6 +57,12 @@ class HeatloadComputationService:
             u_kellerdecke_w_m2k=float(cfg.u_kellerdecke_w_m2k),
             u_eg_geschossdecke_w_m2k=float(cfg.u_eg_geschossdecke_w_m2k),
             u_dg_geschossdecke_w_m2k=float(cfg.u_dg_geschossdecke_w_m2k),
+            u_value_source=str(getattr(cfg, "u_value_source", "")),
+            auto_deck_assumptions_confirmed=bool(getattr(cfg, "auto_deck_assumptions_confirmed", False)),
+            auto_deck_boundary_source=str(getattr(cfg, "auto_deck_boundary_source", "")),
+            auto_deck_create_eg_kellerdecke=bool(getattr(cfg, "auto_deck_create_eg_kellerdecke", True)),
+            auto_deck_create_eg_geschossdecke=bool(getattr(cfg, "auto_deck_create_eg_geschossdecke", True)),
+            auto_deck_create_dg_speicherdecke=bool(getattr(cfg, "auto_deck_create_dg_speicherdecke", True)),
             u_bodenplatte_w_m2k=float(getattr(cfg, "u_bodenplatte_w_m2k", 0.40)),
             u_erdberuehrte_wand_w_m2k=float(getattr(cfg, "u_erdberuehrte_wand_w_m2k", 0.60)),
             ventilation_mode=str(getattr(cfg, "ventilation_mode", "natural")),

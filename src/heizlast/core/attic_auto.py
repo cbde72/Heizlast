@@ -448,6 +448,7 @@ def derive_auto_attic_elements(dg_rooms: Sequence[RoomModel], attic_cfg: AtticCf
     if roof_boundary_key == "attic_unheated":
         default_factor = DIN_BOUNDARY_CONDITIONS["attic_unheated"].factor
         roof_factor *= max(0.0, float(getattr(attic_cfg, "roof_unheated_factor", default_factor) or default_factor))
+    zero_roof_gable = bool(getattr(attic_cfg, "zero_roof_gable_transmission", False))
 
     for s in spans:
         if s.element_type != 'Aussenwand':
@@ -482,6 +483,8 @@ def derive_auto_attic_elements(dg_rooms: Sequence[RoomModel], attic_cfg: AtticCf
                 u_val = gable_u
                 factor = float(DEFAULT_FACTOR.get('Außenwand', DEFAULT_FACTOR.get('Aussenwand', 1.0)))
                 h_val = None
+            if zero_roof_gable:
+                factor = 0.0
 
             if area > EPS:
                 uid = f"{AUTO_ATTIC_UID_PREFIX}{part}_{room.id}_{_fmt_num(local0)}_{_fmt_num(local1)}"
@@ -530,6 +533,8 @@ def derive_auto_attic_elements(dg_rooms: Sequence[RoomModel], attic_cfg: AtticCf
                 u_val = roof_u
                 factor = roof_factor
                 h_val = max(0.0, area / max(EPS, abs(float(s.a1) - float(s.a0))))
+            if zero_roof_gable:
+                factor = 0.0
 
             if area <= EPS:
                 continue

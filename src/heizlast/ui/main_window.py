@@ -3,7 +3,7 @@ from pathlib import Path
 from ..configs.project_config import ProjectCfg
 from ..core.attic_geometry import AtticGeometry
 
-from PySide6.QtCore import QPointF, QSettings
+from PySide6.QtCore import QPointF, QSettings, QTimer
 from PySide6.QtWidgets import QGraphicsScene, QMainWindow
 
 from ..core.element_metrics import ElementMetricsService
@@ -56,6 +56,8 @@ class MainWindow(
 
         self.element_items_by_uid: Dict[str, Any] = {}
         self._highlight_item = None
+        self._deck_hatch_item = None
+        self._room_3d_dialog = None
 
         # Graphics
         self.scene_KG = QGraphicsScene(0, 0, 2200, 1400)
@@ -99,9 +101,11 @@ class MainWindow(
         self._preview_polygon = None
         self._start_pos_scene: Optional[Tuple[str, QPointF]] = None
         self._preview_room: Optional[Any] = None
+        self._preview_room_label: Optional[Any] = None
         self._split_start_scene: Optional[Tuple[str, QPointF]] = None
         self._preview_split_line: Optional[Any] = None
         self._add_window_mode = False
+        self._add_door_mode = False
         self._selected_room_id: Optional[str] = None
         self._last_heatload_results: Optional[Dict] = None
 
@@ -123,6 +127,7 @@ class MainWindow(
         self._recompute_and_redraw()
         self._refresh_attic_preview()
         self._mark_clean()
+        QTimer.singleShot(0, self._load_last_project_on_startup)
 
     def _current_attic_geometry(self) -> Optional[AtticGeometry]:
         cfg = getattr(self, "project_cfg", None)

@@ -121,9 +121,75 @@ def test_explicit_boundary_meta_can_classify_deck_as_unheated_attic():
     assert line["Q_W"] == pytest.approx(36.0)
 
 
+def test_manual_basement_boundary_uses_unheated_basement_temperature_aliases():
+    room = RoomModel("R1", "EG", "EG", 0.0, 0.0, 4.0, 3.0, t_inside_c=20.0)
+    element = ElementModel(
+        room_id="R1",
+        element_type="Decke",
+        area_m2=10.0,
+        u_w_m2k=0.50,
+        factor=1.0,
+        meta="boundary=basement",
+    )
+
+    rr = calc_heatloads([room], [element], t_out_c=-10.0, t_keller_c=14.0, sync_auto_decks=False)["R1"]
+    line = _line(rr, "Decke")
+
+    assert line["boundary_bucket"] == "basement"
+    assert line["dT_K"] == pytest.approx(6.0)
+    assert line["Q_W"] == pytest.approx(30.0)
+
+
+def test_inner_wall_without_boundary_is_not_treated_as_outside():
+    room = RoomModel("R1", "EG", "EG", 0.0, 0.0, 4.0, 3.0, t_inside_c=20.0)
+    element = ElementModel(
+        room_id="R1",
+        element_type="Innenwand",
+        area_m2=10.0,
+        u_w_m2k=1.0,
+        factor=1.0,
+    )
+
+    rr = calc_heatloads([room], [element], t_out_c=-10.0, sync_auto_decks=False)["R1"]
+    line = _line(rr, "Innenwand")
+
+    assert line["boundary_bucket"] == "interzone"
+    assert line["dT_K"] == pytest.approx(0.0)
+    assert rr["Q_trans_out_W"] == pytest.approx(0.0)
+    assert rr["Q_trans_interzone_W"] == pytest.approx(0.0)
+
+
+def test_speicherdecke_uses_room_area_instead_of_manual_bbox_area():
+    room = RoomModel("DG1", "DG", "DG", 0.0, 0.0, 4.0, 3.0, t_inside_c=20.0)
+    element = ElementModel(
+        room_id="DG1",
+        element_type="Speicherdecke",
+        area_m2=99.0,
+        u_w_m2k=0.20,
+        factor=1.0,
+    )
+
+    rr = calc_heatloads([room], [element], t_out_c=-10.0, t_oben_c=12.0, sync_auto_decks=False)["DG1"]
+    line = _line(rr, "Speicherdecke")
+
+    assert line["A_eff_m2"] == pytest.approx(12.0)
+    assert line["Q_W"] == pytest.approx(19.2)
+    assert rr["A_env_dachraum_m2"] == pytest.approx(12.0)
+
+
 def test_din_status_contains_deck_neighbor_zone_checkpoint():
     cfg = ProjectCfg()
-    element = ElementModel("R1", "Speicherdecke", 12.0, 0.25, meta="auto_deck=1|adj_floor=OBEN")
+    element = ElementModel(
+        "R1",
+        "Speicherdecke",
+        12.0,
+        0.25,
+        meta=(
+            "auto_deck=1|deck_kind=speicher|adj_floor=OBEN|boundary=attic_unheated|"
+            "t_adj_c=12.0|t_source=project_t_oben_c|u_source=Bauteilkatalog|"
+            "area_source=room_floor_area|boundary_source=Projektangabe|assumptions_confirmed=1"
+        ),
+    )
 
     status = assess_din_status(
         results={"R1": {"Q_trans_W": 24.0, "Q_trans_dachraum_W": 24.0, "Q_vent_W": 0.0}},
@@ -136,14 +202,82 @@ def test_din_status_contains_deck_neighbor_zone_checkpoint():
     assert any(row[0] == "Decken / Nachbarzonen" and row[1] == "✓" for row in status.validation_rows)
 
 
+def test_din_status_marks_interzone_without_adjacent_temperature_yellow():
+    cfg = ProjectCfg()
+    element = ElementModel(
+        "R1",
+        "Innenwand",
+        10.0,
+        0.50,
+        factor=1.0,
+        meta="boundary=interzone|u_source=Bauteilkatalog|area_source=Plan",
+    )
+
+    status = assess_din_status(
+        results={"R1": {"Q_trans_W": 0.0, "Q_trans_interzone_W": 0.0, "Q_vent_W": 0.0}},
+        project_cfg=cfg,
+        vent_cfg=VentilationCfg(),
+        elements=[element],
+    )
+
+    assert any(row[0] == "Interzone / Nachbarräume" and row[-1] == "△" for row in status.conformity_rows)
+    assert any("ohne t_adj_c" in row[2] for row in status.validation_rows if row[0] == "Interzone / Nachbarräume")
+
+
+def test_din_status_requires_confirmed_auto_deck_assumptions():
+    cfg = ProjectCfg()
+    element = ElementModel(
+        "R1",
+        "Speicherdecke",
+        12.0,
+        0.25,
+        meta=(
+            "auto_deck=1|deck_kind=speicher|adj_floor=OBEN|boundary=attic_unheated|"
+            "t_adj_c=12.0|t_source=project_t_oben_c|u_source=Bauteilkatalog|"
+            "area_source=room_floor_area|boundary_source=Projektangabe|assumptions_confirmed=0"
+        ),
+    )
+
+    status = assess_din_status(
+        results={"R1": {"Q_trans_W": 24.0, "Q_trans_dachraum_W": 24.0, "Q_vent_W": 0.0}},
+        project_cfg=cfg,
+        vent_cfg=VentilationCfg(),
+        elements=[element],
+    )
+
+    assert any(row[0] == "Decken / Nachbarzonen" and row[-1] == "△" for row in status.conformity_rows)
+    assert any("Auto-Decken-Annahmen nicht bestätigt" in row[2] for row in status.validation_rows if row[0] == "Decken / Nachbarzonen")
+
+
 def test_auto_decks_are_idempotent_and_not_counted_twice():
     room = RoomModel("EG1", "EG", "EG", 0.0, 0.0, 4.0, 3.0, t_inside_c=20.0)
     elements = []
-    ensure_auto_decks([room], elements)
-    ensure_auto_decks([room], elements)
+    ensure_auto_decks(
+        [room],
+        elements,
+        t_keller_c=14.0,
+        t_oben_c=12.0,
+        u_value_source="Bauteilkatalog",
+        boundary_source="Projektangabe",
+        auto_deck_assumptions_confirmed=True,
+    )
+    ensure_auto_decks(
+        [room],
+        elements,
+        t_keller_c=14.0,
+        t_oben_c=12.0,
+        u_value_source="Bauteilkatalog",
+        boundary_source="Projektangabe",
+        auto_deck_assumptions_confirmed=True,
+    )
 
     assert sum(1 for e in elements if e.element_type == "Kellerdecke") == 1
     assert sum(1 for e in elements if e.element_type == "Geschossdecke") == 1
+    kd = next(e for e in elements if e.element_type == "Kellerdecke")
+    assert "boundary=basement_unheated" in kd.meta
+    assert "t_source=project_t_keller_c" in kd.meta
+    assert "u_source=Bauteilkatalog" in kd.meta
+    assert "assumptions_confirmed=1" in kd.meta
 
     elements.append(
         ElementModel(

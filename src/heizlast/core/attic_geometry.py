@@ -504,6 +504,7 @@ class AtticGeometry:
             "schleppgaube": "shed",
             "satteldachgaube": "gable",
             "flachdachgaube": "flat",
+            "spitzgaube": "pointed",
         }
         kind = dtype_map.get(str(self.dormer_type).strip().lower())
         if not kind:

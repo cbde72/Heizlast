@@ -44,6 +44,11 @@ def test_project_settings_dialog_exposes_all_project_cfg_user_settings():
         'cfg.u_bodenplatte_w_m2k = float(self.sp_u_bodenplatte.value())',
         'cfg.u_erdberuehrte_wand_w_m2k = float(self.sp_u_erdwand.value())',
         'cfg.u_value_source = self.ed_u_source.text().strip()',
+        'cfg.auto_deck_assumptions_confirmed = bool(self.cb_auto_deck_confirmed.isChecked())',
+        'cfg.auto_deck_boundary_source = self.ed_auto_deck_boundary_source.text().strip()',
+        'cfg.auto_deck_create_eg_kellerdecke = bool(self.cb_auto_deck_eg_keller.isChecked())',
+        'cfg.auto_deck_create_eg_geschossdecke = bool(self.cb_auto_deck_eg_deck.isChecked())',
+        'cfg.auto_deck_create_dg_speicherdecke = bool(self.cb_auto_deck_dg_attic.isChecked())',
         'cfg.tb.mode = self.cb_tb_mode.currentText()',
         'cfg.tb.delta_u_w_m2k = float(self.sp_tb_du.value())',
         'cfg.tb.psi_default_w_mk = float(self.sp_tb_psi.value())',
@@ -154,9 +159,14 @@ def test_project_dashboard_backup_room_status_and_export_options_are_wired():
     assert '"_backups", "Backup"' in load_src
     assert "def _on_element_assistant(self) -> None:" in element_src
     assert '"Innenwand"' in element_src
+    assert '"Haustür"' in element_src
+    assert '"Terrassentür"' in element_src
     assert 'cb_boundary.setCurrentText("Nachbarzone/Interzone")' in element_src
     assert '"source_status": source_status' in element_src
     assert 'form.addRow("Quelle/Status", cb_source)' in element_src
+    assert 'def _element_transmission_preview_w(self, e: ElementModel) -> float:' in element_src
+    assert 'form.addRow("Transmission Φ", lbl_transmission)' in element_src
+    assert 'Φ: {phi_val:.1f} W' in selection_src
     assert "def _refresh_selected_room_norm_status" in selection_src
     assert 'self.lbl_room_norm_status = QLabel("Raumstatus: —")' in build_src
     assert "def _show_export_options_dialog" in export_src
@@ -165,6 +175,53 @@ def test_project_dashboard_backup_room_status_and_export_options_are_wired():
     assert "def _append_proof_overview_section(self) -> None:" in report_src
     assert "Nachweisübersicht für Prüfung und Übergabe" in report_src
     assert "Bauteilquellen und Annahmen" in report_src
+
+
+def test_boundary_assistant_and_room_drawing_show_din_temperature_details():
+    root = Path(__file__).resolve().parents[1]
+    element_src = (root / "src" / "heizlast" / "ui" / "element_edit_mixin.py").read_text(encoding="utf-8")
+    graphics_src = (root / "src" / "heizlast" / "ui" / "graphics.py").read_text(encoding="utf-8")
+    report_src = (root / "src" / "heizlast" / "infrastructure" / "reporting.py").read_text(encoding="utf-8")
+
+    assert '"unbeheizter Keller": "basement_unheated"' in element_src
+    assert "self.temp_label = QGraphicsSimpleTextItem(self)" in graphics_src
+    assert 'self.temp_label.setText(f"{t_inside:.1f} °C")' in graphics_src
+    assert "rect.bottom() - label_rect.height() - 6.0" in graphics_src
+    assert "Referenzwert, Rechenzeile nutzt t_adj_c/Projekt-Temperatur und Element-Faktor" in report_src
+
+
+def test_room_drawing_workflow_has_fast_polygon_controls_and_clear_preview():
+    root = Path(__file__).resolve().parents[1]
+    misc_src = (root / "src" / "heizlast" / "ui" / "misc_mixin.py").read_text(encoding="utf-8")
+    build_src = (root / "src" / "heizlast" / "ui" / "build_mixin.py").read_text(encoding="utf-8")
+
+    assert "Startpunkt/Doppelklick/Rechtsklick schließt" in misc_src
+    assert "def _orthogonal_preview_point" in misc_src
+    assert "def _is_near_polygon_start" in misc_src
+    assert "event.Type.KeyPress" in misc_src
+    assert "Qt.Key_Escape" in misc_src
+    assert "Qt.Key_Backspace" in misc_src
+    assert "Qt.Key_Return" in misc_src
+    assert "path.closeSubpath()" in misc_src
+    assert "QBrush(QColor(70, 130, 200, 35))" in misc_src
+    assert "self._preview_room_label = scene.addText" in misc_src
+    assert 'self._preview_room_label.setPlainText(f"{w_m:.2f} × {h_m:.2f} m")' in misc_src
+    assert "tip=\"Orthogonalen Polygonraum per Klickpunkten zeichnen\"" in build_src
+
+
+def test_blocking_load_save_and_export_paths_use_busy_cursor():
+    root = Path(__file__).resolve().parents[1]
+    load_src = (root / "src" / "heizlast" / "ui" / "load_save_mixin.py").read_text(encoding="utf-8")
+    export_src = (root / "src" / "heizlast" / "ui" / "export_mixin.py").read_text(encoding="utf-8")
+
+    assert "QApplication.setOverrideCursor(Qt.WaitCursor)" in load_src
+    assert "QApplication.restoreOverrideCursor()" in load_src
+    assert "def _busy_cursor" in load_src
+    assert 'with self._busy_cursor("Projekt wird geladen...")' in load_src
+    assert 'with self._busy_cursor("Projekt wird gespeichert...")' in load_src
+    assert 'self._push_busy_cursor("Projekt wird fertig aktualisiert...")' in load_src
+    assert 'with self._busy_cursor("Export wird vorbereitet...")' in export_src
+    assert 'with self._busy_cursor("Export wird geschrieben...")' in export_src
 
 
 def test_new_project_wizard_is_guided_and_versioned():

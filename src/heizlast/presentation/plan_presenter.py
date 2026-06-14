@@ -19,6 +19,7 @@ from PySide6.QtWidgets import QGraphicsScene, QGraphicsRectItem, QGraphicsItem
 
 from ..domain.models import RoomModel
 from ..core.element_metrics import ElementMetricsService
+from ..core.heatload_types import is_opening_type
 from ..ui.graphics import RoomPolygonItem, ElementLineItem, WindowLineItem, PX_PER_M
 
 
@@ -178,7 +179,7 @@ class PlanPresenter:
             sc = self.scene_EG if floor == "EG" else self.scene_DG
 
             it = self.element_items.get(uid)
-            want_window = (str(e.element_type or "").strip().lower() == "fenster")
+            want_window = is_opening_type(e.element_type)
 
             if it is not None and self._is_valid(it) and it.scene() is sc:
                 # reuse if class matches

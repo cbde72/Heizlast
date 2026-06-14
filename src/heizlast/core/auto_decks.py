@@ -68,16 +68,27 @@ def ensure_auto_decks(
     u_kellerdecke_w_m2k: float = DEFAULT_U_KELLERDECKE_W_M2K,
     u_eg_geschossdecke_w_m2k: float = DEFAULT_U_EG_GESCHOSSDECKE_W_M2K,
     u_dg_geschossdecke_w_m2k: float = DEFAULT_U_DG_GESCHOSSDECKE_W_M2K,
+    t_keller_c: Optional[float] = None,
+    t_oben_c: Optional[float] = None,
+    u_value_source: str = "",
+    boundary_source: str = "",
+    auto_deck_assumptions_confirmed: bool = False,
+    create_eg_kellerdecke: bool = True,
+    create_eg_geschossdecke: bool = True,
+    create_dg_speicherdecke: bool = True,
     factor: float = 1.0,
     update_existing: bool = True,
 ) -> None:
     """
     Erzeugt oder aktualisiert automatische Decken-Elemente.
 
-    Regeln:
+    Default-Regeln:
       - EG: Kellerdecke + Geschossdecke gegen DG-Mitteltemperatur
       - DG: Speicherdecke gegen unbeheizten Dachraum/oben
       - KG: keine automatische Decke
+
+    Die Regeln bleiben rückwärtskompatibel, schreiben aber DIN-Prüfmetadaten.
+    Für einen belastbaren Nachweis müssen die Projektannahmen bestätigt werden.
     """
     rooms = list(rooms)
 
@@ -113,7 +124,21 @@ def ensure_auto_decks(
         if (kind := deck_kind_for_element(e)) is not None and not is_auto_deck(e)
     }
 
-    def _add(room: RoomModel, *, uid: str, etype: str, kind: str, u_value: float, adj_floor: str, t_adj_c: Optional[float]) -> None:
+    def _source_or_default(value: str, default: str) -> str:
+        return str(value or "").strip() or default
+
+    def _add(
+        room: RoomModel,
+        *,
+        uid: str,
+        etype: str,
+        kind: str,
+        u_value: float,
+        adj_floor: str,
+        t_adj_c: Optional[float],
+        boundary: str,
+        t_source: str,
+    ) -> None:
         room_key = (str(getattr(room, "id", "") or ""), kind)
         if room_key in manual_deck_keys:
             existing = by_uid.get(uid)
@@ -135,6 +160,12 @@ def ensure_auto_decks(
                     meta = _set_meta_kv(meta, "auto_deck", "1")
                     meta = _set_meta_kv(meta, "deck_kind", kind)
                     meta = _set_meta_kv(meta, "adj_floor", adj_floor)
+                    meta = _set_meta_kv(meta, "boundary", boundary)
+                    meta = _set_meta_kv(meta, "area_source", "room_floor_area")
+                    meta = _set_meta_kv(meta, "u_source", _source_or_default(u_value_source, "project_auto_deck_default"))
+                    meta = _set_meta_kv(meta, "t_source", t_source)
+                    meta = _set_meta_kv(meta, "boundary_source", _source_or_default(boundary_source, "project_auto_deck_default"))
+                    meta = _set_meta_kv(meta, "assumptions_confirmed", "1" if auto_deck_assumptions_confirmed else "0")
                     meta = _set_meta_kv(meta, "auto_suppressed", None)
                     meta = _set_meta_kv(meta, "suppressed_by", None)
                     if t_adj_c is not None:
@@ -145,7 +176,17 @@ def ensure_auto_decks(
             return
 
         area = max(0.0, float(room.w_m or 0.0) * float(room.h_m or 0.0))
-        meta_parts = ["auto_deck=1", f"deck_kind={kind}", f"adj_floor={adj_floor}"]
+        meta_parts = [
+            "auto_deck=1",
+            f"deck_kind={kind}",
+            f"adj_floor={adj_floor}",
+            f"boundary={boundary}",
+            "area_source=room_floor_area",
+            f"u_source={_source_or_default(u_value_source, 'project_auto_deck_default')}",
+            f"t_source={t_source}",
+            f"boundary_source={_source_or_default(boundary_source, 'project_auto_deck_default')}",
+            f"assumptions_confirmed={'1' if auto_deck_assumptions_confirmed else '0'}",
+        ]
         if t_adj_c is not None:
             meta_parts.append(f"t_adj_c={float(t_adj_c):.3f}")
 
@@ -172,8 +213,41 @@ def ensure_auto_decks(
     for r in rooms:
         floor = (getattr(r, "floor", "") or "").strip().upper()
         if floor == "EG":
-            _add(r, uid=f"deck_{r.id}_KG", etype="Kellerdecke", kind="keller", u_value=u_kellerdecke_w_m2k, adj_floor="KG", t_adj_c=None)
-            t_adj = t_dg_mean if t_dg_mean is not None else float(getattr(r, "t_inside_c", 0.0) or 0.0)
-            _add(r, uid=f"deck_{r.id}_DG", etype="Geschossdecke", kind="geschoss", u_value=u_eg_geschossdecke_w_m2k, adj_floor="DG", t_adj_c=t_adj)
+            if create_eg_kellerdecke:
+                _add(
+                    r,
+                    uid=f"deck_{r.id}_KG",
+                    etype="Kellerdecke",
+                    kind="keller",
+                    u_value=u_kellerdecke_w_m2k,
+                    adj_floor="KG",
+                    t_adj_c=float(t_keller_c) if t_keller_c is not None else None,
+                    boundary="basement_unheated",
+                    t_source="project_t_keller_c" if t_keller_c is not None else "calc_t_keller_c",
+                )
+            if create_eg_geschossdecke:
+                t_adj = t_dg_mean if t_dg_mean is not None else float(getattr(r, "t_inside_c", 0.0) or 0.0)
+                _add(
+                    r,
+                    uid=f"deck_{r.id}_DG",
+                    etype="Geschossdecke",
+                    kind="geschoss",
+                    u_value=u_eg_geschossdecke_w_m2k,
+                    adj_floor="DG",
+                    t_adj_c=t_adj,
+                    boundary="interzone",
+                    t_source="dg_mean_room_temperature" if t_dg_mean is not None else "same_room_temperature_fallback",
+                )
         elif floor == "DG":
-            _add(r, uid=f"deck_{r.id}_OBEN", etype="Speicherdecke", kind="speicher", u_value=u_dg_geschossdecke_w_m2k, adj_floor="OBEN", t_adj_c=None)
+            if create_dg_speicherdecke:
+                _add(
+                    r,
+                    uid=f"deck_{r.id}_OBEN",
+                    etype="Speicherdecke",
+                    kind="speicher",
+                    u_value=u_dg_geschossdecke_w_m2k,
+                    adj_floor="OBEN",
+                    t_adj_c=float(t_oben_c) if t_oben_c is not None else None,
+                    boundary="attic_unheated",
+                    t_source="project_t_oben_c" if t_oben_c is not None else "calc_t_oben_c",
+                )

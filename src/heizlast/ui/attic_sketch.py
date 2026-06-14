@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+
 from PySide6.QtCore import QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import QLabel, QSizePolicy, QVBoxLayout, QWidget
@@ -16,11 +18,16 @@ class AtticSketchWidget(QWidget):
     dormerResizeStarted = Signal(dict)
     dormerResizeMoved = Signal(dict)
     dormerResizeFinished = Signal(dict)
+    roofProfileChanged = Signal(dict)
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._geom: AtticGeometry | None = None
         self._last_plan_meta: dict | None = None
+        self._last_cross_meta: dict | None = None
+        self._profile_adjust_mode_active = False
+        self._profile_drag_active = False
+        self._profile_drag_kind = "pitch"
         self._placement_mode_active = False
         self._draw_mode_active = False
         self._draw_start_payload: dict | None = None
@@ -30,6 +37,7 @@ class AtticSketchWidget(QWidget):
         self._placement_min_edge_clearance_m = 0.40
         self._hover_plan_payload: dict | None = None
         self._selected_dormer_payload: dict | None = None
+        self._selected_roof_side_payload: dict | None = None
         self._drag_active = False
         self._drag_started = False
         self._drag_payload: dict | None = None
@@ -71,6 +79,16 @@ class AtticSketchWidget(QWidget):
             self._resize_press_pos = None
         self.update()
 
+    def set_selected_roof_side_state(self, payload: dict | None) -> None:
+        self._selected_roof_side_payload = dict(payload or {}) if payload else None
+        self.update()
+
+    def set_roof_profile_adjust_state(self, active: bool) -> None:
+        self._profile_adjust_mode_active = bool(active)
+        if not self._profile_adjust_mode_active:
+            self._profile_drag_active = False
+        self.update()
+
     def set_geometry(self, geom: AtticGeometry | None) -> None:
         self._geom = geom
         self.update()
@@ -80,8 +98,12 @@ class AtticSketchWidget(QWidget):
 
     def paintEvent(self, event):
         painter = QPainter(self)
+        if not painter.isActive():
+            return
         painter.setRenderHint(QPainter.Antialiasing, True)
         rect = self.rect().adjusted(12, 12, -12, -12)
+        if rect.width() <= 0 or rect.height() <= 0:
+            return
         painter.fillRect(self.rect(), self.palette().base())
 
         if self._geom is None:
@@ -109,6 +131,13 @@ class AtticSketchWidget(QWidget):
         scale = min(draw.width() / max(cross_span, 1e-9), draw.height() / max(g.total_height_m, 1e-9))
         base_x = draw.left() + (draw.width() - cross_span * scale) / 2.0
         base_y = draw.bottom()
+        self._last_cross_meta = {
+            "draw_rect": QRectF(draw),
+            "base_x": float(base_x),
+            "base_y": float(base_y),
+            "scale": float(scale),
+            "cross_span_m": float(cross_span),
+        }
 
         def px(x_m: float, y_m: float) -> QPointF:
             return QPointF(base_x + x_m * scale, base_y - y_m * scale)
@@ -150,6 +179,20 @@ class AtticSketchWidget(QWidget):
             painter.drawLine(p0, p1)
             painter.drawText(p1 + QPointF(8, 4), txt)
 
+        if self._profile_adjust_mode_active:
+            painter.setPen(QPen(QColor("#0f766e"), 1.8, Qt.DashLine))
+            painter.setBrush(QColor(20, 184, 166, 34))
+            painter.drawRoundedRect(draw.adjusted(2.0, 2.0, -2.0, -2.0), 10, 10)
+            ridge_handle = px(float(getattr(g, "ridge_pos_m", cross_span / 2.0)), float(getattr(g, "total_height_m", 0.0)))
+            left_knee = px(0.0, float(getattr(g, "knee_wall_height_m", 0.0)))
+            right_knee = px(cross_span, float(getattr(g, "knee_wall_height_m", 0.0)))
+            painter.setPen(QPen(QColor("#047857"), 1.6))
+            painter.setBrush(QColor("#d1fae5"))
+            for handle in (ridge_handle, left_knee, right_knee):
+                painter.drawEllipse(handle, 6.0, 6.0)
+            painter.setPen(QPen(QColor("#064e3b"), 1.0))
+            painter.drawText(draw.adjusted(8.0, 8.0, -8.0, -8.0), Qt.AlignTop | Qt.AlignLeft, "Schrägen-Modus: First ziehen = Neigung, Kniestockpunkte ziehen = Kniestock")
+
         painter.setPen(QPen(QColor("#9ca3af"), 1.0))
         painter.setBrush(QColor("#f9fafb"))
         painter.drawRoundedRect(plan, 10, 10)
@@ -186,6 +229,7 @@ class AtticSketchWidget(QWidget):
         painter.setBrush(Qt.NoBrush)
         painter.setPen(QPen(QColor("#475569"), 1.3))
         painter.drawRoundedRect(inner, 6, 6)
+        self._draw_plan_measurements(painter, plan, inner_rect, pl, g)
 
         facets = g.roof_facets()
         if facets:
@@ -226,6 +270,14 @@ class AtticSketchWidget(QWidget):
                 painter.setPen(QPen(QColor("#1e3a8a"), 1.2))
                 painter.setBrush(QColor("#ffffff"))
                 painter.drawRect(handle_rect)
+
+        selected_side_rect = None
+        if self._selected_roof_side_payload:
+            selected_side_rect = self._build_hover_side_highlight_rect(self._selected_roof_side_payload)
+        if selected_side_rect is not None:
+            painter.setPen(QPen(QColor("#2563eb"), 1.8, Qt.DashLine))
+            painter.setBrush(QColor(37, 99, 235, 34))
+            painter.drawRoundedRect(selected_side_rect, 6, 6)
 
         hover_payload = self._drag_payload if self._drag_active and self._drag_payload is not None else self._hover_plan_payload
         if (self._placement_mode_active or self._drag_active) and hover_payload is not None:
@@ -274,6 +326,46 @@ class AtticSketchWidget(QWidget):
         painter.drawText(QRectF(rect.left(), rect.top() - 4, rect.width(), 18), Qt.AlignHCenter | Qt.AlignVCenter, "DG-/Giebel-Querschnitt / Dachvorschau")
         painter.setFont(QFont(self.font()))
         painter.drawText(plan.adjusted(8, 6, -8, -6), Qt.AlignTop | Qt.AlignHCenter, "Dachplan")
+
+    def _draw_plan_measurements(self, painter: QPainter, plan: QRectF, inner_rect_m: tuple[float, float, float, float], pl, g: AtticGeometry) -> None:
+        x0, y0, x1, y1 = (float(v) for v in inner_rect_m)
+        p_bl = pl(x0, y0)
+        p_br = pl(x1, y0)
+        p_tl = pl(x0, y1)
+        painter.save()
+        painter.setPen(QPen(QColor("#64748b"), 1.0, Qt.DashLine))
+        font = QFont(self.font())
+        font.setPointSize(max(7, font.pointSize() - 1))
+        painter.setFont(font)
+
+        y_dim = min(plan.bottom() - 34.0, p_bl.y() + 16.0)
+        x_dim = max(plan.left() + 8.0, p_tl.x() - 18.0)
+        painter.drawLine(QPointF(p_bl.x(), y_dim), QPointF(p_br.x(), y_dim))
+        painter.drawLine(QPointF(p_bl.x(), y_dim - 4.0), QPointF(p_bl.x(), y_dim + 4.0))
+        painter.drawLine(QPointF(p_br.x(), y_dim - 4.0), QPointF(p_br.x(), y_dim + 4.0))
+        painter.drawText(QRectF(p_bl.x(), y_dim + 2.0, max(20.0, p_br.x() - p_bl.x()), 14.0), Qt.AlignCenter, f"B {float(getattr(g, 'building_width_m', x1 - x0) or (x1 - x0)):.2f} m")
+
+        painter.drawLine(QPointF(x_dim, p_tl.y()), QPointF(x_dim, p_bl.y()))
+        painter.drawLine(QPointF(x_dim - 4.0, p_tl.y()), QPointF(x_dim + 4.0, p_tl.y()))
+        painter.drawLine(QPointF(x_dim - 4.0, p_bl.y()), QPointF(x_dim + 4.0, p_bl.y()))
+        painter.drawText(QRectF(x_dim - 58.0, (p_tl.y() + p_bl.y()) * 0.5 - 8.0, 52.0, 16.0), Qt.AlignRight | Qt.AlignVCenter, f"L {float(getattr(g, 'building_length_m', y1 - y0) or (y1 - y0)):.2f} m")
+
+        ov = float(getattr(g, "roof_overhang_m", 0.0) or 0.0)
+        if ov > 0.0:
+            painter.setPen(QPen(QColor("#94a3b8"), 1.0, Qt.DotLine))
+            painter.drawText(QRectF(plan.left() + 8.0, plan.top() + 22.0, min(150.0, plan.width() - 16.0), 16.0), Qt.AlignLeft | Qt.AlignVCenter, f"Überstand {ov:.2f} m")
+
+        dormer_rect = self._build_selected_dormer_rect()
+        if dormer_rect is not None and self._selected_dormer_payload:
+            painter.setPen(QPen(QColor("#1d4ed8"), 1.0, Qt.DashLine))
+            payload = self._selected_dormer_payload
+            width_m = float(payload.get("width_m", 0.0) or 0.0)
+            depth_m = float(payload.get("depth_m", 0.0) or 0.0)
+            painter.drawLine(QPointF(dormer_rect.left(), dormer_rect.top() - 8.0), QPointF(dormer_rect.right(), dormer_rect.top() - 8.0))
+            painter.drawText(QRectF(dormer_rect.left(), dormer_rect.top() - 24.0, max(34.0, dormer_rect.width()), 14.0), Qt.AlignCenter, f"{width_m:.2f} m")
+            painter.drawLine(QPointF(dormer_rect.right() + 8.0, dormer_rect.top()), QPointF(dormer_rect.right() + 8.0, dormer_rect.bottom()))
+            painter.drawText(QRectF(dormer_rect.right() + 10.0, dormer_rect.center().y() - 8.0, 54.0, 16.0), Qt.AlignLeft | Qt.AlignVCenter, f"T {depth_m:.2f} m")
+        painter.restore()
 
     def _build_hover_preview_rect(self, payload: dict) -> QRectF | None:
         meta = self._last_plan_meta or {}
@@ -462,25 +554,17 @@ class AtticSketchWidget(QWidget):
         scale = float(meta.get("scale", 0.0) or 0.0)
         bx = float(meta.get("bx", 0.0) or 0.0)
         by = float(meta.get("by", 0.0) or 0.0)
-        ridge_orientation = str(meta.get("ridge_orientation", "length") or "length").strip().lower()
         if scale <= 1e-9:
             return None
         x0 = float(start_payload.get("x_m", 0.0) or 0.0)
         y0 = float(start_payload.get("y_m", 0.0) or 0.0)
         x1 = float(current_payload.get("x_m", x0) or x0)
         y1 = float(current_payload.get("y_m", y0) or y0)
-        depth_m = max(0.20, float(self._placement_dormer_width_m or 1.80) * 0.75)
-        if ridge_orientation == "width":
-            cx = max(0.0, min(x0, x1))
-            w = abs(x1 - x0)
-            cy = y0 - depth_m if str(start_payload.get("side", "front")) == "back" else y0
-            rect = QRectF(QPointF(bx + cx * scale, by - (cy + depth_m) * scale), QPointF(bx + (cx + max(0.20, w)) * scale, by - cy * scale)).normalized()
-        else:
-            cy = max(0.0, min(y0, y1))
-            w = abs(y1 - y0)
-            cx = x0 - depth_m if str(start_payload.get("side", "left")) == "right" else x0
-            rect = QRectF(QPointF(bx + cx * scale, by - (cy + max(0.20, w)) * scale), QPointF(bx + (cx + depth_m) * scale, by - cy * scale)).normalized()
-        return rect
+        if abs(x1 - x0) < 0.20:
+            x1 = x0 + (0.20 if x1 >= x0 else -0.20)
+        if abs(y1 - y0) < 0.20:
+            y1 = y0 + (0.20 if y1 >= y0 else -0.20)
+        return QRectF(QPointF(bx + x0 * scale, by - y0 * scale), QPointF(bx + x1 * scale, by - y1 * scale)).normalized()
 
     def _payload_hits_selected_dormer(self, payload: dict | None) -> bool:
         if not payload or not self._selected_dormer_payload:
@@ -498,6 +582,16 @@ class AtticSketchWidget(QWidget):
         return preview.adjusted(-6.0, -6.0, 6.0, 6.0).contains(pt)
 
     def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton and self._profile_adjust_mode_active and self._geom is not None and isinstance(self._last_cross_meta, dict):
+            draw_rect = self._last_cross_meta.get("draw_rect")
+            if isinstance(draw_rect, QRectF) and draw_rect.contains(event.position()):
+                self._profile_drag_active = True
+                payload = self._build_profile_payload(event.position())
+                if payload is not None:
+                    self._profile_drag_kind = str(payload.get("kind", "pitch") or "pitch")
+                    self.roofProfileChanged.emit(payload)
+                event.accept()
+                return
         if event.button() == Qt.LeftButton and self._geom is not None and isinstance(self._last_plan_meta, dict):
             meta = self._last_plan_meta
             plan_rect = meta.get("plan_rect")
@@ -532,6 +626,13 @@ class AtticSketchWidget(QWidget):
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
+        if self._profile_drag_active and self._profile_adjust_mode_active:
+            payload = self._build_profile_payload(event.position(), forced_kind=self._profile_drag_kind)
+            if payload is not None:
+                self.roofProfileChanged.emit(payload)
+                self.update()
+            event.accept()
+            return
         if self._geom is not None and isinstance(self._last_plan_meta, dict):
             payload = self._build_plan_click_payload(event.position().x(), event.position().y())
             if self._draw_mode_active and self._draw_start_payload is not None:
@@ -571,6 +672,14 @@ class AtticSketchWidget(QWidget):
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):
+        if event.button() == Qt.LeftButton and self._profile_drag_active:
+            payload = self._build_profile_payload(event.position(), forced_kind=self._profile_drag_kind)
+            self._profile_drag_active = False
+            if payload is not None:
+                self.roofProfileChanged.emit(payload)
+                self.update()
+                event.accept()
+                return
         if event.button() == Qt.LeftButton and self._draw_mode_active and self._draw_start_payload is not None:
             payload = self._build_plan_click_payload(event.position().x(), event.position().y()) or self._draw_current_payload
             start_payload = self._draw_start_payload
@@ -621,6 +730,28 @@ class AtticSketchWidget(QWidget):
                 return
             self.update()
         super().mouseReleaseEvent(event)
+
+    def _build_profile_payload(self, pos: QPointF, forced_kind: str | None = None) -> dict | None:
+        g = self._geom
+        meta = self._last_cross_meta or {}
+        if g is None:
+            return None
+        scale = float(meta.get("scale", 0.0) or 0.0)
+        if scale <= 1e-9:
+            return None
+        cross_span = max(0.50, float(meta.get("cross_span_m", getattr(g, "cross_span_m", 0.0)) or 0.0))
+        base_x = float(meta.get("base_x", 0.0) or 0.0)
+        base_y = float(meta.get("base_y", 0.0) or 0.0)
+        x_m = max(0.0, min(cross_span, (float(pos.x()) - base_x) / scale))
+        y_m = max(0.0, (base_y - float(pos.y())) / scale)
+        knee_current = max(0.0, float(getattr(g, "knee_wall_height_m", 0.0) or 0.0))
+        kind = forced_kind or ("knee" if y_m <= knee_current + 0.45 and (x_m < cross_span * 0.18 or x_m > cross_span * 0.82) else "pitch")
+        if kind == "knee":
+            return {"kind": "knee", "knee_wall_height_m": max(0.0, min(5.0, y_m))}
+        run = max(0.25, min(max(x_m, cross_span - x_m), cross_span * 0.5))
+        rise = max(0.05, y_m - knee_current)
+        pitch = math.degrees(math.atan(rise / run))
+        return {"kind": "pitch", "roof_pitch_deg": max(0.0, min(85.0, pitch))}
 
     def leaveEvent(self, event):
         changed = False
@@ -677,6 +808,7 @@ class AtticSketchPanel(QWidget):
     dormerResizeStarted = Signal(dict)
     dormerResizeMoved = Signal(dict)
     dormerResizeFinished = Signal(dict)
+    roofProfileChanged = Signal(dict)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -695,6 +827,7 @@ class AtticSketchPanel(QWidget):
         self.sketch.dormerResizeStarted.connect(self.dormerResizeStarted)
         self.sketch.dormerResizeMoved.connect(self.dormerResizeMoved)
         self.sketch.dormerResizeFinished.connect(self.dormerResizeFinished)
+        self.sketch.roofProfileChanged.connect(self.roofProfileChanged)
         lay.addWidget(self.info_label)
         lay.addWidget(self.sketch, 1)
 
@@ -709,6 +842,12 @@ class AtticSketchPanel(QWidget):
 
     def set_selected_dormer_state(self, payload: dict | None) -> None:
         self.sketch.set_selected_dormer_state(payload)
+
+    def set_selected_roof_side_state(self, payload: dict | None) -> None:
+        self.sketch.set_selected_roof_side_state(payload)
+
+    def set_roof_profile_adjust_state(self, active: bool) -> None:
+        self.sketch.set_roof_profile_adjust_state(active)
 
     def set_geometry(self, geom: AtticGeometry | None) -> None:
         self.sketch.set_geometry(geom)

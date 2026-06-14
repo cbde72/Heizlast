@@ -16,7 +16,7 @@ RidgeOrientation = Literal["length", "width"]
 PultRiseSide = Literal["left", "right"]
 FacadeMaterial = Literal["klinker", "putz", "holz", "beton"]
 RoofMaterial = Literal["ziegel"]
-DormerType = Literal["none", "schleppgaube", "satteldachgaube", "flachdachgaube"]
+DormerType = Literal["none", "schleppgaube", "satteldachgaube", "flachdachgaube", "spitzgaube"]
 RoofWindowSide = Literal["left", "right", "both"]
 
 
@@ -59,6 +59,7 @@ class AtticCfgDTO:
     roof_material: RoofMaterial = "ziegel"
     u_roof_w_m2k: float = 0.30
     u_gable_w_m2k: float = 0.45
+    zero_roof_gable_transmission: bool = False
     dormers: list[DormerCfgDTO] = field(default_factory=list)
     roof_lines: list[RoofLineCfgDTO] = field(default_factory=list)
 
@@ -159,6 +160,11 @@ class ProjectCfg:
     u_kellerdecke_w_m2k: float = 0.45
     u_eg_geschossdecke_w_m2k: float = 0.30
     u_dg_geschossdecke_w_m2k: float = 0.25
+    auto_deck_assumptions_confirmed: bool = False
+    auto_deck_boundary_source: str = ""
+    auto_deck_create_eg_kellerdecke: bool = True
+    auto_deck_create_eg_geschossdecke: bool = True
+    auto_deck_create_dg_speicherdecke: bool = True
     u_bodenplatte_w_m2k: float = 0.40
     u_erdberuehrte_wand_w_m2k: float = 0.60
 
@@ -326,6 +332,13 @@ class ProjectCfg:
             d.setdefault("u_tuer_w_m2k", 1.80)
             d.setdefault("u_value_source", "")
             version = 24
+        if version < 25:
+            d.setdefault("auto_deck_assumptions_confirmed", False)
+            d.setdefault("auto_deck_boundary_source", "")
+            d.setdefault("auto_deck_create_eg_kellerdecke", True)
+            d.setdefault("auto_deck_create_eg_geschossdecke", True)
+            d.setdefault("auto_deck_create_dg_speicherdecke", True)
+            version = 25
 
         tb_raw = d.get("tb", {}) if isinstance(d.get("tb", {}), dict) else {}
         g_raw = d.get("ground", {}) if isinstance(d.get("ground", {}), dict) else {}
@@ -373,6 +386,11 @@ class ProjectCfg:
             u_kellerdecke_w_m2k=float(d.get("u_kellerdecke_w_m2k", 0.45)),
             u_eg_geschossdecke_w_m2k=float(d.get("u_eg_geschossdecke_w_m2k", 0.30)),
             u_dg_geschossdecke_w_m2k=float(d.get("u_dg_geschossdecke_w_m2k", 0.25)),
+            auto_deck_assumptions_confirmed=bool(d.get("auto_deck_assumptions_confirmed", False)),
+            auto_deck_boundary_source=str(d.get("auto_deck_boundary_source", "")),
+            auto_deck_create_eg_kellerdecke=bool(d.get("auto_deck_create_eg_kellerdecke", True)),
+            auto_deck_create_eg_geschossdecke=bool(d.get("auto_deck_create_eg_geschossdecke", True)),
+            auto_deck_create_dg_speicherdecke=bool(d.get("auto_deck_create_dg_speicherdecke", True)),
             u_bodenplatte_w_m2k=float(d.get("u_bodenplatte_w_m2k", 0.40)),
             u_erdberuehrte_wand_w_m2k=float(d.get("u_erdberuehrte_wand_w_m2k", 0.60)),
             tb=ThermalBridgeCfgDTO(
@@ -424,6 +442,7 @@ class ProjectCfg:
                 roof_material=str(a_raw.get("roof_material", "ziegel") or "ziegel").strip().lower(),
                 u_roof_w_m2k=float(a_raw.get("u_roof_w_m2k", 0.30)),
                 u_gable_w_m2k=float(a_raw.get("u_gable_w_m2k", 0.45)),
+                zero_roof_gable_transmission=bool(a_raw.get("zero_roof_gable_transmission", False)),
                 dormers=[
                     DormerCfgDTO(
                         id=str(item.get("id", f"dormer_{idx+1}")),

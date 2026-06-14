@@ -4,10 +4,12 @@ from ..core.config import usage_defaults
 from ..core.polygon_ops import snap_m
 from .graphics import RoomPolygonItem
 from .graphics import WindowLineItem
+from ..core.heatload_types import is_opening_type
 from PySide6.QtWidgets import QMessageBox
 from ..core.element_access import get_room_elements
 from ..core.attic_auto import is_auto_attic_element, auto_attic_marker_label
-from PySide6.QtGui import QPen
+from ..core.auto_decks import deck_kind_for_element
+from PySide6.QtGui import QPen, QBrush, QColor
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QListWidgetItem
@@ -80,9 +82,11 @@ class MainWindowSelectionMixin:
 
         self._selected_room_id = rid
         self._populate_room_form()
+        self._update_room_3d_dialog_selection()
         # Element-Selektion -> Liste markieren (ohne rekursive Signal-Kaskade)
         if picked_elem_uid:
             self._sync_list_with_uid(picked_elem_uid)
+            self._highlight_element_uid(picked_elem_uid)
 
     def _populate_room_form(self):
         """Füllt das Formular mit den Daten des ausgewählten Raums."""
@@ -137,6 +141,19 @@ class MainWindowSelectionMixin:
         r = self.rooms[rid]
         r.ensure_polygon()
         old_floor = r.floor
+        old_signature = (
+            str(r.name),
+            str(r.floor),
+            float(r.x_m),
+            float(r.y_m),
+            float(r.w_m),
+            float(r.h_m),
+            float(r.height_m),
+            float(r.t_inside_c),
+            float(r.air_change_1ph),
+            str(getattr(r, "usage_type", "") or ""),
+            str(getattr(r, "polygon_m", "") or ""),
+        )
         r.name = self.ed_name.text().strip() or r.id
         r.floor = self.cb_floor.currentText()
 
@@ -157,6 +174,27 @@ class MainWindowSelectionMixin:
         r.t_inside_c = self.sp_tin.value()
         r.air_change_1ph = self.sp_n.value()
         self._normalize_room_geometry(r)
+        new_signature = (
+            str(r.name),
+            str(r.floor),
+            float(r.x_m),
+            float(r.y_m),
+            float(r.w_m),
+            float(r.h_m),
+            float(r.height_m),
+            float(r.t_inside_c),
+            float(r.air_change_1ph),
+            str(getattr(r, "usage_type", "") or ""),
+            str(getattr(r, "polygon_m", "") or ""),
+        )
+        if new_signature == old_signature:
+            self._refresh_selected_room_norm_status(r)
+            return
+        geometry_or_floor_changed = (
+            old_floor != r.floor
+            or old_signature[2:7] != new_signature[2:7]
+            or old_signature[10] != new_signature[10]
+        )
 
         it = self.room_items.get(r.id)
         if it and self._is_valid_graphics_item(it):
@@ -173,7 +211,7 @@ class MainWindowSelectionMixin:
 
         if self.autowalls_enabled:
              self._rebuild_autowalls_all()
-        self._recompute_and_redraw()
+        self._recompute_and_redraw(sync_auto_elements=geometry_or_floor_changed)
         self._refresh_selected_room_norm_status(r)
         self._populate_room_elements_list()
 
@@ -241,32 +279,41 @@ class MainWindowSelectionMixin:
         #print("populate list for:", self._selected_room_id)
 
 
+        self.list_room_elements.setUpdatesEnabled(False)
         self.list_room_elements.clear()
-        if not self._selected_room_id:
-            return
+        try:
+            if not self._selected_room_id:
+                return
 
-        all_elements = self.elements.values() if isinstance(self.elements, dict) else self.elements
-        elements = get_room_elements(all_elements, self._selected_room_id)
-        #print("room elems:", len(elements), [e.uid for e in elements[:5]])
+            all_elements = self.elements.values() if isinstance(self.elements, dict) else self.elements
+            elements = get_room_elements(all_elements, self._selected_room_id)
+            #print("room elems:", len(elements), [e.uid for e in elements[:5]])
 
-        for el in elements:
-            # zentrale Konsistenz-Regeln (L/H/A + auto_contour Sonderfall)
-            self.metrics.ensure_metrics(el)
+            for el in elements:
+                # zentrale Konsistenz-Regeln (L/H/A + auto_contour Sonderfall)
+                self.metrics.ensure_metrics(el)
 
-            l_val = float(getattr(el, "length_m", 0.0) or 0.0)
-            a_val = float(getattr(el, "area_m2", 0.0) or 0.0)
-            u_val = float(getattr(el, "u_w_m2k", 0.0) or 0.0)
+                l_val = float(getattr(el, "length_m", 0.0) or 0.0)
+                a_val = float(getattr(el, "area_m2", 0.0) or 0.0)
+                u_val = float(getattr(el, "u_w_m2k", 0.0) or 0.0)
+                phi_val = 0.0
+                try:
+                    phi_val = float(self._element_transmission_preview_w(el))
+                except Exception:
+                    pass
 
-            et = getattr(el, "element_type", "") or "Element"
-            auto_marker = f" [{auto_attic_marker_label(el)}]" if is_auto_attic_element(el) else ""
-            label = f"{et}{auto_marker}: {a_val:.2f} m² (L: {l_val:.2f} m, U: {u_val:.2f})"
+                et = getattr(el, "element_type", "") or "Element"
+                auto_marker = f" [{auto_attic_marker_label(el)}]" if is_auto_attic_element(el) else ""
+                label = f"{et}{auto_marker}: {a_val:.2f} m² (L: {l_val:.2f} m, U: {u_val:.2f}, Φ: {phi_val:.1f} W)"
 
-            item = QListWidgetItem(label)
-            item.setData(Qt.UserRole, getattr(el, "uid", None))
-            self.list_room_elements.addItem(item)
-        filt = getattr(self, "ed_element_filter", None)
-        if filt is not None:
-            self._filter_room_elements_list(filt.text())
+                item = QListWidgetItem(label)
+                item.setData(Qt.UserRole, getattr(el, "uid", None))
+                self.list_room_elements.addItem(item)
+            filt = getattr(self, "ed_element_filter", None)
+            if filt is not None:
+                self._filter_room_elements_list(filt.text())
+        finally:
+            self.list_room_elements.setUpdatesEnabled(True)
 
         #print("metrics.rooms size:", len(getattr(self.metrics, "rooms", {}) or {}))
         #print("main rooms size:", len(self.rooms))
@@ -337,7 +384,7 @@ class MainWindowSelectionMixin:
         return out
 
     def _selected_window_uids(self) -> List[str]:
-        """Gibt die UIDs aller ausgewählten Fenster zurück."""
+        """Gibt die UIDs aller ausgewählten Fenster/Türen zurück."""
         uids: List[str] = []
         for it in self._selected_graphics_items():
             if isinstance(it, WindowLineItem):
@@ -346,7 +393,7 @@ class MainWindowSelectionMixin:
                 continue
             if hasattr(it, "element") and isinstance(getattr(it, "element"), ElementModel):
                 el = getattr(it, "element")
-                if el.element_type == "Fenster" and el.uid:
+                if is_opening_type(el.element_type) and el.uid:
                     uids.append(el.uid)
         out: List[str] = []
         for uid in uids:
@@ -387,6 +434,10 @@ class MainWindowSelectionMixin:
         """Hebt ein Element durch ein gelbes Rechteck hervor."""
         self._clear_element_highlight()
 
+        element = self._find_element_by_uid(uid)
+        if element is not None and self._is_deck_element(element):
+            self._show_deck_hatch(element)
+
         it = self.element_items.get(uid)
         if it is None or not self._is_valid_graphics_item(it):
             return
@@ -413,6 +464,58 @@ class MainWindowSelectionMixin:
         if self._highlight_item is not None:
             self._safe_remove_from_scene(self._highlight_item)
         self._highlight_item = None
+        if getattr(self, "_deck_hatch_item", None) is not None:
+            self._safe_remove_from_scene(self._deck_hatch_item)
+        self._deck_hatch_item = None
+
+    def _is_deck_element(self, element: ElementModel) -> bool:
+        try:
+            if deck_kind_for_element(element) is not None:
+                return True
+        except Exception:
+            pass
+        return "decke" in str(getattr(element, "element_type", "") or "").strip().lower()
+
+    def _show_deck_hatch(self, element: ElementModel) -> None:
+        rid = str(getattr(element, "room_id", "") or "")
+        room_item = getattr(self, "room_items", {}).get(rid)
+        if room_item is None or not self._is_valid_graphics_item(room_item):
+            return
+        scene = room_item.scene()
+        if scene is None or not self._is_valid_graphics_item(scene):
+            return
+        from PySide6.QtWidgets import QGraphicsPathItem
+
+        try:
+            path = room_item.mapToScene(room_item.path())
+        except Exception:
+            return
+        hatch = QGraphicsPathItem(path)
+        pen = QPen(QColor(245, 158, 11))
+        pen.setWidth(2)
+        hatch.setPen(pen)
+        hatch.setBrush(QBrush(QColor(245, 158, 11, 80), Qt.BDiagPattern))
+        hatch.setZValue(999998)
+        hatch.setAcceptedMouseButtons(Qt.NoButton)
+        scene.addItem(hatch)
+        self._deck_hatch_item = hatch
+
+    def _update_room_3d_dialog_selection(self) -> None:
+        dlg = getattr(self, "_room_3d_dialog", None)
+        if dlg is None:
+            return
+        try:
+            if not dlg.isVisible():
+                return
+        except Exception:
+            return
+        rid = getattr(self, "_selected_room_id", None)
+        room = self.rooms.get(rid) if rid else None
+        elements = get_room_elements(getattr(self, "elements", []) or [], rid) if rid else []
+        try:
+            dlg.set_room(room, elements)
+        except Exception:
+            pass
 
     def _center_view_on_item(self, item):
         """Zentriert die Ansicht auf ein Item."""

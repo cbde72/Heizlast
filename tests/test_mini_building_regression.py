@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from heizlast.core.anchors import update_edge_anchor_meta
 from heizlast.core.config import VentilationCfg
 from heizlast.core.heatload import calc_heatloads
 from heizlast.domain.models import ElementModel, RoomModel
@@ -98,6 +99,36 @@ def test_outer_wall_uses_project_u_value_when_element_u_is_missing():
     assert line["Q_W"] == pytest.approx(75.0)
 
 
+def test_zero_factor_is_preserved_as_zero_transmission():
+    room = RoomModel(
+        id="R1",
+        floor="DG",
+        name="Dachraum",
+        x_m=0.0,
+        y_m=0.0,
+        w_m=4.0,
+        h_m=3.0,
+        height_m=2.5,
+        t_inside_c=20.0,
+        air_change_1ph=0.0,
+    )
+    roof = ElementModel(
+        room_id="R1",
+        floor="DG",
+        element_type="Dach",
+        area_m2=12.0,
+        u_w_m2k=0.30,
+        factor=0.0,
+    )
+
+    rr = calc_heatloads([room], [roof], t_out_c=-10.0, sync_auto_decks=False)["R1"]
+
+    line = next(line for line in rr["lines"] if line["line_type"] == "TRANSMISSION" and line["element_type"] == "Dach")
+    assert line["factor"] == pytest.approx(0.0)
+    assert line["Q_W"] == pytest.approx(0.0)
+    assert rr["Q_trans_W"] == pytest.approx(0.0)
+
+
 def test_window_and_door_use_project_u_value_when_missing():
     room = RoomModel(
         id="R1",
@@ -113,10 +144,12 @@ def test_window_and_door_use_project_u_value_when_missing():
     )
     window = ElementModel("R1", "Fenster", 2.0, 0.0, factor=1.0)
     door = ElementModel("R1", "Tür", 2.5, 0.0, factor=1.0)
+    front_door = ElementModel("R1", "Haustür", 0.0, 0.0, factor=1.0, x0_m=0.0, y0_m=0.0, x1_m=1.0, y1_m=0.0, height_m=2.10)
+    terrace_door = ElementModel("R1", "Terrassentür", 0.0, 0.0, factor=1.0, x0_m=0.0, y0_m=3.0, x1_m=1.5, y1_m=3.0)
 
     rr = calc_heatloads(
         [room],
-        [window, door],
+        [window, door, front_door, terrace_door],
         t_out_c=-10.0,
         u_fenster_w_m2k=1.10,
         u_tuer_w_m2k=1.50,
@@ -126,7 +159,74 @@ def test_window_and_door_use_project_u_value_when_missing():
     lines = {line["element_type"]: line for line in rr["lines"] if line["line_type"] == "TRANSMISSION"}
     assert lines["Fenster"]["U_W_m2K"] == pytest.approx(1.10)
     assert lines["Tür"]["U_W_m2K"] == pytest.approx(1.50)
-    assert rr["Q_trans_W"] == pytest.approx((1.10 * 2.0 + 1.50 * 2.5) * 30.0)
+    assert lines["Haustür"]["U_W_m2K"] == pytest.approx(1.50)
+    assert lines["Haustür"]["A_eff_m2"] == pytest.approx(2.10)
+    assert lines["Terrassentür"]["U_W_m2K"] == pytest.approx(1.50)
+    assert lines["Terrassentür"]["A_eff_m2"] == pytest.approx(1.5 * 2.01)
+    assert rr["Q_trans_W"] == pytest.approx((1.10 * 2.0 + 1.50 * 2.5 + 1.50 * 2.10 + 1.50 * 1.5 * 2.01) * 30.0)
+
+
+def test_window_and_door_are_subtracted_from_wall_by_anchor_without_line_geometry():
+    room = RoomModel(
+        id="R1",
+        floor="EG",
+        name="Mini",
+        x_m=0.0,
+        y_m=0.0,
+        w_m=4.0,
+        h_m=3.0,
+        height_m=2.5,
+        t_inside_c=20.0,
+        air_change_1ph=0.0,
+    )
+    wall = ElementModel(
+        room_id="R1",
+        floor="EG",
+        element_type="Außenwand",
+        area_m2=10.0,
+        u_w_m2k=0.30,
+        factor=1.0,
+        x0_m=0.0,
+        y0_m=0.0,
+        x1_m=4.0,
+        y1_m=0.0,
+        length_m=4.0,
+        height_m=2.5,
+        uid="wall_front",
+    )
+    window = ElementModel(
+        room_id="R1",
+        floor="EG",
+        element_type="Fenster",
+        area_m2=1.2,
+        u_w_m2k=1.10,
+        factor=1.0,
+        length_m=1.0,
+        height_m=1.2,
+        uid="win_anchor",
+        meta=update_edge_anchor_meta("", parent="wall_front", orient="H", c=0.0, a0=0.0, a1=4.0, s=1.0, w=1.0, rooms=("R1",)),
+    )
+    door = ElementModel(
+        room_id="R1",
+        floor="EG",
+        element_type="Terrassentür",
+        area_m2=0.0,
+        u_w_m2k=1.50,
+        factor=1.0,
+        length_m=1.0,
+        height_m=2.01,
+        uid="door_anchor",
+        meta=update_edge_anchor_meta("", parent="wall_front", orient="H", c=0.0, a0=0.0, a1=4.0, s=2.6, w=1.0, rooms=("R1",)),
+    )
+
+    rr = calc_heatloads([room], [wall, window, door], t_out_c=-10.0, sync_auto_decks=False)["R1"]
+
+    lines = {line["element_type"]: line for line in rr["lines"] if line["line_type"] == "TRANSMISSION"}
+    assert lines["Außenwand"]["A_open_m2"] == pytest.approx(1.2 + 2.01)
+    assert lines["Außenwand"]["A_eff_m2"] == pytest.approx(10.0 - 3.21)
+    assert lines["Terrassentür"]["A_eff_m2"] == pytest.approx(2.01)
+    assert rr["A_openings_m2"] == pytest.approx(3.21)
+    assert rr["Q_trans_W"] == pytest.approx((0.30 * (10.0 - 3.21) + 1.10 * 1.2 + 1.50 * 2.01) * 30.0)
 
 
 def test_mini_building_mechanical_ventilation_with_heat_recovery():

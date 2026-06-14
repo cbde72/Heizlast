@@ -51,7 +51,7 @@ class MainWindowComfortMixin:
         self._recompute_and_redraw()
         self._refresh_attic_preview()
 
-    def _mark_dirty(self, reason: str = "") -> None:
+    def _mark_dirty(self, reason: str = "", *, refresh_ui: bool = True) -> None:
         if not getattr(self, "_comfort_ready", False):
             return
         current = self._comfort_snapshot()
@@ -61,7 +61,8 @@ class MainWindowComfortMixin:
             self._redo_snapshots.clear()
             self._last_snapshot = current
         self._dirty = True
-        self._refresh_comfort_ui()
+        if refresh_ui:
+            self._refresh_comfort_ui()
 
     def _mark_clean(self) -> None:
         self._dirty = False
@@ -112,6 +113,9 @@ class MainWindowComfortMixin:
 
     def _refresh_project_dashboard(self) -> None:
         if not hasattr(self, "list_dashboard_checks"):
+            return
+        dock = getattr(self, "dock_dashboard", None)
+        if dock is not None and not dock.isVisible():
             return
         project_path = str(getattr(self, "_project_rooms_path", None) or "—")
         dirty = "ungespeichert" if getattr(self, "_dirty", False) else "gespeichert"
@@ -330,21 +334,29 @@ class MainWindowComfortMixin:
             ("temperature", "Temp."),
             ("neighbor", "Nachbar"),
         ]
+        by_room: dict[str, list[ElementModel]] = defaultdict(list)
+        for e in elements:
+            by_room[str(getattr(e, "room_id", "") or "")].append(e)
+        table.setUpdatesEnabled(False)
         table.setRowCount(len(rooms))
-        for row_index, room in enumerate(sorted(rooms, key=lambda r: (str(r.floor), str(r.name), str(r.id)))):
-            room_elements = self._room_elements_for_matrix(str(room.id), elements)
-            room_item = QTableWidgetItem(f"{room.name or room.id}")
-            room_item.setData(Qt.UserRole, str(room.id))
-            room_item.setToolTip(str(room.id))
-            table.setItem(row_index, 0, room_item)
-            for col_index, (key, _label) in enumerate(columns, start=1):
-                mark, tip = self._room_matrix_status(room, room_elements, key)
-                item = QTableWidgetItem(mark)
-                item.setTextAlignment(Qt.AlignCenter)
-                item.setData(Qt.UserRole, str(room.id))
-                item.setToolTip(tip)
-                table.setItem(row_index, col_index, item)
-        table.resizeColumnsToContents()
+        try:
+            for row_index, room in enumerate(sorted(rooms, key=lambda r: (str(r.floor), str(r.name), str(r.id)))):
+                room_id = str(room.id)
+                room_elements = by_room.get(room_id, [])
+                room_item = QTableWidgetItem(f"{room.name or room.id}")
+                room_item.setData(Qt.UserRole, room_id)
+                room_item.setToolTip(room_id)
+                table.setItem(row_index, 0, room_item)
+                for col_index, (key, _label) in enumerate(columns, start=1):
+                    mark, tip = self._room_matrix_status(room, room_elements, key)
+                    item = QTableWidgetItem(mark)
+                    item.setTextAlignment(Qt.AlignCenter)
+                    item.setData(Qt.UserRole, room_id)
+                    item.setToolTip(tip)
+                    table.setItem(row_index, col_index, item)
+            table.resizeColumnsToContents()
+        finally:
+            table.setUpdatesEnabled(True)
 
     def _on_room_norm_matrix_cell_clicked(self, row: int, _column: int) -> None:
         table = getattr(self, "tbl_room_norm_matrix", None)
@@ -409,6 +421,11 @@ class MainWindowComfortMixin:
         roof_by_room: dict[str, float] = defaultdict(float)
         gable_by_room: dict[str, float] = defaultdict(float)
         roof_signature_counts: dict[tuple[str, str, str, str], int] = defaultdict(int)
+        element_by_uid = {
+            str(getattr(e, "uid", "") or ""): e
+            for e in elements
+            if str(getattr(e, "uid", "") or "")
+        }
         for rid, rr in room_results:
             for line in rr.get("lines", []) or []:
                 if line.get("line_type") != "TRANSMISSION":
@@ -426,7 +443,7 @@ class MainWindowComfortMixin:
                 uid = str(line.get("uid") or "")
                 source_uid = ""
                 meta = ""
-                match = next((e for e in elements if str(getattr(e, "uid", "") or "") == uid), None)
+                match = element_by_uid.get(uid)
                 if match is not None:
                     meta = str(getattr(match, "meta", "") or "")
                     source_uid = str(parse_meta(meta).get("source_uid", "") or "")

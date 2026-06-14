@@ -11,7 +11,7 @@ def test_extended_toolbar_icon_asset_set_is_present():
         "l_room", "polygon_room", "split_room", "merge_rooms", "subtract_rooms",
         "delete_room", "regen", "fit_view", "label_outer", "label_windows",
         "label_inner", "debug_overlay", "attic_markers", "area_ref_outer", "heatmap",
-        "window_insert", "roof_settings", "go_dg", "roof_profile",
+        "window_insert", "door_insert", "roof_settings", "go_dg", "roof_profile",
     }
     existing = {p.stem for p in icons_dir.glob("*.svg")}
     assert expected.issubset(existing)
@@ -32,5 +32,6 @@ def test_build_mixin_uses_new_toolbar_icons_for_secondary_actions():
         '_toolbar_icon("debug_overlay")',
         '_toolbar_icon("area_ref_outer")',
         '_toolbar_icon("heatmap")',
+        '_toolbar_icon("door_insert")',
     ]:
         assert fragment in build_mixin

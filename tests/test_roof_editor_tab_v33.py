@@ -147,6 +147,49 @@ def test_roof_editor_contains_dormer_section_and_buttons():
     assert 'self.btn_roof_tab_delete_dormer = QPushButton("Löschen")' in src
 
 
+def test_roof_editor_contains_professional_five_step_assistant():
+    src = Path("src/heizlast/ui/build_mixin.py").read_text(encoding="utf-8")
+    assert 'self.roof_editor_param_tabs.addTab(self._create_roof_assistant_tab(), "Assistent")' in src
+    assert 'def _create_roof_assistant_tab(self) -> QWidget:' in src
+    assert 'self.roof_assistant_progress = QProgressBar()' in src
+    assert 'self.btn_roof_assistant_prev = QPushButton("Zurück")' in src
+    assert 'self.btn_roof_assistant_next = QPushButton("Weiter")' in src
+    assert 'self.lbl_roof_assistant_step_1 = QLabel("1. Grundriss: offen")' in src
+    assert 'self.lbl_roof_assistant_step_2 = QLabel("2. Dachform: offen")' in src
+    assert 'self.lbl_roof_assistant_step_3 = QLabel("3. Geometrie: offen")' in src
+    assert 'self.lbl_roof_assistant_step_4 = QLabel("4. Öffnungen/Linien: optional")' in src
+    assert 'self.lbl_roof_assistant_step_5 = QLabel("5. Prüfung: offen")' in src
+    assert 'self.btn_roof_assistant_footprint.clicked.connect(self._roof_assistant_footprint_from_rooms)' in src
+    assert 'self.btn_roof_assistant_profile_drag = QPushButton("Schrägen grafisch ziehen")' in src
+    assert 'self.btn_roof_assistant_suggest_lines = QPushButton("Linien vorschlagen")' in src
+    assert 'self.btn_roof_assistant_check.clicked.connect(self._run_roof_assistant_check)' in src
+
+
+def test_settings_mixin_contains_roof_assistant_handlers():
+    src = Path("src/heizlast/ui/settings_mixin.py").read_text(encoding="utf-8")
+    assert 'def _roof_assistant_footprint_from_rooms(self) -> None:' in src
+    assert 'def _apply_roof_assistant_profile(self, roof_type: str) -> None:' in src
+    assert 'def _apply_roof_assistant_standard_values(self) -> None:' in src
+    assert 'def _open_roof_assistant_lines_step(self) -> None:' in src
+    assert 'def _suggest_roof_assistant_lines(self) -> None:' in src
+    assert 'def _toggle_roof_assistant_profile_drag(self, checked: bool) -> None:' in src
+    assert 'def _on_roof_assistant_profile_changed(self, payload: dict) -> None:' in src
+    assert 'def _set_roof_assistant_step(self, step: int) -> None:' in src
+    assert 'def _run_roof_assistant_check(self) -> None:' in src
+    assert 'def _sync_roof_assistant_state(self) -> None:' in src
+    assert 'self._sync_roof_assistant_state()' in src
+    assert 'RoofLineCfgDTO("kehle"' in src
+
+
+def test_attic_sketch_supports_graphical_roof_slope_adjustment():
+    src = Path("src/heizlast/ui/attic_sketch.py").read_text(encoding="utf-8")
+    assert 'roofProfileChanged = Signal(dict)' in src
+    assert 'def set_roof_profile_adjust_state(self, active: bool) -> None:' in src
+    assert 'def _build_profile_payload(self, pos: QPointF, forced_kind: str | None = None) -> dict | None:' in src
+    assert '"roof_pitch_deg"' in src
+    assert '"knee_wall_height_m"' in src
+
+
 def test_settings_mixin_contains_dormer_sync_and_handlers_for_roof_editor():
     src = Path("src/heizlast/ui/settings_mixin.py").read_text(encoding="utf-8")
     assert 'def _sync_roof_editor_dormer_list(self) -> None:' in src
@@ -161,6 +204,10 @@ def test_roof_editor_contains_graphical_dormer_placement_controls():
     assert 'self.btn_roof_tab_place_dormer = QPushButton("Grafisch platzieren")' in src
     assert 'self.btn_roof_tab_place_dormer.setCheckable(True)' in src
     assert 'self.roof_editor_preview_panel.planClicked.connect(self._on_roof_editor_preview_plan_clicked)' in src
+    assert 'self.lbl_roof_selected_surface = QLabel("Dachfläche: keine Auswahl")' in src
+    assert 'self.btn_roof_surface_add_dormer = QPushButton("Gaube")' in src
+    assert 'self.btn_roof_surface_add_window = QPushButton("Dachfenster")' in src
+    assert 'self.btn_roof_surface_add_line = QPushButton("Dachlinie")' in src
 
 
 def test_attic_sketch_emits_plan_click_for_graphical_dormer_placement():
@@ -174,6 +221,8 @@ def test_settings_mixin_handles_graphical_dormer_placement():
     src = Path("src/heizlast/ui/settings_mixin.py").read_text(encoding="utf-8")
     assert 'def _on_toggle_roof_editor_dormer_place_mode(self, checked: bool) -> None:' in src
     assert 'def _on_roof_editor_preview_plan_clicked(self, payload: dict) -> None:' in src
+    assert 'def _select_roof_editor_surface(self, payload: dict) -> None:' in src
+    assert 'def _start_roof_surface_dormer_workflow(self) -> None:' in src
     assert 'Gaube grafisch eingefügt.' in src
     assert 'Gaube grafisch verschoben.' in src
 
@@ -181,10 +230,13 @@ def test_settings_mixin_handles_graphical_dormer_placement():
 def test_attic_sketch_contains_hover_preview_and_insertion_markers():
     src = Path("src/heizlast/ui/attic_sketch.py").read_text(encoding="utf-8")
     assert 'self._hover_plan_payload: dict | None = None' in src
+    assert 'self._selected_roof_side_payload: dict | None = None' in src
     assert 'self.setMouseTracking(True)' in src
     assert 'def set_dormer_preview_state(self, active: bool, *, has_selection: bool = False, dormer_width_m: float = 1.80, min_edge_clearance_m: float = 0.40, draw_mode: bool = False) -> None:' in src
     assert 'def _build_hover_preview_rect(self, payload: dict) -> QRectF | None:' in src
     assert 'def _build_hover_side_highlight_rect(self, payload: dict) -> QRectF | None:' in src
+    assert 'def _draw_plan_measurements(' in src
+    assert 'B {float(getattr(g,' in src
     assert 'def mouseMoveEvent(self, event):' in src
 
 

@@ -38,7 +38,8 @@ from ..core.din_status import (
     assess_din_status,
     status_label,
 )
-from ..core.heatload import _opening_area_on_wall_segment, OUTER_WALL_TYPES, WINDOW_TYPES
+from ..core.heatload import _opening_area_on_wall_segment
+from ..core.heatload_types import OUTER_WALL_TYPES, is_door_type, is_opening_type, is_window_type
 
 
 # ============================================================
@@ -163,7 +164,7 @@ ANNEX_MODEL_TEXT = (
     "Φ_gesamt = Φ_trans + Φ_vent<br/><br/>"
     "<b>A.2 Transmissionswärmeverluste</b><br/>"
     "Φ_trans = Σ ( U · A_eff · ΔT · f )<br/>"
-    "mit A_eff = A_Bauteil − A_Öffnungen (z.B. Fenster).<br/><br/>"
+    "mit A_eff = A_Bauteil − A_Öffnungen (Fenster/Türen).<br/><br/>"
     "<b>A.3 Lüftungswärmeverluste</b><br/>"
     "Φ_vent = c_air · n · V · (T_in − T_out)<br/><br/>"
     "<b>A.4 Wärmebrücken</b><br/>"
@@ -744,7 +745,7 @@ class HeatloadPDFReport:
         self.story.append(Paragraph(
             f"<b>Q_trans</b>={self.fmt(q_trans,1)} W, <b>Q_ground</b>={self.fmt(float(rr.get('Q_trans_ground_W',0.0) or 0.0),1)} W, <b>Q_vent</b>={self.fmt(q_vent,1)} W, "
             f"<b>Q_sum</b>={self.fmt(q_sum,1)} W ({self.fmt(wpm2,1)} W/m² außen / {self.fmt(wpm2_in,1)} W/m² innen) | "
-            f"Fensterabzug Außenwand: {self.fmt(a_open,2)} m²; eff. Außenwand: {self.fmt(a_outer_eff,2)} m²",
+            f"Öffnungsabzug Außenwand: {self.fmt(a_open,2)} m²; eff. Außenwand: {self.fmt(a_outer_eff,2)} m²",
             self.styles["body"]
         ))
 
@@ -848,8 +849,10 @@ class HeatloadPDFReport:
         def sort_key(et: str) -> int:
             if et in OUTER_WALL_TYPES:
                 return 0
-            if et in WINDOW_TYPES:
+            if is_window_type(et):
                 return 1
+            if is_door_type(et):
+                return 2
             if et == "Lüftung":
                 return 99
             return 10
@@ -999,8 +1002,10 @@ class HeatloadPDFReport:
         def sort_key(et: str) -> int:
             if et in OUTER_WALL_TYPES:
                 return 0
-            if et in WINDOW_TYPES:
+            if is_window_type(et):
                 return 1
+            if is_door_type(et):
+                return 2
             if et == "Lüftung":
                 return 99
             return 10
@@ -1840,7 +1845,11 @@ class HeatloadPDFReport:
                 ["Quelle Wärmebrücken", str(getattr(self.project_cfg, "thermal_bridge_source", "—") if self.project_cfg else "—"), ""],
             ]
             for bc in DIN_BOUNDARY_CONDITIONS.values():
-                ft.append([f"Randbedingung {bc.label}", f"{bc.factor:.2f}", bc.source])
+                ft.append([
+                    f"Randbedingung {bc.label}",
+                    f"{bc.factor:.2f}",
+                    f"{bc.source}; Referenzwert, Rechenzeile nutzt t_adj_c/Projekt-Temperatur und Element-Faktor",
+                ])
             ft_wrapped = _wrap_table_data(self.styles, ft, header_rows=1, wrap_cols={0},
                                           ps_head=self.styles["th"], ps_body=self.styles["tb"])
             tbl_fac = Table(ft_wrapped, colWidths=[60*mm, 35*mm, 35*mm], hAlign="LEFT")
@@ -2496,7 +2505,7 @@ def write_heatload_details_csv(
             rr = results.get(r.id, {}) or {}
             dT = max(0.0, (float(r.t_inside_c or 0.0) - float(t_out_c)))
             room_elements = e_by_room.get(r.id, [])
-            room_windows = [e for e in room_elements if e.element_type in WINDOW_TYPES]
+            room_windows = [e for e in room_elements if is_opening_type(getattr(e, "element_type", ""))]
 
             for e in room_elements:
                 U = float(getattr(e, "u_w_m2k", 0.0) or 0.0)
@@ -2514,7 +2523,7 @@ def write_heatload_details_csv(
                         A_open = 0.0
                     A_eff = max(0.0, A - A_open)
                     if A_open > 0:
-                        notes = "outer wall: window subtraction"
+                        notes = "outer wall: opening subtraction"
 
                 Q = U * A_eff * dT * fac
 

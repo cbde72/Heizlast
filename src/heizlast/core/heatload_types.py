@@ -11,6 +11,36 @@ ThicknessMode = Literal["half", "full"]
 OUTER_WALL_TYPES = {"Aussenwand", "Außenwand"}
 INNER_WALL_TYPES = {"Innenwand"}
 WINDOW_TYPES = {"Fenster"}
+DOOR_TYPES = {
+    "Tür",
+    "Tuer",
+    "Außentür",
+    "Aussentür",
+    "Aussentuer",
+    "Haustür",
+    "Haustuer",
+    "Terrassentür",
+    "Terrassentuer",
+    "Terassentür",
+    "Terassentuer",
+}
+
+
+def normalize_element_type(value: object) -> str:
+    return str(value or "").strip().lower().replace("ä", "ae").replace("ö", "oe").replace("ü", "ue").replace("ß", "ss")
+
+
+def is_window_type(value: object) -> bool:
+    return normalize_element_type(value) == "fenster"
+
+
+def is_door_type(value: object) -> bool:
+    key = normalize_element_type(value)
+    return key in {normalize_element_type(item) for item in DOOR_TYPES} or "tuer" in key or "door" in key
+
+
+def is_opening_type(value: object) -> bool:
+    return is_window_type(value) or is_door_type(value)
 
 WALL_THICKNESS_OUTER_M = 0.455
 WALL_THICKNESS_INNER_M = 0.1150

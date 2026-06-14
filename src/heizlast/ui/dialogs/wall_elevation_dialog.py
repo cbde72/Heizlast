@@ -33,7 +33,11 @@ class WallElevationWidget(QWidget):
 
     def paintEvent(self, event):
         painter = QPainter(self)
+        if not painter.isActive():
+            return
         painter.setRenderHint(QPainter.Antialiasing, True)
+        if self.width() <= 0 or self.height() <= 0:
+            return
         painter.fillRect(self.rect(), QColor(248, 250, 252))
 
         margin_l = 80

@@ -4,6 +4,7 @@ from typing import Iterable, Optional, Sequence
 
 from .anchors import dump_meta, meta_rooms, parse_edge_anchor, parse_meta, update_edge_anchor_meta
 from .geometry import nearest_edge_span_for_point, room_polygon
+from .heatload_types import is_opening_type
 from ..domain.models import ElementModel, RoomModel
 
 EPS = 1e-9
@@ -117,7 +118,7 @@ def reassign_elements_after_room_operation(
             continue
         floor = getattr(e, 'floor', None)
         x, y = element_center(e)
-        if str(getattr(e, 'element_type', '') or '') == 'Fenster':
+        if is_opening_type(getattr(e, 'element_type', '')):
             if x is None or y is None:
                 continue
             floor_rooms = [r for r in rooms_all if getattr(r, 'floor', None) == floor]

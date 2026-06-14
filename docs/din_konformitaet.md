@@ -13,7 +13,7 @@ Dieses Projekt orientiert sich an DIN EN 12831-1:2017-09 und DIN/TS 12831-1:2020
   - `unheated` / unbeheizter Bereich
   - `adjacent_heated` und `interzone`
 - Detailnachweis im Report mit historischem Bucket, normnahem `boundary_bucket` und Klartext-Randbedingung.
-- DIN/TS-nahe Default-Faktoren für unbeheizte Bereiche als zentrale Tabelle in `src/heizlast/core/din_boundary.py`.
+- DIN/TS-nahe Default-Faktoren für unbeheizte Bereiche als zentrale Referenztabelle in `src/heizlast/core/din_boundary.py`; die Rechenzeile nutzt projektbezogene Nachbartemperaturen (`t_adj_c`, Keller-/Dachraumtemperatur) und den Bauteil-Faktor, damit Tabellenreferenz und wirksamer Rechenansatz nicht unbemerkt doppelt wirken.
 - DG-Dachlogik mit Dachfenster-/Gaubenabzug und Randbedingung `outside` oder `attic_unheated`.
 - Report-Anhang mit Validierungsgrad und Quellenliste.
 - Projektbezogene DIN-Ampel im Report:
@@ -58,6 +58,10 @@ Dieses Projekt orientiert sich an DIN EN 12831-1:2017-09 und DIN/TS 12831-1:2020
   - Innenwände können als Nachbarzone/Interzone angelegt werden
   - Bauteile ohne dokumentierten Quellenstatus bleiben in der GUI-Prüfung konservativ gelb
   - Quellen-/Annahmenstatus wird im Report als eigene Übersicht ausgegeben
+- Projektbewusste Auto-Decken:
+  - automatische Kellerdecken, EG-Geschossdecken und DG-Speicherdecken sind einzeln abschaltbar
+  - erzeugte Auto-Decken dokumentieren Randbedingung, Temperaturquelle, U-Wert-Quelle, Flächenherkunft und Bestätigungsstatus
+  - unbestätigte Auto-Decken bleiben in der DIN-Prüfung gelb, auch wenn sie rechnerisch verwendet werden
 - Projektverwaltung:
   - zuletzt verwendete Projekte, Versionen und Backups sind aus der GUI erreichbar
   - Versionen/Backups unterstützen prüfbare Variantenstände
@@ -84,7 +88,7 @@ Dieses Projekt orientiert sich an DIN EN 12831-1:2017-09 und DIN/TS 12831-1:2020
   - App-Version `2.9.0`
   - interne Version `Heizlast_V37-intern-01`
   - Anzeige-Version `37.0.0`
-  - Projekt-Schema weiterhin `24`, da keine neuen Projektfelder erforderlich sind
+  - Projekt-Schema `25`, da Auto-Decken jetzt eigene Nachweis- und Aktivierungsfelder besitzen
 
 ## Noch vereinfacht
 
@@ -94,16 +98,20 @@ Dieses Projekt orientiert sich an DIN EN 12831-1:2017-09 und DIN/TS 12831-1:2020
 - Wärmebrücken sind optional über Zuschläge oder ψ-Werte modelliert; ein vollständiger Anschlusskatalog ist nicht enthalten.
 - Der Projekt-Assistent führt durch die wichtigsten Projektparameter, ersetzt aber keine fachliche Vollständigkeitsprüfung aller projektspezifischen Normtabellen und Quellen.
 - Die Raum-Nachweis-Matrix ist eine GUI-Prüfhilfe; sie ersetzt keine detaillierte normative Einzelnachweisprüfung je Bauteilanschluss.
+- Auto-Decken sind weiterhin eine Modellierungshilfe. Für einen vollständigen Normnachweis müssen reale Nachbarzone, Temperatur, U-Wert-Quelle und Flächenherkunft projektbezogen bestätigt werden.
+- Die Faktoren für unbeheizte Bereiche sind im Report als Referenzwerte gekennzeichnet. Wirksam wird rechnerisch die dokumentierte Nachbartemperatur beziehungsweise der explizite Element-Faktor.
 
 ## Nächste Normbausteine
 
 Für eine belastbarere spätere Konformitätsaussage werden die offenen Punkte in dieser Reihenfolge geschlossen:
 
-1. Aufheizzuschlag vom vereinfachten `q_hu * A_ref`-Ansatz auf ein projektspezifisch belegtes Normtabellenverfahren erweitern.
-2. Mechanische Lüftung mit Anlagen-/Normtabellenlogik und projektspezifischem Quellenbezug absichern.
-3. Erdreichmodell vom vereinfachten Ansatz auf ein DIN/TS-nahes Nachweisverfahren erweitern.
-4. Wärmebrücken über dokumentierte ψ-Werte je Anschluss oder belegten ΔU-Ansatz absichern.
-5. Faktoren für unbeheizte Bereiche projektspezifisch auswählbar und quellenfähig machen.
+1. Aufheizzuschlag vom vereinfachten `q_hu * A_ref`-Ansatz auf ein projektspezifisch belegtes Normtabellenverfahren erweitern, inklusive Quelle, Raum-/Nutzungsbezug und eigener Rechenzeile.
+2. Mechanische Lüftung mit Anlagen-/Normtabellenlogik absichern: Zuluft/Abluft je Raum, WRG-Randbedingung, Infiltration/Mindestluftwechsel und Quellenbezug getrennt dokumentieren.
+3. Erdreichmodell vom vereinfachten Ansatz auf ein DIN/TS-nahes Nachweisverfahren erweitern: Bodenplatte, Kellerwand, Perimeter/B'-Wert, Temperatur-/Faktorquelle und Berechnungsweg getrennt ausweisen.
+4. Wärmebrücken über dokumentierte ψ-Werte je Anschluss oder belegten ΔU-Ansatz absichern; globale Ersatzansätze müssen im Report als solche markiert bleiben.
+5. Unbeheizte Bereiche projektspezifisch auswählbar machen: Keller, Dachraum/Abseite und sonstige Nebenräume benötigen eigene Temperatur, Quelle, Randbedingung und optionalen Faktor.
+6. Bauteilquellen verschärfen: U-Werte, Flächenherkunft, Nachbarzone und Temperaturquelle sollten je Hüllbauteil vollständig sein, bevor der Status grün wird.
+7. Report-Gate ergänzen, das grüne DIN-Bewertung nur erlaubt, wenn keine automatische Modellannahme unbestätigt und keine Interzone ohne `t_adj_c` vorhanden ist.
 
 ## Nachweis-Gates für eine spätere Konformitätsaussage
 
