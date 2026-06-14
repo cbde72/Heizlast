@@ -96,7 +96,7 @@ class MainWindowWindowInsertMixin:
         label = "Tür" if is_door else "Fenster"
 
         rooms = [r for r in self.rooms.values() if getattr(r, 'floor', None) == floor]
-        wall = nearest_edge_span_for_point(rooms, floor, x_m_raw, y_m_raw, prefer_outer=True, max_dist=0.8)
+        wall = nearest_edge_span_for_point(rooms, floor, x_m_raw, y_m_raw, prefer_outer=True, max_dist=1.2)
         if wall is None:
             #
             # Debug-Information für den Benutzer
@@ -219,5 +219,9 @@ class MainWindowWindowInsertMixin:
         self.element_items[uid] = item
 
         self._recompute_and_redraw()
+        self.statusBar().showMessage(
+            f"{label} an Wand {span.uid} eingefügt: Mitte {cx:.2f}/{cy:.2f} m, Länge {L:.2f} m.",
+            5000,
+        )
 
     # ---------------- Event-Filter für Raumzeichnen und Fenster einfügen ----------------

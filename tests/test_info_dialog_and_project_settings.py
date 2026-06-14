@@ -213,7 +213,7 @@ def test_room_drawing_workflow_has_fast_polygon_controls_and_clear_preview():
     assert "path.closeSubpath()" in misc_src
     assert "QBrush(QColor(70, 130, 200, 35))" in misc_src
     assert "self._preview_room_label = scene.addText" in misc_src
-    assert 'self._preview_room_label.setPlainText(f"{w_m:.2f} × {h_m:.2f} m")' in misc_src
+    assert 'self._preview_room_label.setPlainText(f"{w_m:.2f} × {h_m:.2f} m\\nA {area_m2:.1f} m² | U {perimeter_m:.1f} m")' in misc_src
     assert "tip=\"Orthogonalen Polygonraum per Klickpunkten zeichnen\"" in build_src
 
 

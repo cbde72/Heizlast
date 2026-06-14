@@ -3,11 +3,19 @@ from ..domain.models import RoomModel
 from ..core.geometry import classify_floor_edge_spans, orthogonalize_points, room_polygon
 from ..domain.services.room_operation_service import RoomOperationRecord
 from ..domain.house_state import HouseState
-from ..core.polygon_ops import serialize_polygon_m, validate_orthogonal_polygon, simplify_orthogonal_polygon, snap_m
+from ..core.config import usage_defaults
+from ..core.polygon_ops import (
+    polygon_area,
+    polygon_perimeter,
+    serialize_polygon_m,
+    validate_orthogonal_polygon,
+    simplify_orthogonal_polygon,
+    snap_m,
+)
 from ..core.roof_mesh import build_winkeldach_mesh
 from ..core.roof_line_geometry import build_roof_facets, estimate_roof_line_extra_area_m2, roof_lines_to_plan_segments
 from PySide6.QtWidgets import QDialog
-from PySide6.QtWidgets import QVBoxLayout, QPushButton, QMessageBox, QMenu
+from PySide6.QtWidgets import QVBoxLayout, QPushButton, QMessageBox, QMenu, QFileDialog, QInputDialog
 
 try:
     import matplotlib.pyplot as plt
@@ -23,7 +31,7 @@ except Exception:
     Poly3DCollection = None
 from .graphics import PX_PER_M
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QPen, QBrush, QColor, QPainterPath
+from PySide6.QtGui import QPen, QBrush, QColor, QPainterPath, QPixmap
 from PySide6.QtCore import QPointF
 
 from ..domain.models import ElementModel
@@ -952,6 +960,67 @@ class MainWindowMiscMixin:
     def _current_floor_title(self) -> str:
         return {"KG": "Keller", "EG": "Erdgeschoss", "DG": "Dachgeschoss"}.get(self._current_floor_key(), "Geschoss")
 
+    def _pixmap_from_floorplan_file(self, path: str) -> QPixmap:
+        if path.lower().endswith(".pdf"):
+            try:
+                import fitz  # PyMuPDF
+            except Exception as exc:
+                QMessageBox.warning(self, "Grundrissbild laden", f"PDF-Laden benötigt PyMuPDF.\n{exc}")
+                return QPixmap()
+            try:
+                doc = fitz.open(path)
+                page = doc.load_page(0)
+                pix = page.get_pixmap(matrix=fitz.Matrix(2.0, 2.0), alpha=False)
+                data = pix.tobytes("png")
+                pm = QPixmap()
+                pm.loadFromData(data, "PNG")
+                doc.close()
+                return pm
+            except Exception as exc:
+                QMessageBox.warning(self, "Grundrissbild laden", f"PDF konnte nicht gelesen werden.\n{exc}")
+                return QPixmap()
+        return QPixmap(path)
+
+    def _on_load_floorplan_background(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Grundrissbild laden",
+            "",
+            "Grundrisse (*.png *.jpg *.jpeg *.bmp *.pdf);;Alle Dateien (*.*)",
+        )
+        if not path:
+            return
+        pixmap = self._pixmap_from_floorplan_file(path)
+        if pixmap.isNull():
+            QMessageBox.warning(self, "Grundrissbild laden", "Die Datei konnte nicht als Bild geladen werden.")
+            return
+        width_m, ok = QInputDialog.getDouble(
+            self,
+            "Maßstab",
+            "Breite des Grundrissbilds [m]",
+            10.0,
+            0.1,
+            500.0,
+            2,
+        )
+        if not ok:
+            return
+        view = self._current_plan_view() if hasattr(self, "_current_plan_view") else None
+        if view is None or not hasattr(view, "set_background_pixmap"):
+            return
+        view.set_background_pixmap(pixmap, width_m)
+        try:
+            view.fit_content()
+        except Exception:
+            pass
+        self.statusBar().showMessage(f"Grundrissbild geladen: {path}", 5000)
+
+    def _on_clear_floorplan_background(self) -> None:
+        view = self._current_plan_view() if hasattr(self, "_current_plan_view") else None
+        if view is not None and hasattr(view, "clear_background_pixmap"):
+            view.clear_background_pixmap()
+            self.statusBar().showMessage("Grundrissbild ausgeblendet.", 3000)
+
     def _wall_segment_key(self, p0, p1, ndigits: int = 6) -> tuple:
         a = (round(float(p0[0]), ndigits), round(float(p0[1]), ndigits))
         b = (round(float(p1[0]), ndigits), round(float(p1[1]), ndigits))
@@ -1618,11 +1687,17 @@ class MainWindowMiscMixin:
     def _current_floor_room_items(self, floor: str):
         return [it for rid, it in getattr(self, 'room_items', {}).items() if getattr(getattr(it, 'model', None), 'floor', None) == floor]
 
+    def _set_drawing_hint(self, text: str) -> None:
+        label = getattr(self, "lbl_drawing_snap_hint", None)
+        if label is not None:
+            label.setText(text)
+
     def _snap_scene_point_for_drawing(self, floor: str, scene_pt: QPointF) -> QPointF:
         x_m = snap_m(scene_pt.x() / PX_PER_M)
         y_m = snap_m(scene_pt.y() / PX_PER_M)
         best = QPointF(x_m * PX_PER_M, y_m * PX_PER_M)
         best_dist = 0.20
+        hint = "Fang: Raster 5 cm"
         for it in self._current_floor_room_items(floor):
             room = getattr(it, 'model', None)
             if room is None:
@@ -1633,6 +1708,7 @@ class MainWindowMiscMixin:
                 if d < best_dist:
                     best_dist = d
                     best = QPointF(x * PX_PER_M, y * PX_PER_M)
+                    hint = "Fang: Raumecke"
             xs = sorted(set(round(x, 6) for x, _ in pts))
             ys = sorted(set(round(y, 6) for _, y in pts))
             for x in xs:
@@ -1640,12 +1716,49 @@ class MainWindowMiscMixin:
                 if d < best_dist:
                     best_dist = d
                     best = QPointF(x * PX_PER_M, best.y())
+                    hint = "Fanglinie: vertikale Raumkante"
             for y in ys:
                 d = abs(y - y_m)
                 if d < best_dist:
                     best_dist = d
                     best = QPointF(best.x(), y * PX_PER_M)
+                    hint = "Fanglinie: horizontale Raumkante"
+        self._last_snap_hint = hint
+        self._set_drawing_hint(hint)
         return best
+
+    def _apply_new_room_template(self, room: RoomModel) -> None:
+        usage = ""
+        combo = getattr(self, "cb_new_room_usage", None)
+        if combo is not None:
+            usage = str(combo.currentData() or "").strip()
+        if not usage:
+            selected = getattr(self, "cb_usage_type", None)
+            if selected is not None:
+                usage = str(selected.currentData() or "").strip()
+        if usage:
+            room.usage_type = usage
+            defaults = usage_defaults(usage)
+            if defaults:
+                room.t_inside_c = float(defaults.get("t_inside_c", room.t_inside_c))
+                room.air_change_1ph = float(defaults.get("air_change_1ph", room.air_change_1ph))
+        height = getattr(self, "sp_new_room_height", None)
+        if height is not None:
+            room.height_m = snap_m(float(height.value()), 0.01)
+        room.recompute_volume()
+
+    def _preview_measure_text(self, pts_m: list[tuple[float, float]]) -> str:
+        if len(pts_m) < 2:
+            return ""
+        area = polygon_area(pts_m) if len(pts_m) >= 3 else 0.0
+        perimeter = polygon_perimeter(pts_m)
+        if len(pts_m) == 4:
+            xs = [x for x, _ in pts_m]
+            ys = [y for _, y in pts_m]
+            w = max(xs) - min(xs)
+            h = max(ys) - min(ys)
+            return f"{w:.2f} × {h:.2f} m\nA {area:.1f} m² | U {perimeter:.1f} m"
+        return f"{len(pts_m)} Punkte\nA {area:.1f} m² | U {perimeter:.1f} m"
 
     def _create_room_from_polygon(self, floor: str, pts_m: list[tuple[float, float]], select: bool = True, room_id: str | None = None, name: str | None = None):
         pts_m = simplify_orthogonal_polygon([(snap_m(x), snap_m(y)) for x, y in pts_m])
@@ -1654,6 +1767,7 @@ class MainWindowMiscMixin:
         rid = str(room_id or self._new_room_id(floor))
         xs = [x for x, _ in pts_m]; ys = [y for _, y in pts_m]
         r = RoomModel(id=rid, floor=floor, name=str(name or rid), x_m=min(xs), y_m=min(ys), w_m=max(xs)-min(xs), h_m=max(ys)-min(ys), polygon_m=serialize_polygon_m(pts_m))
+        self._apply_new_room_template(r)
         self._normalize_room_geometry(r)
         self.rooms[rid] = r
         self._rebuild_all_graphics()
@@ -1669,6 +1783,12 @@ class MainWindowMiscMixin:
                     pass
             self._selected_room_id = rid
             self._populate_room_form()
+        try:
+            warnings = self._room_geometry_warnings(r)
+            if warnings:
+                self.statusBar().showMessage("Geometriehinweis: " + " | ".join(warnings), 6000)
+        except Exception:
+            pass
         return r
 
     def _cancel_l_room_preview(self):
@@ -1679,7 +1799,13 @@ class MainWindowMiscMixin:
                 self._safe_remove_from_scene(self._preview_polygon)
         except Exception:
             pass
+        try:
+            if getattr(self, '_preview_room_label', None) is not None:
+                self._safe_remove_from_scene(self._preview_room_label)
+        except Exception:
+            pass
         self._preview_polygon = None
+        self._preview_room_label = None
 
     def _cancel_split_preview(self):
         self._split_start_scene = None
@@ -1878,7 +2004,13 @@ class MainWindowMiscMixin:
                 self._safe_remove_from_scene(self._preview_polygon)
         except Exception:
             pass
+        try:
+            if getattr(self, '_preview_room_label', None) is not None:
+                self._safe_remove_from_scene(self._preview_room_label)
+        except Exception:
+            pass
         self._preview_polygon = None
+        self._preview_room_label = None
         self._polygon_points_scene = []
 
     def _orthogonal_preview_point(self, last: QPointF, current_pos: QPointF) -> QPointF:
@@ -1918,6 +2050,13 @@ class MainWindowMiscMixin:
             self._preview_polygon.setZValue(100)
         else:
             self._preview_polygon.setPath(path)
+        if len(pts) >= 2:
+            if getattr(self, "_preview_room_label", None) is None:
+                self._preview_room_label = scene.addText("")
+                self._preview_room_label.setZValue(101)
+            pts_m = [(p.x() / PX_PER_M, p.y() / PX_PER_M) for p in pts]
+            self._preview_room_label.setPlainText(self._preview_measure_text(pts_m))
+            self._preview_room_label.setPos(pts[-1].x() + 8.0, pts[-1].y() + 8.0)
 
     def _finish_polygon_room(self, floor: str):
         pts_scene = [(p.x() / PX_PER_M, p.y() / PX_PER_M) for p in (self._polygon_points_scene or [])]
@@ -1972,7 +2111,7 @@ class MainWindowMiscMixin:
             elif getattr(self, "_add_door_mode", False):
                 opening_kind = "door"
             if event.button() == Qt.LeftButton and opening_kind and not (event.modifiers() & Qt.ShiftModifier):
-                p = self._snap_scene_point_for_drawing(floor, view.mapToScene(event.position().toPoint()))
+                p = view.mapToScene(event.position().toPoint())
                 self._add_opening_at(floor, p, opening_kind=opening_kind)
                 return True
 
@@ -2060,7 +2199,9 @@ class MainWindowMiscMixin:
                 if getattr(self, '_preview_room_label', None) is not None:
                     w_m = abs(p1.x() - p0.x()) / PX_PER_M
                     h_m = abs(p1.y() - p0.y()) / PX_PER_M
-                    self._preview_room_label.setPlainText(f"{w_m:.2f} × {h_m:.2f} m")
+                    area_m2 = w_m * h_m
+                    perimeter_m = 2.0 * (w_m + h_m)
+                    self._preview_room_label.setPlainText(f"{w_m:.2f} × {h_m:.2f} m\nA {area_m2:.1f} m² | U {perimeter_m:.1f} m")
                     self._preview_room_label.setPos(x0 + 6.0, y0 + 6.0)
                 return True
 

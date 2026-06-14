@@ -4,10 +4,11 @@ from typing import Callable, Optional, Tuple
 from ..domain.models import ElementModel
 
 from PySide6.QtCore import Qt, QPointF
-from PySide6.QtGui import QPen, QBrush, QPainter, QColor, QPainterPath
+from PySide6.QtGui import QPen, QBrush, QPainter, QColor, QPainterPath, QPixmap
 from PySide6.QtWidgets import (
     QGraphicsView, QGraphicsScene,
     QGraphicsItem, QGraphicsRectItem, QGraphicsLineItem, QGraphicsSimpleTextItem, QGraphicsPathItem, QGraphicsEllipseItem,
+    QGraphicsPixmapItem,
     QSizePolicy,
 )
 
@@ -96,6 +97,7 @@ class PlanView(QGraphicsView):
         # Drag only on explicit pan gesture, selection remains unchanged otherwise.
         self.setDragMode(QGraphicsView.NoDrag)
         self._context_menu_handler = None
+        self._floorplan_background_item: Optional[QGraphicsPixmapItem] = None
 
     def reset_zoom(self):
         self.resetTransform()
@@ -134,6 +136,29 @@ class PlanView(QGraphicsView):
         self.fitInView(rect, Qt.KeepAspectRatio)
         self.centerOn(rect.center())
         self._zoom_level = 0
+
+    def set_background_pixmap(self, pixmap: QPixmap, width_m: float | None = None) -> None:
+        """Legt ein skaliertes Grundrissbild unter Grid und Räumen ab."""
+        self.clear_background_pixmap()
+        scene = self.scene()
+        if scene is None or pixmap.isNull():
+            return
+        item = QGraphicsPixmapItem(pixmap)
+        item.setZValue(-1000)
+        item.setOpacity(0.45)
+        if width_m and width_m > 0 and pixmap.width() > 0:
+            item.setScale((float(width_m) * PX_PER_M) / float(pixmap.width()))
+        scene.addItem(item)
+        self._floorplan_background_item = item
+
+    def clear_background_pixmap(self) -> None:
+        item = getattr(self, "_floorplan_background_item", None)
+        if item is None:
+            return
+        scene = item.scene()
+        if scene is not None:
+            scene.removeItem(item)
+        self._floorplan_background_item = None
 
     def drawBackground(self, painter, rect):
         painter.setPen(QPen(Qt.lightGray, 1))
@@ -554,7 +579,19 @@ class RoomPolygonItem(QGraphicsPathItem):
     def paint(self, painter: QPainter, option, widget=None):
         painter.setRenderHint(QPainter.Antialiasing, True)
         painter.setPen(self.pen_sel if self.isSelected() else self.pen_norm)
-        if self.heatmap_enabled_cb() and not getattr(self, "_heat_excluded", False):
+        if getattr(self, "_heat_excluded", False):
+            painter.fillPath(self.path(), QBrush(QColor(225, 225, 225, 135)))
+            painter.save()
+            painter.setClipPath(self.path())
+            painter.setPen(QPen(QColor(130, 130, 130, 150), 1, Qt.DashLine))
+            rect = self.boundingRect().adjusted(-20, -20, 20, 20)
+            step = 14.0
+            x = rect.left() - rect.height()
+            while x < rect.right():
+                painter.drawLine(QPointF(x, rect.bottom()), QPointF(x + rect.height(), rect.top()))
+                x += step
+            painter.restore()
+        elif self.heatmap_enabled_cb():
             rr, gg, bb, aa = heat_rgba(self._heat_wpm2)
             painter.fillPath(self.path(), QBrush(QColor.fromRgbF(rr, gg, bb, aa)))
         painter.setBrush(Qt.NoBrush)

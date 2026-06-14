@@ -1,7 +1,8 @@
 from typing import List, Optional
 from ..domain.models import RoomModel
 from ..core.config import usage_defaults
-from ..core.polygon_ops import snap_m
+from ..core.geometry import room_polygon
+from ..core.polygon_ops import polygon_bbox, snap_m, validate_orthogonal_polygon
 from .graphics import RoomPolygonItem
 from .graphics import WindowLineItem
 from ..core.heatload_types import is_opening_type
@@ -12,7 +13,7 @@ from ..core.auto_decks import deck_kind_for_element
 from PySide6.QtGui import QPen, QBrush, QColor
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QListWidgetItem
+from PySide6.QtWidgets import QListWidgetItem, QTableWidgetItem
 
 from ..domain.models import ElementModel
 
@@ -95,6 +96,8 @@ class MainWindowSelectionMixin:
             self.ed_id.setText("")
             if hasattr(self, "list_room_elements"):
                 self.list_room_elements.clear()
+            self._populate_room_points_table(None)
+            self._refresh_room_geometry_warnings(None)
             self._clear_element_highlight()
             return
 
@@ -130,6 +133,8 @@ class MainWindowSelectionMixin:
                 w.blockSignals(False)
 
         self._refresh_selected_room_norm_status(r)
+        self._populate_room_points_table(r)
+        self._refresh_room_geometry_warnings(r)
         self._populate_room_elements_list()
 
     def _apply_room_form(self):
@@ -213,7 +218,122 @@ class MainWindowSelectionMixin:
              self._rebuild_autowalls_all()
         self._recompute_and_redraw(sync_auto_elements=geometry_or_floor_changed)
         self._refresh_selected_room_norm_status(r)
+        self._populate_room_points_table(r)
+        self._refresh_room_geometry_warnings(r)
         self._populate_room_elements_list()
+
+    def _populate_room_points_table(self, room: RoomModel | None) -> None:
+        table = getattr(self, "tbl_room_points", None)
+        if table is None:
+            return
+        self._in_room_points_update = True
+        try:
+            table.setRowCount(0)
+            if room is None:
+                return
+            pts = room_polygon(room)
+            table.setRowCount(len(pts))
+            for row, (x_m, y_m) in enumerate(pts):
+                for col, value in enumerate((x_m, y_m)):
+                    item = QTableWidgetItem(f"{float(value):.2f}")
+                    item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                    table.setItem(row, col, item)
+            table.resizeColumnsToContents()
+        finally:
+            self._in_room_points_update = False
+
+    def _on_room_points_table_changed(self, _item) -> None:
+        if getattr(self, "_in_room_points_update", False):
+            return
+        rid = getattr(self, "_selected_room_id", None)
+        if not rid or rid not in getattr(self, "rooms", {}):
+            return
+        table = getattr(self, "tbl_room_points", None)
+        if table is None:
+            return
+        pts: list[tuple[float, float]] = []
+        try:
+            for row in range(table.rowCount()):
+                x_item = table.item(row, 0)
+                y_item = table.item(row, 1)
+                if x_item is None or y_item is None:
+                    raise ValueError
+                x_m = snap_m(float(x_item.text().replace(",", ".")))
+                y_m = snap_m(float(y_item.text().replace(",", ".")))
+                pts.append((x_m, y_m))
+        except Exception:
+            self._set_geometry_warning_text(["Punktwerte müssen Zahlen in Metern sein."])
+            return
+        if len(pts) < 3 or not validate_orthogonal_polygon(pts):
+            self._set_geometry_warning_text(["Polygon ist nicht rechtwinklig oder hat keine Fläche."])
+            return
+        room = self.rooms[rid]
+        old_signature = str(getattr(room, "polygon_m", "") or "")
+        room.set_polygon_points(pts)
+        self._normalize_room_geometry(room)
+        if str(getattr(room, "polygon_m", "") or "") == old_signature:
+            self._refresh_room_geometry_warnings(room)
+            return
+        if self.autowalls_enabled:
+            self._rebuild_autowalls_all()
+        self._recompute_and_redraw(sync_auto_elements=True)
+        self._populate_room_points_table(room)
+        self._refresh_selected_room_norm_status(room)
+        self._refresh_room_geometry_warnings(room)
+
+    def _set_geometry_warning_text(self, warnings: list[str]) -> None:
+        label = getattr(self, "lbl_geometry_warnings", None)
+        if label is None:
+            return
+        if warnings:
+            label.setText("Geometrie: " + " | ".join(warnings))
+            label.setStyleSheet("color: #a15c00;")
+        else:
+            label.setText("Geometrie: plausibel")
+            label.setStyleSheet("")
+
+    def _room_bbox_overlap_m2(self, a: RoomModel, b: RoomModel) -> float:
+        ax0, ay0, ax1, ay1 = polygon_bbox(room_polygon(a))
+        bx0, by0, bx1, by1 = polygon_bbox(room_polygon(b))
+        dx = min(ax1, bx1) - max(ax0, bx0)
+        dy = min(ay1, by1) - max(ay0, by0)
+        if dx <= 0 or dy <= 0:
+            return 0.0
+        return dx * dy
+
+    def _room_geometry_warnings(self, room: RoomModel | None) -> list[str]:
+        if room is None:
+            return []
+        warnings: list[str] = []
+        pts = room_polygon(room)
+        if len(pts) < 3:
+            warnings.append("Polygon ist offen/zu kurz.")
+        elif not validate_orthogonal_polygon(pts):
+            warnings.append("Polygon ist nicht rechtwinklig oder überschneidet sich.")
+        if room.area_m2() <= 0.01:
+            warnings.append("Raumfläche ist 0 m².")
+        overlaps = []
+        for other in getattr(self, "rooms", {}).values():
+            if other.id == room.id or getattr(other, "floor", None) != room.floor:
+                continue
+            area = self._room_bbox_overlap_m2(room, other)
+            if area > 0.01:
+                overlaps.append(f"{other.name or other.id} ({area:.1f} m²)")
+        if overlaps:
+            warnings.append("BBox-Überlappung mit " + ", ".join(overlaps[:3]))
+        return warnings
+
+    def _refresh_room_geometry_warnings(self, room: RoomModel | None = None) -> None:
+        if room is None:
+            rid = getattr(self, "_selected_room_id", None)
+            room = self.rooms.get(rid) if rid and rid in getattr(self, "rooms", {}) else None
+        if room is None:
+            label = getattr(self, "lbl_geometry_warnings", None)
+            if label is not None:
+                label.setText("Geometrie: —")
+                label.setStyleSheet("")
+            return
+        self._set_geometry_warning_text(self._room_geometry_warnings(room))
 
 
     # ---------------- Element-Liste ----------------

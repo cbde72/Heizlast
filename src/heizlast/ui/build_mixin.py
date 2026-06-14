@@ -763,6 +763,18 @@ class MainWindowBuildMixin:
             icon=self._toolbar_icon("fit_view"),
             tip="Zentriert und zoomt die aktuelle Skizze in der aktiven Geschossansicht",
         )
+        self.act_load_floorplan_background = self._make_action(
+            "Grundrissbild laden…",
+            slot=self._on_load_floorplan_background,
+            icon=self._toolbar_icon("image"),
+            tip="PNG/JPG oder PDF-Seite als skalierbaren Zeichenhintergrund laden",
+        )
+        self.act_clear_floorplan_background = self._make_action(
+            "Grundrissbild ausblenden",
+            slot=self._on_clear_floorplan_background,
+            icon=self._toolbar_icon("delete"),
+            tip="Hinterlegtes Grundrissbild aus der aktuellen Ansicht entfernen",
+        )
         self.act_lbl_outer = self._make_action(
             "Beschriftung Außenwände",
             slot=self._on_toggle_outerwall_labels,
@@ -839,6 +851,8 @@ class MainWindowBuildMixin:
 
         menu.addAction(self.act_regen)
         menu.addAction(self.act_fit_current_view)
+        menu.addAction(self.act_load_floorplan_background)
+        menu.addAction(self.act_clear_floorplan_background)
         menu.addSeparator()
         menu.addAction(self.act_heatmap)
         menu.addAction(self.act_autowalls_enabled)
@@ -2419,6 +2433,39 @@ class MainWindowBuildMixin:
         self.lbl_room_norm_status = QLabel("Raumstatus: —")
         self.lbl_room_norm_status.setWordWrap(True)
         prop_layout.addWidget(self.lbl_room_norm_status)
+
+        prop_layout.addWidget(QLabel("Polygonpunkte:"))
+        self.tbl_room_points = QTableWidget(0, 2)
+        self.tbl_room_points.setHorizontalHeaderLabels(["x [m]", "y [m]"])
+        self.tbl_room_points.setMaximumHeight(150)
+        self.tbl_room_points.setToolTip("Punkte des selektierten Raums numerisch bearbeiten. Zeilenfolge bleibt die Polygonkante.")
+        self.tbl_room_points.verticalHeader().setVisible(True)
+        self.tbl_room_points.setAlternatingRowColors(True)
+        prop_layout.addWidget(self.tbl_room_points)
+
+        self.lbl_geometry_warnings = QLabel("Geometrie: —")
+        self.lbl_geometry_warnings.setWordWrap(True)
+        prop_layout.addWidget(self.lbl_geometry_warnings)
+
+        prop_layout.addWidget(QLabel("Zeichen-Vorlage:"))
+        template_form = QFormLayout()
+        template_form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+        self.cb_new_room_usage = QComboBox()
+        self.cb_new_room_usage.addItem("Wie Auswahl", "")
+        for usage in sorted(ROOM_USAGE_DEFAULTS.keys()):
+            label = str(usage).title().replace("Kueche", "Küche").replace("Hwr", "HWR").replace("Wc", "WC")
+            self.cb_new_room_usage.addItem(label, usage)
+        self.sp_new_room_height = QDoubleSpinBox()
+        self.sp_new_room_height.setRange(1.8, 6.0)
+        self.sp_new_room_height.setDecimals(2)
+        self.sp_new_room_height.setSingleStep(0.05)
+        self.sp_new_room_height.setValue(2.50)
+        self.lbl_drawing_snap_hint = QLabel("Fang: Raster 5 cm")
+        self.lbl_drawing_snap_hint.setWordWrap(True)
+        template_form.addRow("Nutzung", self.cb_new_room_usage)
+        template_form.addRow("Höhe [m]", self.sp_new_room_height)
+        template_form.addRow("Fang", self.lbl_drawing_snap_hint)
+        prop_layout.addLayout(template_form)
         prop_layout.addStretch(1)
         prop_scroll.setWidget(prop_widget)
         self.dock_properties.setWidget(prop_scroll)
@@ -2684,6 +2731,8 @@ class MainWindowBuildMixin:
             self.cb_area_ref_outer.toggled.connect(self._on_toggle_area_ref_outer_action)
         if getattr(self, "cb_usage_type", None) is not None:
             self.cb_usage_type.currentIndexChanged.connect(self._on_room_usage_preset_changed)
+        if getattr(self, "tbl_room_points", None) is not None:
+            self.tbl_room_points.itemChanged.connect(self._on_room_points_table_changed)
         if getattr(self, "btn_floor_assistant", None) is not None:
             self.btn_floor_assistant.clicked.connect(self._on_floor_assistant)
         if getattr(self, "btn_dashboard_norm", None) is not None:
