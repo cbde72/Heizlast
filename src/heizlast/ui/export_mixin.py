@@ -39,9 +39,12 @@ class MainWindowExportMixin:
         chk_din = QCheckBox("DIN-12831-Formbericht")
         chk_csv = QCheckBox("Heatload-CSV und Detail-CSV")
         chk_floorplans = QCheckBox("Grundrisse PNG/PDF mit Heatmap")
+        chk_proof = QCheckBox("DIN-Prüffassung erzwingen")
+        chk_proof.setChecked(bool(getattr(getattr(self, "project_cfg", None), "proof_export_enabled", False)))
         for chk in (chk_report, chk_din, chk_csv, chk_floorplans):
             chk.setChecked(True)
             lay.addWidget(chk)
+        lay.addWidget(chk_proof)
         if getattr(self, "_dirty", False):
             dirty = QLabel("Hinweis: Das Projekt enthält ungespeicherte Änderungen. Vor dem Export wird ein Backup geschrieben.")
             dirty.setWordWrap(True)
@@ -57,6 +60,7 @@ class MainWindowExportMixin:
             "din": bool(chk_din.isChecked()),
             "csv": bool(chk_csv.isChecked()),
             "floorplans": bool(chk_floorplans.isChecked()),
+            "proof": bool(chk_proof.isChecked()),
         }
 
     def _confirm_export_din_preflight(self, *, results: dict, rooms: list, cfg, vent_cfg: VentilationCfg) -> bool:
@@ -79,6 +83,22 @@ class MainWindowExportMixin:
             ) == QMessageBox.Yes
 
         self._last_din_status = (din_status.overall_status, din_status.summary)
+        proof_required = bool(getattr(cfg, "proof_export_enabled", False))
+        if proof_required and din_status.overall_status != "✓":
+            blocking_rows = [
+                row
+                for row in din_status.validation_rows[1:]
+                if len(row) >= 3 and str(row[1]).strip() != "✓"
+            ]
+            blocking_text = "\n".join(f"- {row[0]}: {row[2]}" for row in blocking_rows[:8])
+            QMessageBox.warning(
+                self,
+                "DIN-Prüffassung gesperrt",
+                "Die DIN-Prüffassung ist im Projekt aktiviert. Der Export als Prüffassung wird erst freigegeben, "
+                "wenn alle zentralen Tool-Gates grün sind.\n\n"
+                f"{blocking_text}",
+            )
+            return False
         if din_status.overall_status != "✗":
             return True
 

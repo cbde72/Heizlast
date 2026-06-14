@@ -238,6 +238,7 @@ def test_new_project_wizard_is_guided_and_versioned():
     assert "self.chk_guided_setup = QCheckBox" in dialog_src
     assert "self.cb_setup_scope = QComboBox()" in dialog_src
     assert "'guided_setup': self.chk_guided_setup.isChecked()" in dialog_src
-    assert '__version__ = "2.9.0"' in init_src
-    assert '__internal_version__ = "Heizlast_V37-intern-01"' in init_src
-    assert 'APP_INTERNAL_VERSION = "37.1.0"' in version_src
+    assert '__version__ = "2.10.0"' in init_src
+    assert '__internal_version__ = "Heizlast_V38-intern-01"' in init_src
+    assert "PROJECT_SCHEMA_VERSION = 26" in init_src
+    assert 'APP_INTERNAL_VERSION = "38.0.0"' in version_src

@@ -46,6 +46,7 @@ ANNEX_DIN_PROOF_GATE_ROWS = [
     ["G3", "Erdreich, Lüftung/WRG und Aufheizzuschlag als eigene Normmodule ausweisen.", "teilweise: eigene Rechenzeilen vorhanden, Normtabellen-/Quellenbindung bleibt zu prüfen"],
     ["G4", "Wärmebrücken mit Anschlusswerten oder belegtem dU-Ansatz nachweisen.", "teilweise: Element-Psi-Werte werden geprüft, Anschlusskatalog/Quellenbindung bleibt projektbezogen"],
     ["G5", "Prüffähiger Report darf keine offene Rot-Bewertung enthalten.", "offen: Rot bleibt bewusst sichtbar, bis die Module umgesetzt sind"],
+    ["G6", "Prüffassung darf keine unbestätigte automatische Modellannahme enthalten.", "neu: Auto-Decken, Interzone, Quellenstatus und Änderungsprotokoll werden konservativ bewertet"],
 ]
 
 ANNEX_SOURCE_ROWS = [
@@ -117,6 +118,15 @@ def _has_deck_elements(elements: list[ElementModel] | None) -> bool:
         if "decke" in et and any(token in et for token in ("keller", "geschoss", "zwischen", "speicher", "dach")):
             return True
     return False
+
+
+def _meta_has_text(meta: dict[str, str], *keys: str) -> bool:
+    return any(_has_text(meta.get(key, "")) for key in keys)
+
+
+def _meta_truthy(meta: dict[str, str], *keys: str) -> bool:
+    truthy = {"1", "true", "yes", "ja", "ok", "confirmed", "geprüft", "geprueft"}
+    return any(str(meta.get(key, "")).strip().lower() in truthy for key in keys)
 
 
 def _meta_dict(e: ElementModel) -> dict[str, str]:
@@ -309,6 +319,150 @@ def _element_data_assessment(elements: list[ElementModel] | None) -> tuple[str, 
     return "✓", "transmissionsrelevante Bauteile haben Fläche, U-Wert, Faktor, Raumbezug und Geometrie"
 
 
+def _element_source_assessment(elements: list[ElementModel] | None, project_u_source: str = "") -> tuple[str, str]:
+    if elements is None:
+        if _has_text(project_u_source):
+            return "△", "Projekt-U-Wert-Quelle dokumentiert; Bauteilliste nicht an DIN-Prüfung übergeben"
+        return "✗", "Bauteilliste nicht übergeben und Quelle der Bauteil-U-Werte fehlt"
+    transmission_elements = [e for e in elements if _is_transmission_element(e)]
+    if not transmission_elements:
+        return "✗", "keine U-Wert-pflichtigen Hüllbauteile im Prüfumfang"
+
+    missing_u: list[str] = []
+    missing_area: list[str] = []
+    missing_boundary: list[str] = []
+    estimated: list[str] = []
+    for e in transmission_elements:
+        meta = _meta_dict(e)
+        ref = _element_ref(e)
+        if not (_meta_has_text(meta, "u_source", "u_value_source", "source_u") or _has_text(project_u_source)):
+            missing_u.append(ref)
+        if not _meta_has_text(meta, "area_source", "geometry_source", "source_area"):
+            missing_area.append(ref)
+        boundary = str(meta.get("boundary") or meta.get("boundary_condition") or "").strip()
+        if not boundary and not any(token in _element_type_norm(e) for token in ("aussen", "außen", "dach", "boden", "fenster", "tuer")):
+            missing_boundary.append(ref)
+        source_text = " ".join(str(meta.get(key, "")) for key in ("u_source", "u_value_source", "source_u", "assumption_status")).lower()
+        if any(token in source_text for token in ("geschaetzt", "geschätzt", "annahme", "manual", "manuell")):
+            estimated.append(ref)
+
+    hard: list[str] = []
+    if missing_u:
+        hard.append("U-Wert-Quelle fehlt: " + ", ".join(missing_u[:5]))
+    if missing_area:
+        hard.append("Flächenherkunft fehlt: " + ", ".join(missing_area[:5]))
+    if missing_boundary:
+        hard.append("Randbedingung/Nachbarzone fehlt: " + ", ".join(missing_boundary[:5]))
+    if hard:
+        return "✗", "; ".join(hard)
+    if estimated:
+        return "△", "Bauteile mit Annahme/manuellem Quellenstatus fachlich bestätigen: " + ", ".join(estimated[:5])
+    return "✓", "U-Wert-Quelle, Flächenherkunft und Randbedingung sind je Hüllbauteil dokumentiert"
+
+
+def _opening_plausibility_assessment(elements: list[ElementModel] | None) -> tuple[str, str]:
+    if elements is None:
+        return "△", "Bauteilliste nicht an DIN-Prüfung übergeben"
+    by_room: dict[str, dict[str, float]] = {}
+    suspicious: list[str] = []
+    for e in elements or []:
+        rid = str(getattr(e, "room_id", "") or "")
+        bucket = by_room.setdefault(rid, {"wall": 0.0, "opening": 0.0})
+        area = float(getattr(e, "area_m2", 0.0) or 0.0)
+        et = _element_type_norm(e)
+        if "wand" in et and "innen" not in et:
+            bucket["wall"] += area
+        if any(token in et for token in ("fenster", "tuer", "door")):
+            bucket["opening"] += area
+        if area > 80.0 and any(token in et for token in ("fenster", "dach", "wand")):
+            suspicious.append(_element_ref(e))
+
+    too_much_opening = [
+        rid or "Raum"
+        for rid, vals in by_room.items()
+        if vals["wall"] > 0.0 and vals["opening"] > vals["wall"] * 1.05
+    ]
+    if too_much_opening:
+        return "✗", "Öffnungsfläche größer als Außenwandfläche bei: " + ", ".join(too_much_opening[:5])
+    if suspicious:
+        return "△", "auffällig große Bauteilflächen prüfen: " + ", ".join(suspicious[:5])
+    return "✓", "Öffnungs- und Bauteilflächen ohne grobe Plausibilitätsverletzung"
+
+
+def _ground_norm_assessment(project_cfg: Any | None, has_ground: bool) -> tuple[str, str]:
+    ground = getattr(project_cfg, "ground", None)
+    mode = str(getattr(ground, "mode", "simplified") or "simplified")
+    source = getattr(project_cfg, "ground_source", "")
+    din_source = getattr(ground, "din_ts_source", "")
+    norm_inputs = getattr(project_cfg, "ground_norm_inputs", "")
+    if mode == "none":
+        if has_ground:
+            return "✗", "erdberührte Flächen vorhanden, aber Erdreichmodell deaktiviert"
+        return "△", "kein Erdreichmodell aktiv; Projekt ohne erdberührte Hüllfläche fachlich bestätigen"
+    if mode == "din_ts":
+        missing: list[str] = []
+        if not (_has_text(source) or _has_text(din_source)):
+            missing.append("Quelle")
+        if not _has_text(norm_inputs):
+            missing.append("Zwischenwerte Bodenleitfähigkeit/Perimeter/B'/Einbindetiefe/Randdämmung")
+        if missing:
+            return "△", "DIN/TS-orientiert, aber unvollständig dokumentiert: " + ", ".join(missing)
+        return "✓", "DIN/TS-Erdreichmodul mit Quelle und Zwischenwerten dokumentiert"
+    if not _has_text(source):
+        return "△", f"{mode}; vereinfachter Erdreichansatz ohne Quellen-/Begründungstext"
+    return "△", f"{mode}; vereinfachter Erdreichansatz mit Quelle, kein vollständiges DIN/TS-Rechenverfahren"
+
+
+def _reheat_norm_assessment(project_cfg: Any | None, has_reheat_result: bool) -> tuple[str, str]:
+    enabled = bool(getattr(project_cfg, "reheat_enabled", False))
+    source = getattr(project_cfg, "reheat_source", "")
+    basis = getattr(project_cfg, "reheat_norm_basis", "")
+    power = float(getattr(project_cfg, "reheat_power_w_m2", 0.0) or 0.0)
+    duration = float(getattr(project_cfg, "reheat_duration_h", 0.0) or 0.0)
+    drop = float(getattr(project_cfg, "reheat_temp_drop_k", 0.0) or 0.0)
+    if not enabled:
+        return "✗", "nicht angesetzt; für eine Prüffassung Quelle, Normtabellenbasis oder bewusste fachliche Begründung erforderlich"
+    if not has_reheat_result:
+        return "✗", "Aufheizzuschlag aktiviert, aber keine Ergebniszeile Q_reheat_W vorhanden"
+    if power <= 0.0 and not (duration > 0.0 and drop > 0.0):
+        return "✗", "Aufheizzuschlag aktiviert, aber q_hu oder Herleitungsparameter fehlen"
+    if not _has_text(source):
+        return "✗", "Quelle für Aufheizzuschlag fehlt"
+    if not _has_text(basis):
+        return "△", "Quelle vorhanden; Normtabellenbasis/Gebäudeschwere/Nutzung/Wiederaufheizzeit noch dokumentieren"
+    return "✓", "Aufheizzuschlag mit Quelle, Nutzungs-/Tabellenbasis und eigener Ergebniszeile dokumentiert"
+
+
+def _ventilation_norm_assessment(project_cfg: Any | None, has_ventilation: bool) -> tuple[str, str]:
+    mode = str(getattr(project_cfg, "ventilation_mode", "natural") or "natural")
+    source = getattr(project_cfg, "ventilation_source", "")
+    n_min = float(getattr(project_cfg, "min_air_change_1ph", 0.0) or 0.0)
+    n_inf = float(getattr(project_cfg, "infiltration_air_change_1ph", 0.0) or 0.0)
+    supply = float(getattr(project_cfg, "mech_supply_m3h", 0.0) or 0.0)
+    exhaust = float(getattr(project_cfg, "mech_exhaust_m3h", 0.0) or 0.0)
+    hrv = float(getattr(project_cfg, "heat_recovery_efficiency", 0.0) or 0.0)
+    if not has_ventilation:
+        return "✗", "keine Lüftungswärmeverluste im Ergebnis"
+    if mode == "mechanical":
+        if max(supply, exhaust) <= 0.0:
+            return "✗", "mechanische Lüftung gewählt, aber Zuluft/Abluft fehlt"
+        if hrv > 0.0 and not _has_text(source):
+            return "✗", "WRG angesetzt, aber Anlagen-/Quellenbezug fehlt"
+        if not _has_text(source):
+            return "△", "mechanische Volumenstrombilanz ohne Quellenbezug"
+        return "✓", f"mechanische Bilanz mit Quelle: Zuluft {supply:.1f} m³/h, Abluft {exhaust:.1f} m³/h, WRG {hrv:.0%}, n_min {n_min:.3f}, n_inf {n_inf:.3f}"
+    if (n_min > 0.0 or n_inf > 0.0) and not _has_text(source):
+        return "△", "natürliche Lüftung mit n_min/n_inf, aber Quellenbezug fehlt"
+    return "✓" if _has_text(source) else "△", "Lüftungsansatz dokumentiert" if _has_text(source) else "natürlicher Lüftungsansatz; Quelle/Begründung ergänzen"
+
+
+def _change_log_assessment(project_cfg: Any | None) -> tuple[str, str]:
+    note = getattr(project_cfg, "change_log_note", "")
+    if _has_text(note):
+        return "✓", "Änderungsprotokoll/Prüfnotiz vorhanden"
+    return "△", "Änderungsprotokoll für Nachweiswerte fehlt; Änderungen an U-Werten, Klima, Lüftung, Erdreich und Wärmebrücken sollten dokumentiert werden"
+
+
 def _transmission_detail_assessment(results: dict[str, dict[str, float]]) -> tuple[str, str]:
     detail_rows = []
     for rr in results.values():
@@ -363,11 +517,8 @@ def assess_din_status(
     t_source_detail = getattr(project_cfg, "t_out_source_detail", "")
     climate_station = getattr(project_cfg, "climate_station", "")
     climate_altitude = getattr(project_cfg, "climate_altitude_correction", "")
-    tb_source = getattr(project_cfg, "thermal_bridge_source", "")
-    ground_source = getattr(project_cfg, "ground_source", "")
-    ventilation_source = getattr(project_cfg, "ventilation_source", "")
-    reheat_source = getattr(project_cfg, "reheat_source", "")
     u_value_source = getattr(project_cfg, "u_value_source", "")
+    proof_export_enabled = bool(getattr(project_cfg, "proof_export_enabled", False))
 
     tb = getattr(project_cfg, "tb", None)
     tb_mode = str(getattr(tb, "mode", "none") or "none")
@@ -380,43 +531,27 @@ def assess_din_status(
         if use_meta and not has_element_psi and psi_default <= 0.0:
             tb_status = "✗"
             tb_text = "Psi-Modus aktiv, aber keine Element-Psi-Werte und kein Default-Psi vorhanden"
-        elif _has_text(tb_source):
+        elif _has_text(getattr(project_cfg, "thermal_bridge_source", "")):
             tb_text = "Psi-Modus aktiv; Quelle dokumentiert, Anschlussqualität projektbezogen prüfen"
         else:
             tb_text = "Psi-Modus aktiv; Quellen-/Anschlussnachweis fehlt noch"
     elif tb_mode == "delta_u":
-        tb_text = "dU-Zuschlag aktiv; Quelle dokumentiert" if _has_text(tb_source) else "dU-Zuschlag aktiv; Quelle und Geltungsbereich dokumentieren"
+        tb_text = "dU-Zuschlag aktiv; Quelle dokumentiert" if _has_text(getattr(project_cfg, "thermal_bridge_source", "")) else "dU-Zuschlag aktiv; Quelle und Geltungsbereich dokumentieren"
     elif tb_mode == "percent":
         tb_text = "Prozent-Zuschlag aktiv; nur überschlägige Ersatzmethode"
-
-    ground = getattr(project_cfg, "ground", None)
-    ground_mode = str(getattr(ground, "mode", "simplified") or "simplified")
-    ground_status = "△"
-    ground_text = f"{ground_mode}; vereinfachtes Erdreichmodell"
-    if ground_mode == "none" and has_ground:
-        ground_status = "✗"
-        ground_text = "Erdberührte Flächen vorhanden, Erdreichmodell deaktiviert"
-    elif ground_mode == "perimeter":
-        ground_text = "perimeter; zusätzlicher Psi-Perimeteransatz, weiter DIN/TS-orientiert"
-    elif ground_mode == "din_ts":
-        src = getattr(ground, "din_ts_source", "")
-        ground_text = "DIN/TS-orientierter Ersatztemperaturansatz aktiv"
-        if _has_text(src):
-            ground_text += "; DIN/TS-Faktorquelle dokumentiert"
-    if _has_text(ground_source) and ground_status != "✗":
-        ground_text += "; Quelle dokumentiert"
 
     ventilation_mode = str(getattr(project_cfg, "ventilation_mode", "natural") or "natural")
     supply = float(getattr(project_cfg, "mech_supply_m3h", 0.0) or 0.0)
     exhaust = float(getattr(project_cfg, "mech_exhaust_m3h", 0.0) or 0.0)
     hrv = float(getattr(project_cfg, "heat_recovery_efficiency", 0.0) or 0.0)
+    vent_norm_status, vent_norm_text = _ventilation_norm_assessment(project_cfg, has_ventilation)
     if ventilation_mode == "mechanical":
         if max(supply, exhaust) <= 0.0:
             mech_status = "✗"
             mech_text = "mechanisch gewählt, aber Volumenstrom fehlt"
         else:
             mech_status = "△"
-            src_note = "; Quelle dokumentiert" if _has_text(ventilation_source) else "; Quellenhinweis fehlt"
+            src_note = "; Quelle dokumentiert" if _has_text(getattr(project_cfg, "ventilation_source", "")) else "; Quellenhinweis fehlt"
             n_min = float(getattr(project_cfg, "min_air_change_1ph", 0.0) or 0.0)
             n_inf = float(getattr(project_cfg, "infiltration_air_change_1ph", 0.0) or 0.0)
             mech_text = f"mechanischer Restwärmeverlust aktiv; Volumenstrombilanz: V_sup={supply:.1f} m³/h, V_exh={exhaust:.1f} m³/h, WRG={hrv:.0%}, n_min={n_min:.3f} 1/h, n_inf={n_inf:.3f} 1/h{src_note}"
@@ -424,45 +559,31 @@ def assess_din_status(
         mech_status = "△"
         mech_text = "natürliche Lüftung / Grundmodell; mechanische Lüftung nicht angesetzt"
 
-    reheat_enabled = bool(getattr(project_cfg, "reheat_enabled", False))
-    reheat_power = float(getattr(project_cfg, "reheat_power_w_m2", 0.0) or 0.0)
-    reheat_duration = float(getattr(project_cfg, "reheat_duration_h", 0.0) or 0.0)
-    reheat_drop = float(getattr(project_cfg, "reheat_temp_drop_k", 0.0) or 0.0)
     has_reheat_result = result_has_positive(results, "Q_reheat_W")
-    if reheat_enabled and has_reheat_result and (reheat_power > 0.0 or (reheat_duration > 0.0 and reheat_drop > 0.0)):
-        reheat_status = "△"
-        reheat_text = (
-            f"q_hu direkt aktiv: {reheat_power:.2f} W/m²"
-            if reheat_power > 0.0
-            else f"hergeleitet aus Dauer={reheat_duration:.2f} h und Absenkung={reheat_drop:.2f} K"
-        )
-        if _has_text(reheat_source):
-            reheat_text += "; Quelle dokumentiert"
-        else:
-            reheat_text += "; Quellenhinweis fehlt"
-    else:
-        reheat_status = "✗"
-        reheat_text = "nicht angesetzt; q_hu fehlt oder Aufheizzuschlag deaktiviert"
+    reheat_status, reheat_text = _reheat_norm_assessment(project_cfg, has_reheat_result)
+    ground_status, ground_text = _ground_norm_assessment(project_cfg, has_ground)
 
     measure_status = "✓" if floor_area_mode in {"inner", "outer"} else "△"
-    vent_status = "△" if c_air > 0 and (has_ventilation or has_results) else "✗"
+    vent_status = vent_norm_status if c_air > 0 else "✗"
     trans_status = "✓" if has_transmission else "✗"
     room_status = "✓" if has_results else "✗"
     source_status = "△" if (_has_text(norm_edition) and _has_text(t_source_detail) and (_has_text(climate_station) or _has_text(climate_altitude))) else "✗"
-    u_source_status = "△" if _has_text(u_value_source) else "✗"
-    u_source_text = "U-Wert-Quelle dokumentiert" if _has_text(u_value_source) else "Quelle der Bauteil-U-Werte fehlt"
     deck_status, deck_text = _deck_neighbor_zone_assessment(elements)
     interzone_status, interzone_text = _interzone_temperature_assessment(elements)
     room_data_status, room_data_text = _room_data_assessment(rooms, results)
     element_data_status, element_data_text = _element_data_assessment(elements)
+    element_source_status, element_source_text = _element_source_assessment(elements, u_value_source)
+    opening_status, opening_text = _opening_plausibility_assessment(elements)
     detail_status, detail_text = _transmission_detail_assessment(results)
+    change_log_status, change_log_text = _change_log_assessment(project_cfg)
 
     conformity_rows = [
         ANNEX_DIN_CONFORMITY_ROWS[0],
         ["Norm-/Quellenbezug", "Normausgabe und lokale Randdaten", "Projektfelder für Normausgabe und Quellen", source_status],
-        ["U-Werte / Bauteilnachweis", "U-Werte je Bauteil mit Quelle", u_source_text, u_source_status],
+        ["U-Werte / Bauteilnachweis", "U-Werte je Bauteil mit Quelle", element_source_text, element_source_status],
         ["Raumdaten", "Raumweise Nutzungs-, Geometrie- und Temperaturdaten", room_data_text, room_data_status],
         ["Bauteildaten", "Fläche, U-Wert, Faktor und Raumbezug je Hüllbauteil", element_data_text, element_data_status],
+        ["Plausibilitäts-Audit", "Öffnungen, Flächen und grobe Lasttreiber prüfen", opening_text, opening_status],
         ["Raumweise Heizlast", "Phi_HL,Raum", "raumweise Q_sum_W" if has_results else "keine Ergebnisse im Report", room_status],
         ["Transmission", "Summe(U*A*dT*f)", "implementiert und Ergebnisanteile vorhanden" if has_transmission else "keine Transmissionsanteile gefunden", trans_status],
         ["Transmissionsdetails", "Prüffähige Rechenzeilen mit Randbedingung und Bauteilrolle", detail_text, detail_status],
@@ -470,29 +591,32 @@ def assess_din_status(
         ["Interzone / Nachbarräume", "angrenzende Solltemperatur dokumentieren", interzone_text, interzone_status],
         ["Öffnungsabzug", "A_eff = A_Wand - A_Öffnungen", "geometrisch/ankerbasiert im Rechenkern", "✓"],
         ["Innen-/Außenmaß", "normativ definierte Maße", f"Projektmodus: {floor_area_mode or 'nicht gesetzt'}", measure_status],
-        ["Lüftung", "Norm-Lüftungswärmeverlust", f"Grundmodell n*V*dT mit c_air={c_air:.3f}", vent_status],
+        ["Lüftung", "Norm-Lüftungswärmeverlust", f"{vent_norm_text}; c_air={c_air:.3f}", vent_status],
         ["Mechanische Lüftung", "Volumenströme, WRG", mech_text, mech_status],
         ["Wärmebrücken", "Psi-Werte / Zuschläge", tb_text, tb_status],
         ["Erdreich/Boden", "Normverfahren", ground_text, ground_status],
         ["Aufheizzuschlag", "Phi_hu", reheat_text, reheat_status],
+        ["Änderungsprotokoll", "Nachweiswerte und Varianten nachvollziehbar dokumentieren", change_log_text, change_log_status],
         ["Gewinne", "interne/solare Gewinne", "für Norm-Heizlast nicht als Lastminderung berücksichtigt", "△"],
     ]
 
     validation_rows = [
         ANNEX_DIN_VALIDATION_ROWS[0],
         ["Norm-/Quellenbezug", source_status, "Normausgabe, Außentemperaturquelle, Klimaregion/-station oder Höhenkorrektur müssen projektbezogen dokumentiert sein."],
-        ["U-Wert-Quellen", u_source_status, u_source_text],
+        ["U-Wert-Quellen", element_source_status, element_source_text],
         ["Raumdaten", room_data_status, room_data_text],
         ["Bauteildaten", element_data_status, element_data_text],
+        ["Plausibilitäts-Audit", opening_status, opening_text],
         ["Temperaturzonen", "△", "Außenluft, Erdreich, unbeheizter Keller/Dachraum/Abseite und Interzone werden als Buckets ausgewiesen."],
         ["Decken / Nachbarzonen", deck_status, deck_text],
         ["Interzone / Nachbarräume", interzone_status, interzone_text],
         ["DIN/TS-Faktoren unbeheizt", "△", "Default-Faktoren vorhanden; projektspezifische Prüfung und Quellenhinweis bleiben erforderlich."],
         ["Transmissions-Buckets", detail_status if has_transmission else "✗", detail_text if has_transmission else "keine Transmissionsanteile gefunden."],
-        ["Lüftung / WRG", mech_status if ventilation_mode == "mechanical" else vent_status, mech_text],
+        ["Lüftung / WRG", vent_status, vent_norm_text],
         ["Aufheizzuschlag", reheat_status, reheat_text],
         ["Erdreich", ground_status, ground_text],
         ["Wärmebrücken", tb_status, tb_text],
+        ["Änderungsprotokoll", change_log_status, change_log_text],
     ]
 
     action_rows = [ANNEX_DIN_ACTION_ROWS[0]]
@@ -500,8 +624,12 @@ def assess_din_status(
         action_rows.append(list(row))
     if source_status == "✗":
         action_rows.append(["1", "Norm-/Quellenbezug", "✗", "Normausgabe, Außentemperaturquelle und Quellenfelder in den Projektparametern ausfüllen."])
-    if u_source_status == "✗":
-        action_rows.append(["1", "U-Werte / Bauteile", "✗", "Quelle für Projekt-U-Werte hinterlegen oder U-Werte je Element mit Nachweis dokumentieren."])
+    if element_source_status == "✗":
+        action_rows.append(["1", "U-Werte / Bauteile", "✗", "U-Wert-Quelle, Flächenherkunft und Randbedingung je Hüllbauteil dokumentieren."])
+    elif element_source_status == "△":
+        action_rows.append(["2", "U-Werte / Bauteile", "△", "Bauteile mit Annahme-/manuellem Quellenstatus fachlich bestätigen."])
+    if opening_status != "✓":
+        action_rows.append(["1" if opening_status == "✗" else "2", "Plausibilitäts-Audit", opening_status, opening_text])
     if trans_status == "✗":
         action_rows.append(["1", "Transmission", "✗", "Ergebnisdaten prüfen; ohne Transmissionsanteile kein belastbarer Heizlastnachweis."])
     if room_status == "✗":
@@ -520,15 +648,28 @@ def assess_din_status(
         action_rows.append(["2", "Interzone / Nachbarräume", interzone_status, interzone_text])
     if tb_status == "✗":
         action_rows.append(["2", "Wärmebrücken", "✗", "Im Psi-Modus Element-Psi-Werte oder einen dokumentierten Default-Psi hinterlegen."])
+    if vent_status == "✗":
+        action_rows.append(["1", "Lüftung / WRG", "✗", vent_norm_text])
+    elif vent_status == "△":
+        action_rows.append(["2", "Lüftung / WRG", "△", vent_norm_text])
+    if ground_status != "✓":
+        action_rows.append(["2" if ground_status == "△" else "1", "Erdreich", ground_status, ground_text])
+    if reheat_status != "✓":
+        action_rows.append(["2" if reheat_status == "△" else "1", "Aufheizzuschlag", reheat_status, reheat_text])
+    if change_log_status != "✓":
+        action_rows.append(["3", "Änderungsprotokoll", "△", change_log_text])
 
     worst = max(status_rank(row[-1]) for row in conformity_rows[1:])
     overall_status = "✓" if worst == 0 else "△" if worst == 1 else "✗"
+    proof_ready = overall_status == "✓"
     if overall_status == "✗":
         summary = "DIN-Ampel: Rot – DIN-orientierter Arbeitsstand, nicht als vollständiger Normnachweis einzustufen; offene Normbausteine sind im Maßnahmenplan aufgeführt."
     elif overall_status == "△":
         summary = "DIN-Ampel: Gelb – DIN-orientierter Nachweis mit projektspezifisch zu prüfenden Annahmen."
     else:
         summary = "DIN-Ampel: Grün – alle im Tool bewerteten Bausteine sind erfüllt; die fachliche Prüfung der Normquellen bleibt erforderlich."
+    if proof_export_enabled:
+        summary += " Prüffassung: " + ("freigegeben nach Tool-Gates." if proof_ready else "gesperrt, bis alle Tool-Gates grün sind.")
 
     return DINStatus(conformity_rows, validation_rows, action_rows, overall_status, summary)
 

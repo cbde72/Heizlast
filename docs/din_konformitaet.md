@@ -84,11 +84,20 @@ Dieses Projekt orientiert sich an DIN EN 12831-1:2017-09 und DIN/TS 12831-1:2020
   - rote DIN-Bausteine müssen bewusst bestätigt werden
   - Exportumfang ist auswählbar
   - vor Export wird ein Backup geschrieben, sofern ein Projektpfad vorhanden ist
+- DIN-Prüffassung:
+  - optionaler Projektmodus, der den Export blockiert, solange zentrale Tool-Gates nicht grün sind
+  - Bauteilquellen, Flächenherkunft, Randbedingungen, Interzone-Temperaturen und Auto-Annahmen werden härter bewertet
+  - Änderungsprotokoll für Nachweiswerte wird als eigenes Gate geführt
+- Erweiterte Modulnachweise:
+  - Erdreich verlangt im DIN/TS-Modus Quelle und Zwischenwerte wie Bodenleitfähigkeit, Perimeter/B', Einbindetiefe oder Randdämmung
+  - Aufheizzuschlag verlangt Quelle und Norm-/Tabellenbasis mit Nutzung, Gebäudeschwere oder Wiederaufheizbezug
+  - Lüftung/WRG trennt Infiltration, Mindestluftwechsel, Zuluft/Abluft und WRG-Quelle in der Bewertung
+  - Wärmebrücken bleiben bei Ersatzansätzen konservativ und verlangen Quelle oder Anschlusswerte
 - Versionsstand der GUI-/Workflow-Erweiterung:
-  - App-Version `2.9.0`
-  - interne Version `Heizlast_V37-intern-01`
+  - App-Version `2.10.0`
+  - interne Version `Heizlast_V38-intern-01`
   - Anzeige-Version `37.0.0`
-  - Projekt-Schema `25`, da Auto-Decken jetzt eigene Nachweis- und Aktivierungsfelder besitzen
+  - Projekt-Schema `26`, da Prüffassung, Erdreich-/Aufheiz-Nachweisbasis und Änderungsprotokoll eigene Projektfelder besitzen
 
 ## Noch vereinfacht
 
@@ -105,13 +114,14 @@ Dieses Projekt orientiert sich an DIN EN 12831-1:2017-09 und DIN/TS 12831-1:2020
 
 Für eine belastbarere spätere Konformitätsaussage werden die offenen Punkte in dieser Reihenfolge geschlossen:
 
-1. Aufheizzuschlag vom vereinfachten `q_hu * A_ref`-Ansatz auf ein projektspezifisch belegtes Normtabellenverfahren erweitern, inklusive Quelle, Raum-/Nutzungsbezug und eigener Rechenzeile.
-2. Mechanische Lüftung mit Anlagen-/Normtabellenlogik absichern: Zuluft/Abluft je Raum, WRG-Randbedingung, Infiltration/Mindestluftwechsel und Quellenbezug getrennt dokumentieren.
-3. Erdreichmodell vom vereinfachten Ansatz auf ein DIN/TS-nahes Nachweisverfahren erweitern: Bodenplatte, Kellerwand, Perimeter/B'-Wert, Temperatur-/Faktorquelle und Berechnungsweg getrennt ausweisen.
-4. Wärmebrücken über dokumentierte ψ-Werte je Anschluss oder belegten ΔU-Ansatz absichern; globale Ersatzansätze müssen im Report als solche markiert bleiben.
-5. Unbeheizte Bereiche projektspezifisch auswählbar machen: Keller, Dachraum/Abseite und sonstige Nebenräume benötigen eigene Temperatur, Quelle, Randbedingung und optionalen Faktor.
-6. Bauteilquellen verschärfen: U-Werte, Flächenherkunft, Nachbarzone und Temperaturquelle sollten je Hüllbauteil vollständig sein, bevor der Status grün wird.
-7. Report-Gate ergänzen, das grüne DIN-Bewertung nur erlaubt, wenn keine automatische Modellannahme unbestätigt und keine Interzone ohne `t_adj_c` vorhanden ist.
+1. Aufheizzuschlag fachlich weiter mit echten Normtabellenwerten hinterlegen; Quelle und Tabellenbasis werden bereits als harte Gates geprüft.
+2. Mechanische Lüftung mit raumweiser Anlagen-/Normtabellenlogik erweitern; Zuluft/Abluft, WRG, Infiltration und Mindestluftwechsel sind bereits getrennt bewertet.
+3. Erdreichmodell vom DIN/TS-orientierten Ersatzansatz auf ein vollständigeres Verfahren erweitern; Quelle und Zwischenwerte sind bereits Pflichtfelder.
+4. Wärmebrücken über dokumentierte ψ-Werte je Anschluss oder belegten ΔU-Ansatz absichern; globale Ersatzansätze bleiben im Report als solche markiert.
+5. Unbeheizte Bereiche weiter projektspezifisch ausbauen: Keller, Dachraum/Abseite und sonstige Nebenräume benötigen eigene Temperatur, Quelle, Randbedingung und optionalen Faktor.
+6. Bauteilquellen sind jetzt schärfer bewertet: U-Werte, Flächenherkunft und Randbedingung je Hüllbauteil sind für grüne Gates erforderlich.
+7. Prüffassung ist als Export-Gate vorhanden; sie blockiert, solange zentrale Tool-Gates rot oder gelb sind.
+8. Änderungsprotokoll für Nachweiswerte wird im Projekt gespeichert und im Report ausgewiesen.
 
 ## Nachweis-Gates für eine spätere Konformitätsaussage
 

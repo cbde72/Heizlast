@@ -334,6 +334,10 @@ class ProjectSettingsDialog(QDialog):
         self.ed_norm_edition = QLineEdit(str(getattr(cfg, "norm_edition", "DIN EN 12831-1:2017-09 / DIN/TS 12831-1:2020-04")))
         self.ed_reviewer_note = QLineEdit(str(getattr(cfg, "reviewer_note", "")))
         self.ed_reviewer_note.setPlaceholderText("Bearbeiter/Prüfvermerk, optional")
+        self.cb_proof_export = QCheckBox("DIN-Prüffassung nur bei grünen Tool-Gates freigeben")
+        self.cb_proof_export.setChecked(bool(getattr(cfg, "proof_export_enabled", False)))
+        self.ed_change_log_note = QLineEdit(str(getattr(cfg, "change_log_note", "")))
+        self.ed_change_log_note.setPlaceholderText("Kurzprotokoll geänderter Nachweiswerte, optional")
         self.lb_cfg_schema = QLabel(str(PROJECT_SCHEMA_VERSION))
         self.lb_cfg_schema.setTextInteractionFlags(Qt.TextSelectableByMouse)
         self.lb_info = QLabel(
@@ -346,6 +350,8 @@ class ProjectSettingsDialog(QDialog):
             ("Projekt-Schema-Version", self.lb_cfg_schema),
             ("Normausgabe", self.ed_norm_edition),
             ("Bearbeiter/Prüfvermerk", self.ed_reviewer_note),
+            ("Prüffassung", self.cb_proof_export),
+            ("Änderungsprotokoll", self.ed_change_log_note),
             ("Hinweis", self.lb_info),
         ])
         self._add_nav_page("Projektinfo", self._build_tab([
@@ -424,6 +430,8 @@ class ProjectSettingsDialog(QDialog):
         self.sp_reheat_capacity = QDoubleSpinBox(); self.sp_reheat_capacity.setRange(0.0, 500.0); self.sp_reheat_capacity.setDecimals(2); self.sp_reheat_capacity.setValue(float(getattr(cfg, "reheat_capacity_wh_m2k", 20.0)))
         self.ed_reheat_source = QLineEdit(str(getattr(cfg, "reheat_source", "")))
         self.ed_reheat_source.setPlaceholderText("Quelle Aufheizzuschlag, optional")
+        self.ed_reheat_norm_basis = QLineEdit(str(getattr(cfg, "reheat_norm_basis", "")))
+        self.ed_reheat_norm_basis.setPlaceholderText("Nutzung/Gebäudeschwere/Wiederaufheizzeit/Tabellenbezug")
         self.lb_air_hint = QLabel("c_air ist der globale Luftwärmekoeffizient für die Lüftungsverluste der Räume.")
         self.lb_air_hint.setWordWrap(True)
         f3 = self._make_form([
@@ -441,6 +449,7 @@ class ProjectSettingsDialog(QDialog):
             ("Temperaturabsenkung [K]", self.sp_reheat_drop),
             ("Speicherkennwert [Wh/m²K]", self.sp_reheat_capacity),
             ("Quelle Aufheizzuschlag", self.ed_reheat_source),
+            ("Norm-/Tabellenbasis", self.ed_reheat_norm_basis),
             ("Hinweis", self.lb_air_hint),
         ])
         self._add_nav_page("Lüftung", self._build_tab([
@@ -545,6 +554,8 @@ class ProjectSettingsDialog(QDialog):
         self.ed_ground_source.setPlaceholderText("Quelle Erdreichansatz, optional")
         self.ed_ground_din_source = QLineEdit(str(getattr(cfg.ground, "din_ts_source", "")))
         self.ed_ground_din_source.setPlaceholderText("Quelle DIN/TS-Ersatzfaktoren, optional")
+        self.ed_ground_norm_inputs = QLineEdit(str(getattr(cfg, "ground_norm_inputs", "")))
+        self.ed_ground_norm_inputs.setPlaceholderText("Bodenleitfähigkeit, Perimeter/B', Einbindetiefe, Randdämmung")
         f6a = self._make_form([
             ("Modell", self.cb_ground_mode),
             ("Feste Erdtemperatur [°C]", self.sp_ground_temp),
@@ -557,6 +568,7 @@ class ProjectSettingsDialog(QDialog):
             ("DIN/TS f Bodenplatte", self.sp_ground_din_f_slab),
             ("DIN/TS f Kellerwand", self.sp_ground_din_f_wall),
             ("Quelle DIN/TS-Faktoren", self.ed_ground_din_source),
+            ("DIN/TS-Zwischenwerte", self.ed_ground_norm_inputs),
         ])
         self._add_nav_page("Erdreich", self._build_tab([
             self._group("Grundmodell", f6a, "Allgemeine Erdreichrandbedingungen für Bodenplatte und erdberührte Bauteile."),
@@ -1004,15 +1016,19 @@ class ProjectSettingsDialog(QDialog):
             self.ed_climate_station,
             self.ed_vent_source,
             self.ed_reheat_source,
+            self.ed_reheat_norm_basis,
             self.ed_u_source,
             self.ed_tb_source,
             self.ed_ground_source,
             self.ed_ground_din_source,
+            self.ed_ground_norm_inputs,
             self.ed_reviewer_note,
+            self.ed_change_log_note,
         ]:
             edit.textChanged.connect(lambda _=None: self._sync_norm_checklist())
         self.cb_reheat_enabled.toggled.connect(lambda _=None: self._sync_norm_checklist())
         self.cb_attic_enabled.toggled.connect(lambda _=None: self._sync_norm_checklist())
+        self.cb_proof_export.toggled.connect(lambda _=None: self._sync_norm_checklist())
 
     def _sync_norm_checklist(self) -> None:
         if not hasattr(self, "lst_norm_check"):
@@ -1057,10 +1073,11 @@ class ProjectSettingsDialog(QDialog):
 
         ground_mode = self.cb_ground_mode.currentText()
         if ground_mode == "din_ts":
+            ground_doc_ok = (has_text(self.ed_ground_din_source) or has_text(self.ed_ground_source)) and has_text(self.ed_ground_norm_inputs)
             add(
-                "OK" if has_text(self.ed_ground_din_source) or has_text(self.ed_ground_source) else "FEHLT",
+                "OK" if ground_doc_ok else "FEHLT",
                 "Erdreichansatz",
-                "DIN/TS-Faktoren sind mit Quelle dokumentiert." if has_text(self.ed_ground_din_source) or has_text(self.ed_ground_source) else "Quelle für DIN/TS-Faktoren oder Erdreichansatz ergänzen.",
+                "DIN/TS-Faktoren und Zwischenwerte sind dokumentiert." if ground_doc_ok else "Quelle und Zwischenwerte wie Bodenleitfähigkeit, Perimeter/B', Einbindetiefe oder Randdämmung ergänzen.",
             )
         elif ground_mode == "none":
             add("PRÜFEN", "Erdreichansatz", "Erdreichverluste sind deaktiviert.")
@@ -1089,10 +1106,11 @@ class ProjectSettingsDialog(QDialog):
             )
 
         if self.cb_reheat_enabled.isChecked():
+            reheat_doc_ok = has_text(self.ed_reheat_source) and has_text(self.ed_reheat_norm_basis)
             add(
-                "OK" if has_text(self.ed_reheat_source) else "FEHLT",
+                "OK" if reheat_doc_ok else "FEHLT",
                 "Aufheizzuschlag",
-                "Wiederaufheizansatz dokumentiert." if has_text(self.ed_reheat_source) else "Quelle oder Begründung zum Aufheizzuschlag ergänzen.",
+                "Wiederaufheizansatz mit Norm-/Tabellenbasis dokumentiert." if reheat_doc_ok else "Quelle und Tabellenbasis/Gebäudeschwere/Nutzung ergänzen.",
             )
         else:
             add("OK", "Aufheizzuschlag", "Nicht angesetzt.")
@@ -1112,6 +1130,13 @@ class ProjectSettingsDialog(QDialog):
             "Reporting",
             "Bearbeiter-/Prüfvermerk vorhanden." if has_text(self.ed_reviewer_note) else "Prüfvermerk vor Abgabe ergänzen.",
         )
+        add(
+            "OK" if has_text(self.ed_change_log_note) else "PRÜFEN",
+            "Änderungsprotokoll",
+            "Nachweiswert-Änderungen dokumentiert." if has_text(self.ed_change_log_note) else "Änderungen an U-Werten, Klima, Lüftung, Erdreich und Wärmebrücken kurz protokollieren.",
+        )
+        if self.cb_proof_export.isChecked():
+            add("PRÜFEN", "DIN-Prüffassung", "Export wird später nur freigegeben, wenn alle zentralen Tool-Gates grün sind.")
 
         self.lst_norm_check.clear()
         for _status, text in rows:
@@ -1447,6 +1472,8 @@ class ProjectSettingsDialog(QDialog):
         cfg.internal_project_version = self.ed_internal_project_version.text().strip() or "V30-intern-01"
         cfg.norm_edition = self.ed_norm_edition.text().strip()
         cfg.reviewer_note = self.ed_reviewer_note.text().strip()
+        cfg.proof_export_enabled = bool(self.cb_proof_export.isChecked())
+        cfg.change_log_note = self.ed_change_log_note.text().strip()
 
         cfg.t_out_c = float(self.sp_t_out.value())
         cfg.t_keller_c = float(self.sp_t_keller.value())
@@ -1479,6 +1506,7 @@ class ProjectSettingsDialog(QDialog):
         cfg.reheat_temp_drop_k = float(self.sp_reheat_drop.value())
         cfg.reheat_capacity_wh_m2k = float(self.sp_reheat_capacity.value())
         cfg.reheat_source = self.ed_reheat_source.text().strip()
+        cfg.reheat_norm_basis = self.ed_reheat_norm_basis.text().strip()
 
         cfg.u_aussenwand_w_m2k = float(self.sp_u_aw.value())
         cfg.u_fenster_w_m2k = float(self.sp_u_window.value())
@@ -1514,6 +1542,7 @@ class ProjectSettingsDialog(QDialog):
         cfg.ground.din_ts_f_wall = float(self.sp_ground_din_f_wall.value())
         cfg.ground.din_ts_source = self.ed_ground_din_source.text().strip()
         cfg.ground_source = self.ed_ground_source.text().strip()
+        cfg.ground_norm_inputs = self.ed_ground_norm_inputs.text().strip()
 
         cfg.attic.enabled = bool(self.cb_attic_enabled.isChecked())
         cfg.attic.building_width_m = float(self.sp_attic_width.value())

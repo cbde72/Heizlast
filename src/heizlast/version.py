@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 APP_NAME = "Heizlast Tool"
-APP_INTERNAL_VERSION = "37.1.0"
+APP_INTERNAL_VERSION = "38.0.0"
 APP_VERSION_LABEL = f"Version {APP_INTERNAL_VERSION}"
 
 MAIN_FEATURES = [
@@ -19,6 +19,7 @@ MAIN_FEATURES = [
     "Bauteil-Assistent, Projektverwaltung und strukturierte Nachweisübersicht im Report",
     "Heizlast-Audit im Dashboard mit Top-Lasttreibern und DG-Dach-/Giebelflächenprüfung",
     "Bauteil-Assistent unterstützt Innenwände für Nachbarzonen und Interzone",
+    "Erweiterte DIN-Prüffassung mit harten Gates, Änderungsprotokoll und schärferem Quellen-Audit",
 ]
 
 DIN_CONFORMITY = [
@@ -30,4 +31,6 @@ DIN_CONFORMITY = [
     "Raum-Matrix zeigt Außenwand, Fenster, Dach, Decke, Boden, Wärmebrücken, Lüftung, Temperatur und Nachbarzonen",
     "Bauteile führen Quellen-/Annahmenstatus, der in GUI und Report sichtbar wird",
     "Audit markiert auffällige Raumlasten, hohe Fenster-/Dachanteile und mögliche Dach-/Giebel-Doppelungen",
+    "Prüffassung blockiert den DIN-Export, solange rote oder gelbe Tool-Gates offen sind",
+    "Erdreich, Lüftung, Aufheizzuschlag, Wärmebrücken und U-Werte werden mit zusätzlichen Quellen- und Zwischenwert-Gates geprüft",
 ]

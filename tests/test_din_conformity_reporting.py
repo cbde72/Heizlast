@@ -220,3 +220,74 @@ def test_din_status_accepts_traceable_transmission_detail_rows():
     assert any(row[0] == "Raumdaten" and row[-1] == "✓" for row in status.conformity_rows)
     assert any(row[0] == "Bauteildaten" and row[-1] == "✓" for row in status.conformity_rows)
     assert any(row[0] == "Transmissionsdetails" and row[-1] == "✓" for row in status.conformity_rows)
+
+
+def test_din_status_requires_element_level_sources_for_green_u_gate():
+    cfg = ProjectCfg()
+    cfg.u_value_source = "Projekt-U-Wert-Tabelle"
+    room = RoomModel(id="R1", floor="EG", name="Wohnen", x_m=0.0, y_m=0.0, w_m=4.0, h_m=4.0, usage_type="Wohnen")
+    wall = ElementModel(
+        room_id="R1",
+        element_type="Außenwand",
+        area_m2=10.0,
+        u_w_m2k=0.45,
+        length_m=4.0,
+        height_m=2.5,
+        uid="wall_src",
+        meta="u_source=Bauteilkatalog|area_source=Planaufmaß|boundary=external",
+    )
+
+    status = assess_din_status(
+        results={"R1": {"Q_trans_W": 100.0, "Q_vent_W": 20.0}},
+        project_cfg=cfg,
+        vent_cfg=VentilationCfg(),
+        rooms=[room],
+        elements=[wall],
+    )
+
+    assert any(row[0] == "U-Werte / Bauteilnachweis" and row[-1] == "✓" for row in status.conformity_rows)
+
+
+def test_din_status_flags_din_ts_ground_without_intermediate_values():
+    cfg = ProjectCfg()
+    cfg.ground.mode = "din_ts"
+    cfg.ground.din_ts_source = "DIN/TS Tabelle"
+    cfg.ground_norm_inputs = ""
+
+    status = assess_din_status(
+        results={"R1": {"Q_trans_W": 100.0, "Q_vent_W": 20.0, "A_env_ground_m2": 5.0}},
+        project_cfg=cfg,
+        vent_cfg=VentilationCfg(),
+    )
+
+    assert any(row[0] == "Erdreich/Boden" and row[-1] == "△" and "Zwischenwerte" in row[2] for row in status.conformity_rows)
+
+
+def test_din_status_accepts_reheat_only_with_norm_basis():
+    cfg = ProjectCfg()
+    cfg.reheat_enabled = True
+    cfg.reheat_power_w_m2 = 12.0
+    cfg.reheat_source = "DIN/TS Projekttabelle"
+    cfg.reheat_norm_basis = "Nutzung Wohnen, mittelschwere Bauart, Wiederaufheizzeit 2 h"
+
+    status = assess_din_status(
+        results={"R1": {"Q_trans_W": 100.0, "Q_vent_W": 20.0, "Q_reheat_W": 80.0}},
+        project_cfg=cfg,
+        vent_cfg=VentilationCfg(),
+    )
+
+    assert any(row[0] == "Aufheizzuschlag" and row[-1] == "✓" for row in status.conformity_rows)
+
+
+def test_din_status_marks_proof_export_as_blocked_until_all_gates_green():
+    cfg = ProjectCfg()
+    cfg.proof_export_enabled = True
+
+    status = assess_din_status(
+        results={"R1": {"Q_trans_W": 100.0, "Q_vent_W": 20.0}},
+        project_cfg=cfg,
+        vent_cfg=VentilationCfg(),
+    )
+
+    assert "Prüffassung: gesperrt" in status.summary
+    assert any(row[1] == "Änderungsprotokoll" for row in status.action_rows)

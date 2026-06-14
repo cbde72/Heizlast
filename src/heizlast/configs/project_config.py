@@ -125,6 +125,10 @@ class ProjectCfg:
     reheat_source: str = ""
     u_value_source: str = ""
     reviewer_note: str = ""
+    ground_norm_inputs: str = ""
+    reheat_norm_basis: str = ""
+    proof_export_enabled: bool = False
+    change_log_note: str = ""
 
     # Geometrie
     thickness_mode: ThicknessMode = "full"
@@ -339,6 +343,12 @@ class ProjectCfg:
             d.setdefault("auto_deck_create_eg_geschossdecke", True)
             d.setdefault("auto_deck_create_dg_speicherdecke", True)
             version = 25
+        if version < 26:
+            d.setdefault("ground_norm_inputs", "")
+            d.setdefault("reheat_norm_basis", "")
+            d.setdefault("proof_export_enabled", False)
+            d.setdefault("change_log_note", "")
+            version = 26
 
         tb_raw = d.get("tb", {}) if isinstance(d.get("tb", {}), dict) else {}
         g_raw = d.get("ground", {}) if isinstance(d.get("ground", {}), dict) else {}
@@ -361,6 +371,10 @@ class ProjectCfg:
             reheat_source=str(d.get("reheat_source", "")),
             u_value_source=str(d.get("u_value_source", "")),
             reviewer_note=str(d.get("reviewer_note", "")),
+            ground_norm_inputs=str(d.get("ground_norm_inputs", "")),
+            reheat_norm_basis=str(d.get("reheat_norm_basis", "")),
+            proof_export_enabled=bool(d.get("proof_export_enabled", False)),
+            change_log_note=str(d.get("change_log_note", "")),
             thickness_mode=str(d.get("thickness_mode", "full")),
             area_shrink_factor=float(d.get("area_shrink_factor", 0.97)),
             floor_area_mode=str(d.get("floor_area_mode", "inner")),

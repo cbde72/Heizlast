@@ -1650,13 +1650,31 @@ class HeatloadPDFReport:
         room_names = {str(r.id): str(r.name or r.id) for r in self.rooms}
         for element in self.elements[:80]:
             meta = parse_meta(getattr(element, "meta", "") or "")
+            source_status = (
+                meta.get("source_status")
+                or meta.get("u_source")
+                or meta.get("u_value_source")
+                or meta.get("source_u")
+                or getattr(self.project_cfg, "u_value_source", "")
+                or "—"
+            )
+            source_note = "; ".join(
+                part
+                for part in [
+                    f"Fläche: {meta.get('area_source') or meta.get('geometry_source') or meta.get('source_area') or '—'}",
+                    f"Rand: {meta.get('boundary') or meta.get('boundary_condition') or '—'}",
+                    f"T_adj: {meta.get('t_adj_c') or '—'}",
+                    str(meta.get("source_note", "") or "").strip(),
+                ]
+                if part
+            )
             source_rows.append([
                 room_names.get(str(getattr(element, "room_id", "") or ""), str(getattr(element, "room_id", "") or "")),
                 str(getattr(element, "element_type", "") or ""),
                 self.fmt(getattr(element, "area_m2", 0.0), 2),
                 self.fmt(getattr(element, "u_w_m2k", 0.0), 3),
-                str(meta.get("source_status", "") or "—"),
-                str(meta.get("source_note", "") or "—"),
+                str(source_status),
+                str(source_note or "—"),
             ])
         self.story.append(Paragraph("Bauteilquellen und Annahmen", self.styles["h2"]))
         src_tbl = Table(
@@ -1824,6 +1842,7 @@ class HeatloadPDFReport:
                 ["Temperaturabsenkung", self.fmt(getattr(self.project_cfg, "reheat_temp_drop_k", 0.0) if self.project_cfg else 0.0, 2), "K"],
                 ["Speicherkennwert", self.fmt(getattr(self.project_cfg, "reheat_capacity_wh_m2k", 0.0) if self.project_cfg else 0.0, 2), "Wh/(m²K)"],
                 ["Quelle Aufheizzuschlag", str(getattr(self.project_cfg, "reheat_source", "—") if self.project_cfg else "—"), ""],
+                ["Norm-/Tabellenbasis Aufheizzuschlag", str(getattr(self.project_cfg, "reheat_norm_basis", "—") if self.project_cfg else "—"), ""],
                 ["Flächenkorrektur", str(meta.get("area_shrink_factor", "—")), "—"],
                 ["Wandabzug", str(meta.get("thickness_mode", "—")), "full/half"],
                 ["Transmissionsmaß", str(meta.get("floor_area_mode", "—")), "inner/outer"],
@@ -1842,7 +1861,10 @@ class HeatloadPDFReport:
                 ["DIN/TS f Bodenplatte", self.fmt((self.project_cfg.ground.din_ts_f_slab if getattr(self.project_cfg, "ground", None) else 0.35) if self.project_cfg else 0.35, 3), "—"],
                 ["DIN/TS f Kellerwand", self.fmt((self.project_cfg.ground.din_ts_f_wall if getattr(self.project_cfg, "ground", None) else 0.50) if self.project_cfg else 0.50, 3), "—"],
                 ["Quelle DIN/TS-Faktoren", str((self.project_cfg.ground.din_ts_source if getattr(self.project_cfg, "ground", None) else "—") if self.project_cfg else "—"), ""],
+                ["DIN/TS-Zwischenwerte Erdreich", str(getattr(self.project_cfg, "ground_norm_inputs", "—") if self.project_cfg else "—"), ""],
                 ["Quelle Wärmebrücken", str(getattr(self.project_cfg, "thermal_bridge_source", "—") if self.project_cfg else "—"), ""],
+                ["DIN-Prüffassung", "aktiv" if bool(getattr(self.project_cfg, "proof_export_enabled", False) if self.project_cfg else False) else "Arbeitsstand", ""],
+                ["Änderungsprotokoll", str(getattr(self.project_cfg, "change_log_note", "—") if self.project_cfg else "—"), ""],
             ]
             for bc in DIN_BOUNDARY_CONDITIONS.values():
                 ft.append([
