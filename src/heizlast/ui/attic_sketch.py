@@ -103,6 +103,7 @@ class AtticSketchWidget(QWidget):
         painter.setRenderHint(QPainter.Antialiasing, True)
         rect = self.rect().adjusted(12, 12, -12, -12)
         if rect.width() <= 0 or rect.height() <= 0:
+            painter.end()
             return
         painter.fillRect(self.rect(), self.palette().base())
 
@@ -112,6 +113,7 @@ class AtticSketchWidget(QWidget):
             painter.drawRoundedRect(rect, 12, 12)
             painter.setPen(self.palette().text().color())
             painter.drawText(rect, Qt.AlignCenter, "Kein DG-Dachprofil aktiv")
+            painter.end()
             return
 
         g = self._geom

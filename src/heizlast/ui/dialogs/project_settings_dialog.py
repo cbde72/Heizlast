@@ -113,6 +113,7 @@ class RoofLineEditorWidget(QWidget):
         p.setRenderHint(QPainter.Antialiasing, True)
         outer = self.rect().adjusted(10, 10, -10, -10)
         if outer.width() <= 0 or outer.height() <= 0:
+            p.end()
             return
         p.fillRect(self.rect(), QColor("#fafbfc"))
         p.setPen(QPen(QColor("#d9e0e6"), 1))

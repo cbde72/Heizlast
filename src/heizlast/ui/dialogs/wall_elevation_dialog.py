@@ -37,6 +37,7 @@ class WallElevationWidget(QWidget):
             return
         painter.setRenderHint(QPainter.Antialiasing, True)
         if self.width() <= 0 or self.height() <= 0:
+            painter.end()
             return
         painter.fillRect(self.rect(), QColor(248, 250, 252))
 
