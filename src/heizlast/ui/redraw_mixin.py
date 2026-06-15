@@ -138,6 +138,11 @@ class MainWindowRedrawMixin:
             self._update_din_status_from_results(results=results, vent_cfg=vent_cfg)
         else:
             self._last_din_status = ("△", "DIN-Ampel wird nach dem Laden aktualisiert.")
+        if hasattr(self, "_refresh_room_visual_warnings"):
+            try:
+                self._refresh_room_visual_warnings(list(self.rooms.values()), list(self.elements))
+            except Exception:
+                pass
         self._apply_room_debug_overlay(results)
         self._update_statusbar_summary()
         if mark_dirty and hasattr(self, "_mark_dirty"):

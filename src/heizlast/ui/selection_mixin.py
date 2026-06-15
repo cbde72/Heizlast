@@ -83,6 +83,11 @@ class MainWindowSelectionMixin:
 
         self._selected_room_id = rid
         self._populate_room_form()
+        if hasattr(self, "_refresh_dashboard_room_inspector"):
+            try:
+                self._refresh_dashboard_room_inspector(list(self.rooms.values()), list(self.elements))
+            except Exception:
+                pass
         self._update_room_3d_dialog_selection()
         # Element-Selektion -> Liste markieren (ohne rekursive Signal-Kaskade)
         if picked_elem_uid:

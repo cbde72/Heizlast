@@ -335,6 +335,8 @@ class RoomPolygonItem(QGraphicsPathItem):
         self._heat_wpm2 = 0.0
         self._heat_w = 0.0
         self._area_in_m2 = 0.0
+        self._warning_status = ""
+        self._warning_text = ""
         self._in_itemchange = False
         self._vertex_drag_active = False
         self._edge_drag_active = False
@@ -515,6 +517,12 @@ class RoomPolygonItem(QGraphicsPathItem):
         self._area_in_m2 = a_inner
         self.update()
 
+    def set_warning_status(self, status: str = "", text: str = "") -> None:
+        self._warning_status = str(status or "")
+        self._warning_text = str(text or "")
+        self.setToolTip(self._warning_text)
+        self.update()
+
     def _sync_model_from_geometry(self):
         self.model.ensure_polygon()
         old_pts = self.model.polygon_points()
@@ -578,7 +586,15 @@ class RoomPolygonItem(QGraphicsPathItem):
 
     def paint(self, painter: QPainter, option, widget=None):
         painter.setRenderHint(QPainter.Antialiasing, True)
-        painter.setPen(self.pen_sel if self.isSelected() else self.pen_norm)
+        warning_status = getattr(self, "_warning_status", "")
+        if self.isSelected():
+            painter.setPen(self.pen_sel)
+        elif warning_status == "error":
+            painter.setPen(QPen(QColor("#b91c1c"), 3, Qt.DashLine))
+        elif warning_status == "warning":
+            painter.setPen(QPen(QColor("#d97706"), 3, Qt.DashLine))
+        else:
+            painter.setPen(self.pen_norm)
         if getattr(self, "_heat_excluded", False):
             painter.fillPath(self.path(), QBrush(QColor(225, 225, 225, 135)))
             painter.save()
@@ -596,6 +612,17 @@ class RoomPolygonItem(QGraphicsPathItem):
             painter.fillPath(self.path(), QBrush(QColor.fromRgbF(rr, gg, bb, aa)))
         painter.setBrush(Qt.NoBrush)
         painter.drawPath(self.path())
+        if warning_status:
+            painter.save()
+            badge_color = QColor("#b91c1c") if warning_status == "error" else QColor("#d97706")
+            rect = self.boundingRect()
+            badge_rect = rect.adjusted(rect.width() - 24.0, 6.0, -6.0, -rect.height() + 24.0)
+            painter.setPen(QPen(Qt.white, 1.4))
+            painter.setBrush(QBrush(badge_color))
+            painter.drawEllipse(badge_rect)
+            painter.setPen(Qt.white)
+            painter.drawText(badge_rect, Qt.AlignCenter, "!")
+            painter.restore()
         txt = getattr(self, '_debug_overlay_text', '')
         if txt:
             painter.save()

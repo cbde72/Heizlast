@@ -2341,6 +2341,13 @@ class MainWindowBuildMixin:
         self.lbl_dashboard_counts.setWordWrap(True)
         self.lbl_dashboard_saved = QLabel("Status: —")
         self.lbl_dashboard_saved.setWordWrap(True)
+        self.lbl_dashboard_next_step = QLabel("Nächster Schritt: —")
+        self.lbl_dashboard_next_step.setObjectName("dashboardNextStep")
+        self.lbl_dashboard_next_step.setWordWrap(True)
+        self.btn_dashboard_next_step = QPushButton("Nächsten Schritt öffnen")
+        self.btn_dashboard_next_step.setObjectName("primaryActionButton")
+        self.btn_dashboard_next_step.setToolTip("Springt zur wichtigsten aktuell offenen Eingabe oder Prüfung.")
+        self.btn_dashboard_next_step.setProperty("dashboard_target", "")
         self.lbl_dashboard_workflow = QLabel("Arbeits-Checkliste")
         self.lbl_dashboard_workflow.setObjectName("panelSectionTitle")
         self.list_dashboard_workflow = QListWidget()
@@ -2369,6 +2376,21 @@ class MainWindowBuildMixin:
         self.list_dashboard_heat_audit.setObjectName("heatloadAuditList")
         self.list_dashboard_heat_audit.setToolTip("Top-Lasttreiber und Auffälligkeiten bei DG-Dach-/Giebelflächen.")
         self.list_dashboard_heat_audit.setMaximumHeight(190)
+        self.lbl_dashboard_room_inspector = QLabel("Raum-Inspector")
+        self.lbl_dashboard_room_inspector.setObjectName("panelSectionTitle")
+        self.lbl_dashboard_room_inspector_text = QLabel("Kein Raum ausgewählt.")
+        self.lbl_dashboard_room_inspector_text.setObjectName("roomInspectorText")
+        self.lbl_dashboard_room_inspector_text.setWordWrap(True)
+        inspector_btn_row = QWidget()
+        inspector_btn_lay = QHBoxLayout(inspector_btn_row)
+        inspector_btn_lay.setContentsMargins(0, 0, 0, 0)
+        inspector_btn_lay.setSpacing(6)
+        self.btn_dashboard_room_properties = QPushButton("Raumdaten")
+        self.btn_dashboard_room_properties.setToolTip("Öffnet den Eigenschaftenbereich für den ausgewählten Raum.")
+        self.btn_dashboard_room_elements = QPushButton("Bauteile")
+        self.btn_dashboard_room_elements.setToolTip("Öffnet die Bauteilliste für den ausgewählten Raum.")
+        inspector_btn_lay.addWidget(self.btn_dashboard_room_properties)
+        inspector_btn_lay.addWidget(self.btn_dashboard_room_elements)
         btn_row = QWidget()
         btn_row_lay = QHBoxLayout(btn_row)
         btn_row_lay.setContentsMargins(0, 0, 0, 0)
@@ -2381,10 +2403,15 @@ class MainWindowBuildMixin:
         dashboard_lay.addWidget(self.lbl_dashboard_din)
         dashboard_lay.addWidget(self.lbl_dashboard_counts)
         dashboard_lay.addWidget(self.lbl_dashboard_saved)
+        dashboard_lay.addWidget(self.lbl_dashboard_next_step)
+        dashboard_lay.addWidget(self.btn_dashboard_next_step)
         dashboard_lay.addWidget(self.lbl_dashboard_workflow)
         dashboard_lay.addWidget(self.list_dashboard_workflow)
         dashboard_lay.addWidget(self.lbl_dashboard_room_matrix)
         dashboard_lay.addWidget(self.tbl_room_norm_matrix)
+        dashboard_lay.addWidget(self.lbl_dashboard_room_inspector)
+        dashboard_lay.addWidget(self.lbl_dashboard_room_inspector_text)
+        dashboard_lay.addWidget(inspector_btn_row)
         dashboard_lay.addWidget(self.lbl_dashboard_heat_audit)
         dashboard_lay.addWidget(self.list_dashboard_heat_audit)
         dashboard_lay.addWidget(self.list_dashboard_checks, 1)
@@ -2544,7 +2571,68 @@ class MainWindowBuildMixin:
         self.tabifyDockWidget(self.dock_dashboard, self.dock_properties)
         self.dock_dashboard.raise_()
         self.dock_elements.raise_()
+        self._create_workspace_switcher()
         QTimer.singleShot(0, self._release_side_dock_width_limits)
+
+    def _create_workspace_switcher(self):
+        self.tb_workspace = QToolBar("Arbeitsbereiche", self)
+        self.tb_workspace.setObjectName("toolbar_workspace")
+        self.tb_workspace.setMovable(False)
+        self.tb_workspace.setFloatable(False)
+        self.tb_workspace.setToolButtonStyle(Qt.ToolButtonTextOnly)
+        self.addToolBar(Qt.TopToolBarArea, self.tb_workspace)
+        self._workspace_actions = {}
+        for label, key, tip in (
+            ("Planung", "planning", "Grundriss, Raumdaten und Bauteile bearbeiten"),
+            ("Nachweis", "proof", "Dashboard, DIN-Matrix und Plausibilität prüfen"),
+            ("Dach", "roof", "DG-Dach, Giebel und Dachwerkzeuge bearbeiten"),
+            ("Export", "export", "Nachweis kontrollieren und Report exportieren"),
+        ):
+            act = self._make_action(
+                label,
+                slot=lambda checked=False, workspace=key: self._set_workspace(workspace),
+                checkable=True,
+                checked=(key == "proof"),
+                icon=self._toolbar_icon("project_settings"),
+                tip=tip,
+            )
+            self._workspace_actions[key] = act
+            self.tb_workspace.addAction(act)
+
+    def _set_workspace(self, workspace: str):
+        actions = getattr(self, "_workspace_actions", {})
+        for key, act in actions.items():
+            act.blockSignals(True)
+            act.setChecked(key == workspace)
+            act.blockSignals(False)
+        docks = {
+            "dashboard": getattr(self, "dock_dashboard", None),
+            "properties": getattr(self, "dock_properties", None),
+            "elements": getattr(self, "dock_elements", None),
+            "attic": getattr(self, "dock_attic", None),
+            "plausibility": getattr(self, "dock_plausibility", None),
+        }
+        for dock in docks.values():
+            if dock is not None:
+                dock.hide()
+        visible_by_workspace = {
+            "planning": ("properties", "elements"),
+            "proof": ("dashboard", "plausibility"),
+            "roof": ("attic", "dashboard"),
+            "export": ("dashboard", "plausibility"),
+        }
+        for name in visible_by_workspace.get(workspace, ("dashboard",)):
+            dock = docks.get(name)
+            if dock is not None:
+                dock.show()
+                dock.raise_()
+        if workspace == "roof":
+            try:
+                self._on_switch_to_dg_view()
+            except Exception:
+                pass
+        if workspace == "export" and hasattr(self, "_refresh_project_dashboard"):
+            self._refresh_project_dashboard()
 
     def _create_statusbar(self):
         """Statusbar mit Projektpfad, Raumanzahl und Heizlast gesamt."""
@@ -2739,6 +2827,12 @@ class MainWindowBuildMixin:
             self.btn_dashboard_norm.clicked.connect(self._on_project_settings_norm)
         if getattr(self, "btn_dashboard_save_version", None) is not None:
             self.btn_dashboard_save_version.clicked.connect(self._on_save_version)
+        if getattr(self, "btn_dashboard_next_step", None) is not None:
+            self.btn_dashboard_next_step.clicked.connect(self._on_dashboard_next_step_clicked)
+        if getattr(self, "btn_dashboard_room_properties", None) is not None:
+            self.btn_dashboard_room_properties.clicked.connect(self._show_selected_room_properties)
+        if getattr(self, "btn_dashboard_room_elements", None) is not None:
+            self.btn_dashboard_room_elements.clicked.connect(self._show_selected_room_elements)
         if getattr(self, "list_dashboard_workflow", None) is not None:
             self.list_dashboard_workflow.itemClicked.connect(self._on_dashboard_workflow_item_clicked)
         if getattr(self, "tbl_room_norm_matrix", None) is not None:
@@ -2979,6 +3073,44 @@ class MainWindowBuildMixin:
         QToolButton:checked {
             background: #dbe9f8;
             border-color: #a8c2df;
+        }
+        QToolBar#toolbar_workspace {
+            background: #f8fafc;
+            border-bottom: 1px solid #d7dbe0;
+            padding: 4px 8px;
+        }
+        QToolBar#toolbar_workspace QToolButton {
+            border-radius: 7px;
+            padding: 5px 12px;
+            font-weight: 600;
+        }
+        QLabel#dashboardNextStep {
+            background: #fff7ed;
+            border: 1px solid #fed7aa;
+            border-radius: 8px;
+            color: #7c2d12;
+            padding: 8px 10px;
+            font-weight: 700;
+        }
+        QLabel#roomInspectorText {
+            background: #f8fafc;
+            border: 1px solid #d7dbe0;
+            border-radius: 8px;
+            color: #334155;
+            padding: 8px 10px;
+        }
+        QPushButton#primaryActionButton {
+            background: #1f6feb;
+            border: 1px solid #1d4ed8;
+            border-radius: 8px;
+            color: #ffffff;
+            padding: 8px 10px;
+            font-weight: 700;
+        }
+        QPushButton#primaryActionButton:disabled {
+            background: #cbd5e1;
+            border-color: #cbd5e1;
+            color: #64748b;
         }
         QLabel#toolbarSectionLabel {
             color: #66788a;

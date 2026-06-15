@@ -145,6 +145,9 @@ class MainWindowComfortMixin:
             )
             self._refresh_dashboard_workflow(status, rooms, elements)
             self._refresh_room_norm_matrix(rooms, elements)
+            self._refresh_dashboard_next_step(status, rooms, elements)
+            self._refresh_dashboard_room_inspector(rooms, elements)
+            self._refresh_room_visual_warnings(rooms, elements)
             self._refresh_heatload_audit(getattr(self, "_last_heatload_results", None) or {}, rooms, elements)
             rows = [
                 row for row in status.validation_rows[1:]
@@ -158,7 +161,62 @@ class MainWindowComfortMixin:
             self.list_dashboard_checks.addItem(f"✗ Dashboard-Prüfung nicht berechenbar: {exc}")
             self._refresh_dashboard_workflow(None, rooms, elements)
             self._refresh_room_norm_matrix(rooms, elements)
+            self._refresh_dashboard_next_step(None, rooms, elements)
+            self._refresh_dashboard_room_inspector(rooms, elements)
+            self._refresh_room_visual_warnings(rooms, elements)
             self._refresh_heatload_audit(getattr(self, "_last_heatload_results", None) or {}, rooms, elements)
+
+    def _refresh_dashboard_next_step(self, status, rooms: list[RoomModel], elements: list[ElementModel]) -> None:
+        label = getattr(self, "lbl_dashboard_next_step", None)
+        button = getattr(self, "btn_dashboard_next_step", None)
+        if label is None or button is None:
+            return
+        status_by_name = self._validation_status_map(status)
+        room_id, room_status, room_issues = self._first_problem_room(rooms, elements)
+        if not rooms:
+            text, target = "Nächster Schritt: Räume im Grundriss anlegen oder importieren.", "planning"
+        elif room_id and room_status == "error":
+            text, target = f"Nächster Schritt: Raumdaten prüfen ({room_id}: {room_issues[0]}).", f"room:{room_id}"
+        elif status_by_name.get("Norm-/Quellenbezug", "✗") != "✓":
+            text, target = "Nächster Schritt: Norm- und Quellenbezug in den Projektparametern prüfen.", "project_norm"
+        elif status_by_name.get("U-Wert-Quellen", "✗") != "✓":
+            text, target = "Nächster Schritt: U-Wert-Quellen vervollständigen.", "u_values"
+        elif room_id and room_status == "warning":
+            text, target = f"Nächster Schritt: Raum plausibilisieren ({room_id}: {room_issues[0]}).", f"room:{room_id}"
+        elif not elements:
+            text, target = "Nächster Schritt: Bauteile für die Räume anlegen oder Auto-Wände erzeugen.", "elements"
+        elif getattr(status, "overall_status", "✗") != "✓":
+            text, target = "Nächster Schritt: offene DIN-Prüfpunkte im Dashboard abarbeiten.", "dashboard"
+        else:
+            text, target = "Nächster Schritt: Report und Grundrisse exportieren.", "export"
+        label.setText(text)
+        button.setProperty("dashboard_target", target)
+        button.setEnabled(bool(target))
+
+    def _on_dashboard_next_step_clicked(self) -> None:
+        button = getattr(self, "btn_dashboard_next_step", None)
+        target = str(button.property("dashboard_target") or "") if button is not None else ""
+        self._open_dashboard_target(target)
+
+    def _open_dashboard_target(self, target: str) -> None:
+        target = str(target or "")
+        if target.startswith("room:"):
+            self._select_room_from_dashboard(target.split(":", 1)[1])
+        elif target == "project_norm" and hasattr(self, "_on_project_settings_norm"):
+            self._on_project_settings_norm()
+        elif target == "u_values" and hasattr(self, "_on_project_settings_u_values"):
+            self._on_project_settings_u_values()
+        elif target == "export" and hasattr(self, "_on_export_floorplans_csv"):
+            self._on_export_floorplans_csv()
+        elif target == "elements":
+            self._show_selected_room_elements()
+        elif target == "planning" and hasattr(self, "_set_workspace"):
+            self._set_workspace("planning")
+        else:
+            dock = getattr(self, "dock_dashboard", None)
+            if dock is not None:
+                dock.show()
+                dock.raise_()
 
     def _validation_status_map(self, status) -> dict[str, str]:
         if status is None:
@@ -223,12 +281,8 @@ class MainWindowComfortMixin:
 
     def _on_dashboard_workflow_item_clicked(self, item: QListWidgetItem) -> None:
         target = str(item.data(Qt.UserRole) or "")
-        if target == "project_norm" and hasattr(self, "_on_project_settings_norm"):
-            self._on_project_settings_norm()
-        elif target == "u_values" and hasattr(self, "_on_project_settings_u_values"):
-            self._on_project_settings_u_values()
-        elif target == "export" and hasattr(self, "_on_export_floorplans_csv"):
-            self._on_export_floorplans_csv()
+        if target in {"project_norm", "u_values", "export"}:
+            self._open_dashboard_target(target)
         elif target == "room_matrix":
             table = getattr(self, "tbl_room_norm_matrix", None)
             if table is not None and table.rowCount() > 0:
@@ -309,6 +363,83 @@ class MainWindowComfortMixin:
             return ("✓", "Nachbarzone/Randbedingung erkennbar") if has_neighbor else ("△", "Nachbarzone nicht explizit erkennbar")
         return "△", "nicht bewertet"
 
+    def _room_status_summary(self, room: RoomModel, elements: list[ElementModel]) -> tuple[str, list[str]]:
+        checks = [
+            ("Außenwand", "outside_wall"),
+            ("Fenster", "window"),
+            ("Dach", "roof"),
+            ("Decke", "deck"),
+            ("Boden", "ground"),
+            ("Wärmebrücken", "thermal_bridge"),
+            ("Lüftung", "ventilation"),
+            ("Temperatur", "temperature"),
+            ("Nachbarzone", "neighbor"),
+        ]
+        issues: list[str] = []
+        worst = ""
+        for label, key in checks:
+            mark, tip = self._room_matrix_status(room, elements, key)
+            if mark == "✗":
+                worst = "error"
+                issues.append(f"{label}: {tip}")
+            elif mark == "△" and worst != "error":
+                worst = "warning"
+                issues.append(f"{label}: {tip}")
+        return worst, issues
+
+    def _first_problem_room(self, rooms: list[RoomModel], elements: list[ElementModel]) -> tuple[str | None, str, list[str]]:
+        by_room: dict[str, list[ElementModel]] = defaultdict(list)
+        for e in elements:
+            by_room[str(getattr(e, "room_id", "") or "")].append(e)
+        first_warning: tuple[str | None, str, list[str]] = (None, "", [])
+        for room in sorted(rooms, key=lambda r: (str(r.floor), str(r.name), str(r.id))):
+            rid = str(getattr(room, "id", "") or "")
+            status, issues = self._room_status_summary(room, by_room.get(rid, []))
+            if status == "error":
+                return rid, status, issues
+            if status == "warning" and first_warning[0] is None:
+                first_warning = (rid, status, issues)
+        return first_warning
+
+    def _refresh_dashboard_room_inspector(self, rooms: list[RoomModel], elements: list[ElementModel]) -> None:
+        label = getattr(self, "lbl_dashboard_room_inspector_text", None)
+        if label is None:
+            return
+        rid = str(getattr(self, "_selected_room_id", "") or "")
+        room_by_id = {str(getattr(r, "id", "") or ""): r for r in rooms}
+        room = room_by_id.get(rid)
+        if room is None:
+            label.setText("Kein Raum ausgewählt. In Matrix oder Grundriss einen Raum anklicken.")
+            return
+        room_elements = [e for e in elements if str(getattr(e, "room_id", "") or "") == rid]
+        status, issues = self._room_status_summary(room, room_elements)
+        area = float(room.area_m2()) if hasattr(room, "area_m2") else float(getattr(room, "w_m", 0.0) or 0.0) * float(getattr(room, "h_m", 0.0) or 0.0)
+        volume = float(getattr(room, "volume_m3", 0.0) or 0.0)
+        if volume <= 0.0:
+            try:
+                volume = area * float(getattr(room, "height_m", 0.0) or 0.0)
+            except Exception:
+                volume = 0.0
+        prefix = "Fehler" if status == "error" else "Prüfen" if status == "warning" else "OK"
+        detail = "; ".join(issues[:3]) if issues else "alle Kernpunkte plausibel"
+        label.setText(
+            f"{prefix}: {room.name or rid} ({getattr(room, 'floor', '—')})\n"
+            f"A {area:.1f} m² · V {volume:.1f} m³ · Bauteile {len(room_elements)}\n"
+            f"{detail}"
+        )
+
+    def _refresh_room_visual_warnings(self, rooms: list[RoomModel], elements: list[ElementModel]) -> None:
+        by_room: dict[str, list[ElementModel]] = defaultdict(list)
+        for e in elements:
+            by_room[str(getattr(e, "room_id", "") or "")].append(e)
+        for room in rooms:
+            rid = str(getattr(room, "id", "") or "")
+            item = getattr(self, "room_items", {}).get(rid)
+            if item is None or not hasattr(item, "set_warning_status"):
+                continue
+            status, issues = self._room_status_summary(room, by_room.get(rid, []))
+            item.set_warning_status(status, "\n".join(issues[:6]) if issues else "")
+
     def _status_for_element_group(self, elements: list[ElementModel], needles: tuple[str, ...]) -> tuple[str, str]:
         has_valid, has_source = self._valid_kind_source_status(elements, needles)
         if has_valid and has_source:
@@ -365,13 +496,62 @@ class MainWindowComfortMixin:
         item = table.item(row, 0)
         rid = str(item.data(Qt.UserRole) or "") if item is not None else ""
         if rid and rid in getattr(self, "rooms", {}):
-            self._selected_room_id = rid
-            if hasattr(self, "_populate_room_form"):
-                self._populate_room_form()
-            dock = getattr(self, "dock_properties", None)
-            if dock is not None:
-                dock.show()
-                dock.raise_()
+            self._select_room_from_dashboard(rid)
+
+    def _select_room_from_dashboard(self, rid: str) -> None:
+        rid = str(rid or "")
+        if not rid or rid not in getattr(self, "rooms", {}):
+            return
+        self._selected_room_id = rid
+        room = self.rooms[rid]
+        scene = None
+        view = None
+        floor = str(getattr(room, "floor", "") or "")
+        if floor == "KG":
+            scene, view = getattr(self, "scene_KG", None), getattr(self, "view_KG", None)
+        elif floor == "DG":
+            scene, view = getattr(self, "scene_DG", None), getattr(self, "view_DG", None)
+        else:
+            scene, view = getattr(self, "scene_EG", None), getattr(self, "view_EG", None)
+        if scene is not None:
+            try:
+                scene.clearSelection()
+            except Exception:
+                pass
+        item = getattr(self, "room_items", {}).get(rid)
+        if item is not None:
+            try:
+                item.setSelected(True)
+            except Exception:
+                pass
+        if view is not None:
+            try:
+                self.tabs.setCurrentWidget(view)
+                if item is not None:
+                    view.centerOn(item)
+                else:
+                    view.centerOn(0, 0)
+            except Exception:
+                pass
+        if hasattr(self, "_populate_room_form"):
+            self._populate_room_form()
+        self._show_selected_room_properties()
+
+    def _show_selected_room_properties(self) -> None:
+        if hasattr(self, "_set_workspace"):
+            self._set_workspace("planning")
+        dock = getattr(self, "dock_properties", None)
+        if dock is not None:
+            dock.show()
+            dock.raise_()
+
+    def _show_selected_room_elements(self) -> None:
+        if hasattr(self, "_set_workspace"):
+            self._set_workspace("planning")
+        dock = getattr(self, "dock_elements", None)
+        if dock is not None:
+            dock.show()
+            dock.raise_()
 
     def _room_result_items(self, results: dict) -> list[tuple[str, dict]]:
         return [
